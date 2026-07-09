@@ -1,0 +1,29 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "paths": {
+      "@anvil/adapters": ["../adapters/src"],
+      "@anvil/adapters/*": ["../adapters/src/*"],
+      "@anvil/core": ["../core/src"],
+      "@anvil/core/*": ["../core/src/*"],
+      "@anvil/workflows": ["../workflows/src"],
+      "@anvil/workflows/*": ["../workflows/src/*"],
+      "@anvil/paths": ["../paths/src"],
+      "@anvil/git": ["../git/src"]
+    }
+  },
+  "include": [
+    "src/**/*",
+    "../core/src/**/*.ts",
+    "../adapters/src/**/*.ts",
+    "../workflows/src/defaults/text-imports.d.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "**/*.test.ts",
+    "../core/src/**/*.test.ts",
+    "../adapters/src/**/*.test.ts"
+  ]
+}

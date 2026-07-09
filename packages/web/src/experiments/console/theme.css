@@ -1,0 +1,451 @@
+/*
+ * Anvil Console — brand foundation port.
+ *
+ * Scoped to `.console-root` so the production app's existing palette is
+ * untouched. Tailwind v4's @theme inline (in index.css) defines --color-*
+ * theme tokens that reference plain CSS variables (--surface, --border,
+ * --text-primary, etc.); redefining those CSS variables inside .console-root
+ * cascades through every utility that reads them without needing a parallel
+ * @theme block.
+ *
+ * Source: Anvil Brand · Standalone. The duotone magenta → violet → teal
+ * gradient drawn from the shield logo is THE brand. Cool charcoal surfaces
+ * (hue 265) carry the gradient without competing.
+ *
+ *   magenta  oklch(0.640 0.295 330)  #ED10EC
+ *   violet   oklch(0.560 0.215 305)
+ *   teal     oklch(0.755 0.165 168)  #06CE94
+ */
+
+/* Geist & Geist Mono — loaded only when a console route mounts. */
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@300..700&family=Geist+Mono:wght@400..600&display=swap');
+
+.console-root {
+  /* Surfaces — cool charcoal (hue 265) */
+  --surface: oklch(0.175 0.007 265);
+  --surface-inset: oklch(0.13 0.006 265);
+  --surface-elevated: oklch(0.205 0.009 265);
+  --surface-hover: oklch(0.225 0.01 265);
+  --surface-variant: oklch(0.21 0.009 265);
+  --surface-bright: oklch(0.275 0.012 265);
+
+  /* Borders */
+  --border: oklch(0.275 0.012 265);
+  --border-bright: oklch(0.355 0.016 265);
+  --outline-variant: oklch(0.4 0.018 265);
+
+  /* Text */
+  --text-primary: oklch(0.975 0.004 265);
+  --text-secondary: oklch(0.745 0.014 265);
+  --text-tertiary: oklch(0.56 0.017 265);
+
+  /* Brand thread — the duotone */
+  --brand-magenta: oklch(0.64 0.295 330);
+  --brand-magenta-2: oklch(0.72 0.26 335);
+  --brand-violet: oklch(0.56 0.215 305);
+  --brand-teal: oklch(0.755 0.165 168);
+  --brand-teal-2: oklch(0.7 0.15 175);
+  --brand-gradient: linear-gradient(
+    135deg,
+    var(--brand-magenta) 0%,
+    var(--brand-violet) 50%,
+    var(--brand-teal) 100%
+  );
+  --brand-gradient-soft: linear-gradient(
+    135deg,
+    oklch(0.64 0.295 330 / 0.18) 0%,
+    oklch(0.56 0.215 305 / 0.12) 50%,
+    oklch(0.755 0.165 168 / 0.18) 100%
+  );
+
+  /* Accent — brand magenta (default). All accent tokens point to the same
+     hue so `bg-accent-bright`, `text-accent-bright`, etc. all read as brand. */
+  --accent: var(--brand-magenta);
+  --accent-bright: var(--brand-magenta);
+  --accent-hover: oklch(0.7 0.28 330);
+  --accent-muted: oklch(0.64 0.295 330 / 0.3);
+  --accent-soft: oklch(0.64 0.295 330 / 0.14);
+  --accent-ring: oklch(0.64 0.295 330 / 0.3);
+
+  /* Status — kept distinct from accent so brand swaps don't break meaning.
+     - running   electric blue (active/in-progress)
+     - success   brand teal (affirmative IS brand)
+     - warning   amber
+     - error     hot red */
+  --running: oklch(0.72 0.155 245);
+  --running-soft: oklch(0.72 0.155 245 / 0.14);
+  --success: var(--brand-teal);
+  --success-soft: oklch(0.755 0.165 168 / 0.14);
+  --warning: oklch(0.8 0.14 85);
+  --warning-soft: oklch(0.8 0.14 85 / 0.14);
+  --error: oklch(0.68 0.215 18);
+  --error-soft: oklch(0.68 0.215 18 / 0.14);
+
+  /* Node variant stripes — the builder renders all seven variants. The first
+     five tokens (--node-command/-prompt/-bash/-loop/-approval) inherit from
+     the production :root in index.css; script and cancel exist only here
+     (console-scoped) until the production palette needs them. */
+  --node-script: oklch(0.7 0.14 140);
+  --node-cancel: oklch(0.62 0.19 10);
+
+  /* shadcn-compatible overrides */
+  --background: oklch(0.145 0.006 265);
+  --foreground: var(--text-primary);
+  --card: var(--surface);
+  --card-foreground: var(--text-primary);
+  --popover: var(--surface-elevated);
+  --popover-foreground: var(--text-primary);
+  --primary: var(--brand-magenta);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: var(--surface-elevated);
+  --secondary-foreground: var(--text-primary);
+  --muted: var(--surface-elevated);
+  --muted-foreground: var(--text-secondary);
+  --destructive: var(--error);
+  --input: var(--border);
+  --ring: var(--brand-magenta);
+
+  /* Typography — Geist, with the SS01/CV11 alternates the brand uses. */
+  font-family:
+    'Geist',
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    sans-serif;
+  font-feature-settings: 'ss01', 'cv11';
+  letter-spacing: -0.005em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Override Tailwind's compiled font-mono so console-internal monospace
+   becomes Geist Mono. Higher specificity than the bare .font-mono utility. */
+.console-root .font-mono,
+.console-root code,
+.console-root pre,
+.console-root kbd,
+.console-root samp {
+  font-family: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  font-feature-settings: 'ss01', 'ss02';
+}
+
+/* Heading tightening — brand uses -0.028em for big titles. */
+.console-root h1,
+.console-root h2 {
+  letter-spacing: -0.028em;
+}
+
+/* Override the global `* { @apply border-border ... }` rule's effect inside
+   the console so bare borders pick up our charcoal border color. */
+.console-root *,
+.console-root *::before,
+.console-root *::after {
+  border-color: var(--border);
+}
+
+.console-root ::selection {
+  background: var(--accent-ring);
+  color: var(--text-primary);
+}
+
+.console-root :focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* Brand utilities — restricted to console scope.
+   .brand-text  → paints text with the duotone gradient (logo/wordmark)
+   .brand-bar   → solid gradient fill (CTAs, accent strips)
+   .brand-bar-soft → translucent gradient wash (subtle hero/selected states) */
+.console-root .brand-text {
+  background: var(--brand-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
+
+.console-root .brand-bar {
+  background: var(--brand-gradient);
+}
+
+.console-root .brand-bar-soft {
+  background: var(--brand-gradient-soft);
+}
+
+/* ==========================================================================
+   Theme: Light Mint
+   Inspired by: clean off-white surface + teal-green accent
+   Accent:  #00C896  oklch(0.72 0.165 168)
+   Surface: off-white / light gray hierarchy
+   ========================================================================== */
+
+.console-root.theme-light-mint {
+  /* Surfaces */
+  --surface: oklch(0.985 0.002 265);
+  --surface-inset: oklch(0.945 0.004 265);
+  --surface-elevated: oklch(1 0 0);
+  --surface-hover: oklch(0.965 0.005 265);
+  --surface-variant: oklch(0.97 0.003 265);
+  --surface-bright: oklch(0.93 0.006 265);
+
+  /* Borders */
+  --border: oklch(0.87 0.007 265);
+  --border-bright: oklch(0.78 0.012 265);
+  --outline-variant: oklch(0.72 0.014 265);
+
+  /* Text — dark on light */
+  --text-primary: oklch(0.18 0.008 265);
+  --text-secondary: oklch(0.42 0.012 265);
+  --text-tertiary: oklch(0.58 0.01 265);
+
+  /* Brand mint-teal thread */
+  --brand-magenta: oklch(0.72 0.165 168);
+  --brand-magenta-2: oklch(0.78 0.155 168);
+  --brand-violet: oklch(0.62 0.14 180);
+  --brand-teal: oklch(0.72 0.165 168);
+  --brand-teal-2: oklch(0.65 0.15 175);
+  --brand-gradient: linear-gradient(
+    135deg,
+    oklch(0.72 0.165 168) 0%,
+    oklch(0.62 0.14 180) 50%,
+    oklch(0.55 0.13 200) 100%
+  );
+  --brand-gradient-soft: linear-gradient(
+    135deg,
+    oklch(0.72 0.165 168 / 0.12) 0%,
+    oklch(0.62 0.14 180 / 0.08) 50%,
+    oklch(0.55 0.13 200 / 0.1) 100%
+  );
+
+  /* Accent — mint teal */
+  --accent: oklch(0.72 0.165 168);
+  --accent-bright: oklch(0.62 0.175 168);
+  --accent-hover: oklch(0.65 0.17 168);
+  --accent-muted: oklch(0.72 0.165 168 / 0.18);
+  --accent-soft: oklch(0.72 0.165 168 / 0.1);
+  --accent-ring: oklch(0.72 0.165 168 / 0.35);
+
+  /* Status */
+  --running: oklch(0.52 0.17 245);
+  --running-soft: oklch(0.52 0.17 245 / 0.1);
+  --success: oklch(0.6 0.17 155);
+  --success-soft: oklch(0.6 0.17 155 / 0.1);
+  --warning: oklch(0.62 0.16 60);
+  --warning-soft: oklch(0.62 0.16 60 / 0.1);
+  --error: oklch(0.55 0.21 18);
+  --error-soft: oklch(0.55 0.21 18 / 0.1);
+
+  /* Node variants */
+  --node-command: oklch(0.52 0.17 245);
+  --node-prompt: oklch(0.52 0.17 290);
+  --node-bash: oklch(0.58 0.15 75);
+  --node-loop: oklch(0.52 0.16 168);
+  --node-approval: oklch(0.56 0.15 40);
+  --node-script: oklch(0.56 0.14 140);
+  --node-cancel: oklch(0.52 0.18 10);
+
+  /* shadcn-compatible overrides */
+  --background: oklch(0.97 0.003 265);
+  --foreground: var(--text-primary);
+  --card: var(--surface-elevated);
+  --card-foreground: var(--text-primary);
+  --popover: var(--surface-elevated);
+  --popover-foreground: var(--text-primary);
+  --primary: oklch(0.62 0.175 168);
+  --primary-foreground: oklch(0.99 0 0);
+  --secondary: var(--surface-inset);
+  --secondary-foreground: var(--text-primary);
+  --muted: var(--surface-inset);
+  --muted-foreground: var(--text-secondary);
+  --destructive: var(--error);
+  --input: var(--border);
+  --ring: oklch(0.72 0.165 168 / 0.4);
+
+  color-scheme: light;
+}
+
+/* Scrollbar — light variant */
+.console-root.theme-light-mint ::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.console-root.theme-light-mint ::-webkit-scrollbar-track {
+  background: transparent;
+}
+.console-root.theme-light-mint ::-webkit-scrollbar-thumb {
+  background: oklch(0.8 0.008 265);
+  border-radius: 3px;
+}
+.console-root.theme-light-mint ::-webkit-scrollbar-thumb:hover {
+  background: oklch(0.72 0.012 265);
+}
+
+/* Selection */
+.console-root.theme-light-mint ::selection {
+  background: oklch(0.72 0.165 168 / 0.2);
+  color: var(--text-primary);
+}
+
+/* XY Flow canvas — light bg */
+.console-root.theme-light-mint .react-flow__background {
+  background-color: var(--surface-inset);
+}
+
+/* ==========================================================================
+   Light Mint — XY Flow (builder / run graph) overrides
+   The xyflow stylesheet ships with dark-first values. We must override each
+   painted surface so edges, handles, and node backgrounds render correctly
+   on light surfaces.
+   ========================================================================== */
+
+/* Edge paths & arrows */
+.console-root.theme-light-mint .react-flow__edge-path,
+.console-root.theme-light-mint .react-flow__connection-path {
+  stroke: oklch(0.6 0.012 265);
+  stroke-width: 1.5px;
+}
+
+.console-root.theme-light-mint .react-flow__edge.selected .react-flow__edge-path,
+.console-root.theme-light-mint .react-flow__edge:focus .react-flow__edge-path,
+.console-root.theme-light-mint .react-flow__edge:focus-visible .react-flow__edge-path {
+  stroke: var(--accent);
+}
+
+/* Dashed conditional edges */
+.console-root.theme-light-mint .react-flow__edge-path[style*='dasharray'] {
+  stroke: oklch(0.5 0.01 265);
+}
+
+/* Arrow markers */
+.console-root.theme-light-mint .react-flow__arrowhead path {
+  fill: oklch(0.6 0.012 265);
+  stroke: none;
+}
+
+/* Node wrapper — xyflow default adds a dark border via .react-flow__node */
+.console-root.theme-light-mint .react-flow__node {
+  border-color: var(--border);
+}
+
+.console-root.theme-light-mint .react-flow__node.selected,
+.console-root.theme-light-mint .react-flow__node:focus,
+.console-root.theme-light-mint .react-flow__node:focus-visible {
+  outline: 2px solid var(--accent-ring);
+  outline-offset: 2px;
+}
+
+/* Connection handles */
+.console-root.theme-light-mint .react-flow__handle {
+  background: var(--surface-elevated);
+  border: 2px solid oklch(0.65 0.012 265);
+}
+
+.console-root.theme-light-mint .react-flow__handle:hover,
+.console-root.theme-light-mint .react-flow__handle.connecting {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+/* Controls panel */
+.console-root.theme-light-mint .react-flow__controls {
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  box-shadow: 0 2px 8px oklch(0 0 0 / 0.08);
+}
+
+.console-root.theme-light-mint .react-flow__controls-button {
+  background: var(--surface-elevated);
+  border-color: var(--border);
+  color: var(--text-secondary);
+  fill: var(--text-secondary);
+}
+
+.console-root.theme-light-mint .react-flow__controls-button:hover {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+  fill: var(--text-primary);
+}
+
+/* Minimap */
+.console-root.theme-light-mint .react-flow__minimap {
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+}
+
+/* Selection box */
+.console-root.theme-light-mint .react-flow__selection {
+  background: oklch(0.72 0.165 168 / 0.06);
+  border: 1px dashed oklch(0.72 0.165 168 / 0.6);
+}
+
+/* Attribution */
+.console-root.theme-light-mint .react-flow__attribution {
+  background: transparent;
+  color: var(--text-tertiary);
+}
+
+/* ==========================================================================
+   Light Mint — component-specific fixes
+   ========================================================================== */
+
+/* Modals / overlays: keep the backdrop dark (intentional) but ensure inner
+   panels use light surface tokens */
+.console-root.theme-light-mint [role='dialog'] > div,
+.console-root.theme-light-mint [role='dialog'] > form {
+  background: var(--surface-elevated);
+  border-color: var(--border);
+  color: var(--text-primary);
+}
+
+/* Highlight.js code blocks — override the dark theme shipped globally */
+.console-root.theme-light-mint .hljs,
+.console-root.theme-light-mint pre code.hljs {
+  background: var(--surface-inset) !important;
+  color: var(--text-primary) !important;
+}
+
+/* Inline code */
+.console-root.theme-light-mint code:not(.hljs) {
+  background: var(--surface-inset);
+  color: var(--text-primary);
+}
+
+/* Chat markdown tables */
+.console-root.theme-light-mint .chat-markdown th {
+  background: var(--surface-inset);
+}
+
+/* Brand buttons: text-white is correct on coloured backgrounds; leave alone.
+   But plain `bg-surface` text must use var(--text-primary) which is now dark. */
+
+/* Inputs / textareas */
+.console-root.theme-light-mint input:not([type='range']),
+.console-root.theme-light-mint textarea,
+.console-root.theme-light-mint select {
+  background: var(--surface-elevated);
+  color: var(--text-primary);
+  border-color: var(--border);
+}
+
+.console-root.theme-light-mint input::placeholder,
+.console-root.theme-light-mint textarea::placeholder {
+  color: var(--text-tertiary);
+}
+
+/* Focus ring */
+.console-root.theme-light-mint input:focus,
+.console-root.theme-light-mint textarea:focus,
+.console-root.theme-light-mint select:focus {
+  border-color: var(--accent);
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent-ring);
+}
+
+/* Scrollbars (Firefox) */
+.console-root.theme-light-mint * {
+  scrollbar-color: oklch(0.78 0.008 265) transparent;
+  scrollbar-width: thin;
+}

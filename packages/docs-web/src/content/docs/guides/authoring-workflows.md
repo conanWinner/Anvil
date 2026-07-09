@@ -1,0 +1,1361 @@
+---
+title: Authoring Workflows
+description: Create multi-step YAML workflows with DAG nodes, conditional branching, and parallel execution.
+category: guides
+area: workflows
+audience: [user]
+status: current
+sidebar:
+  order: 1
+---
+
+This guide explains how to create workflows that orchestrate multiple commands into automated pipelines. Read [Authoring Commands](/guides/authoring-commands/) first — workflows are built from commands.
+
+## What is a Workflow?
+
+A workflow is a **YAML file** that defines a directed acyclic graph (DAG) of commands to execute. Workflows enable:
+
+- **Multi-step automation**: Chain multiple AI agents together
+- **Parallel execution**: Independent nodes run concurrently
+- **Conditional branching**: Route to different paths based on node output
+- **Artifact passing**: Output from one node becomes input for downstream nodes
+- **Iterative loops**: Loop nodes repeat until a completion signal
+
+```yaml
+name: fix-github-issue
+description: Investigate and fix a GitHub issue end-to-end
+
+nodes:
+  - id: investigate
+    command: investigate-issue
+
+  - id: implement
+    command: implement-issue
+    depends_on: [investigate]
+    context: fresh
+```
+
+> **Using defaults as templates:** Anvil ships default workflows in `.anvil/workflows/defaults/` (12 bundled into the binary, plus additional ones available on disk in source builds). Browse them for real-world examples, then copy and modify:
+> ```bash
+> cp .anvil/workflows/defaults/anvil-fix-github-issue.yaml .anvil/workflows/my-fix-issue.yaml
+> ```
+> Same-named files in `.anvil/workflows/` override the bundled defaults.
+
+---
+
+## File Location
+
+Workflows live in `.anvil/workflows/` relative to the working directory:
+
+```
+.anvil/
+├── workflows/
+│   ├── my-workflow.yaml
+│   └── review/
+│       └── full-review.yaml    # Subdirectories work
+└── commands/
+    └── [commands used by workflows]
+```
+
+Anvil discovers workflows recursively - subdirectories are fine. If a workflow file fails to load (syntax error, validation failure), it's skipped and the error is reported via `/workflow list`.
+
+> **Global workflows:** For workflows that apply to every project, place them in `~/.anvil/workflows/`. Global workflows are overridden by same-named repo workflows. See [Global Workflows](/guides/global-workflows/).
+
+> **CLI vs Server:** The CLI reads workflow files from wherever you run it (sees uncommitted changes). The server reads from the workspace clone at `~/.anvil/workspaces/owner/repo/`, which only syncs from the remote before worktree creation. If you edit a workflow locally but don't push, the server won't see it.
+
+---
+
+## Workflow Structure
+
+Workflows use DAG-based execution with `nodes:`. Each node runs a command or inline prompt, declares dependencies, and supports conditional branching:
+
+```yaml
+name: classify-and-fix
+description: Classify issue type, then run the appropriate fix path
+
+nodes:
+  - id: classify
+    command: classify-issue
+    output_format:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [BUG, FEATURE]
+      required: [type]
+
+  - id: investigate
+    command: investigate-bug
+    depends_on: [classify]
+    when: "$classify.output.type == 'BUG'"
+
+  - id: plan
+    command: plan-feature
+    depends_on: [classify]
+    when: "$classify.output.type == 'FEATURE'"
+
+  - id: implement
+    command: implement-changes
+    depends_on: [investigate, plan]
+    trigger_rule: none_failed_min_one_success
+```
+
+Nodes without `depends_on` run immediately. Nodes in the same topological layer run concurrently via `Promise.allSettled`. Skipped nodes (failed `when:` condition or `trigger_rule`) propagate their skipped state to dependants.
+
+> **Note:** The `steps:` (sequential) format has been removed. All workflows use `nodes:` (DAG) format exclusively.
+
+---
+
+## DAG-Based Workflow Schema
+
+```yaml
+# Required
+name: workflow-name
+description: |
+  What this workflow does.
+
+# Optional workflow-level configuration
+provider: claude
+model: sonnet
+modelReasoningEffort: medium     # Codex only
+webSearchMode: live              # Codex only
+interactive: true                # Web only: run in foreground instead of background
+requires: [github]               # Optional: hard-block invocation unless the triggering
+                                 #   user has connected their GitHub identity. Enforced only
+                                 #   when per-user GitHub is enabled (App mode + TOKEN_ENCRYPTION_KEY);
+                                 #   a no-op for solo PAT / bot-only installs. The block fires
+                                 #   BEFORE any worktree/clone/AI cost. Currently the only
+                                 #   supported value is `github`; unknown values are rejected
+                                 #   at load time.
+worktree:                        # Optional: pin isolation behavior regardless of caller
+  enabled: false                 #   false = always run in the live checkout (CLI --no-worktree
+                                 #           and web both honor it). Use for read-only workflows
+                                 #           like triage/reporting. true = must use a worktree;
+                                 #           CLI --no-worktree hard-errors. Omit to let the
+                                 #           caller decide (current default = worktree).
+tags: [GitLab, Review]           # Optional: explicit Web UI filter tags. Overrides the
+                                 #   keyword-based tag inference. An empty list (`tags: []`)
+                                 #   suppresses inference and shows no tags. Omit to fall
+                                 #   back to inferred tags (the default).
+
+# Required for DAG-based
+nodes:
+  - id: classify                 # Unique node ID (used for dependency refs and $id.output)
+    command: classify-issue      # Loads from .anvil/commands/classify-issue.md
+    output_format:               # Optional: structured JSON output. SDK-enforced on Claude/Codex/OpenCode; best-effort (prompt + JSON extraction + repair) on Pi/Copilot. Parsed output is validated against the schema; a node that declares output_format but returns no schema-valid output FAILS.
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [BUG, FEATURE]
+      required: [type]
+
+  - id: investigate
+    command: investigate-bug
+    depends_on: [classify]       # Wait for classify to complete
+    when: "$classify.output.type == 'BUG'"  # Skip if condition is false
+
+  - id: plan
+    command: plan-feature
+    depends_on: [classify]
+    when: "$classify.output.type == 'FEATURE'"
+
+  - id: implement
+    command: implement-changes
+    depends_on: [investigate, plan]
+    trigger_rule: none_failed_min_one_success  # Run if at least one dep succeeded
+
+  - id: inline-node
+    prompt: "Summarize the changes made in $implement.output"  # Inline prompt (no command file)
+    depends_on: [implement]
+    context: fresh               # Force fresh session for this node
+    provider: claude             # Per-node provider override
+    model: haiku                 # Per-node model override
+    # hooks:                     # Optional: per-node SDK hook callbacks (Claude only) — see hooks guide
+    # mcp: .anvil/mcp/servers.json  # Optional: per-node MCP servers (Codex and Claude)
+    # skills: [remotion-best-practices]  # Optional: per-node skills (Claude only) — see skills guide
+```
+
+### Node Fields
+
+**Node types** — exactly one required per node (mutually exclusive):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `command` | string | Command name to load from `.anvil/commands/` |
+| `prompt` | string | Inline prompt string |
+| `bash` | string | Shell script (no AI). Stdout captured as `$nodeId.output`. Optional `timeout` (ms, default 120000) |
+| `script` | string | TypeScript/JavaScript (via `bun`) or Python (via `uv`) — inline code or named reference to `.anvil/scripts/`. Stdout captured as `$nodeId.output`. Requires `runtime: bun` or `runtime: uv`. Optional `deps` (uv only) and `timeout` (ms, default 120000). See [Script Nodes](/guides/script-nodes/) |
+| `loop` | object | Iterative AI prompt until completion signal. See [Loop Nodes](/guides/loop-nodes/) |
+| `approval` | object | Pauses workflow for human review. See [Approval Nodes](/guides/approval-nodes/) |
+| `cancel` | string | Terminates the workflow run with a reason string. Uses existing cancellation plumbing — in-flight parallel nodes are stopped |
+
+**Common fields** — apply to all node types:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `id` | string | required | Unique node identifier. Used in `depends_on`, `when:`, and `$id.output` substitution |
+| `depends_on` | string[] | `[]` | Node IDs that must complete before this node runs |
+| `when` | string | — | Condition expression. Node is skipped if false. See [Condition Syntax](#when-condition-syntax) |
+| `trigger_rule` | string | `all_success` | Join semantics when multiple upstreams exist |
+| `context` | `'fresh'` \| `'shared'` | — | `fresh` = new session; `shared` = inherit from prior node. Defaults to `fresh` for parallel layers, inherited for sequential |
+| `idle_timeout` | number | — | Kill node if idle for this many milliseconds |
+| `retry` | object | — | Per-node retry configuration. See [Retry Configuration](#retry-configuration) |
+| `always_run` | boolean | `false` | Opt out of resume caching: re-run this node on resume even if a prior run completed it. See [Opting Out of Resume Caching](#opting-out-of-resume-caching) |
+| `output_type` | string | — | Semantic label for this node's output (e.g. `'plan'`, `'findings'`, `'code'`). When set, the executor writes `$ARTIFACTS_DIR/nodes/<id>.md` + `<id>.meta.json` after the node completes (best-effort) so later nodes and runs can locate output by type instead of guessing filenames. See [The Artifact Chain](#the-artifact-chain) |
+
+**AI node options** — apply to `command` and `prompt` nodes:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `provider` | string | inherited | Per-node provider override (any registered provider, e.g. `'claude'`, `'codex'`) |
+| `model` | string | inherited | Per-node model override |
+| `output_format` | object | — | JSON Schema for structured output. SDK-enforced on Claude/Codex/OpenCode; best-effort on Pi/Copilot (schema appended to prompt, JSON extracted + repaired). The parsed output is validated against the schema (every provider); a node that declares `output_format` but returns no schema-valid output **fails** rather than degrading silently. |
+| `allowed_tools` | string[] | — | Whitelist of built-in tools. `[]` = no tools. Claude only |
+| `denied_tools` | string[] | — | Tools to remove. Applied after `allowed_tools`. Claude only |
+| `hooks` | object | — | Per-node SDK hook callbacks. Claude only. See [Hooks](/guides/hooks/) |
+| `mcp` | string | — | Path to MCP server config JSON file. Codex and Claude. See [MCP Servers](/guides/mcp-servers/) |
+| `skills` | string[] | — | Skills to preload. Claude only. See [Skills](/guides/skills/) |
+| `agents` | object | — | Inline sub-agent definitions keyed by kebab-case ID. Claude only. See [Inline sub-agents](#inline-sub-agents) |
+| `effort` | `'low'`\|`'medium'`\|`'high'`\|`'max'` | — | Reasoning depth. Claude only. Also settable at workflow level |
+| `thinking` | string \| object | — | Thinking mode: `'adaptive'`, `'disabled'`, or `{type:'enabled', budgetTokens:N}`. Claude only. Also settable at workflow level |
+| `maxBudgetUsd` | number | — | USD cost cap; node fails if exceeded. Claude only. Per-node only |
+| `systemPrompt` | string | — | Override the default `claude_code` system prompt for this node. Claude only. Per-node only |
+| `fallbackModel` | string | — | Model to use if primary model fails. Claude only. Also settable at workflow level |
+| `betas` | string[] | — | SDK beta feature flags (e.g., `'context-1m-2025-08-07'`). Claude only. Also settable at workflow level |
+| `sandbox` | object | — | OS-level filesystem/network restrictions for the Claude subprocess. Claude only. Also settable at workflow level |
+
+### Claude SDK Advanced Options
+
+These fields map directly to Claude Agent SDK options. All are Claude-only — Codex nodes emit a warning and ignore them. They can be set **per-node** or at the **workflow level** as defaults (per-node takes precedence). `maxBudgetUsd` and `systemPrompt` are per-node only.
+
+**effort** — reasoning depth:
+
+```yaml
+- id: thorough-review
+  command: review
+  effort: high   # 'low' | 'medium' | 'high' | 'max'
+```
+
+**thinking** — extended thinking mode (string shorthand or object form):
+
+```yaml
+- id: deep-analysis
+  command: analyze
+  thinking: adaptive              # 'adaptive' | 'disabled'
+  # thinking: { type: enabled, budgetTokens: 8000 }  # object form
+```
+
+**maxBudgetUsd** — per-node USD cost cap (node fails with error if exceeded):
+
+```yaml
+- id: expensive-step
+  command: generate
+  maxBudgetUsd: 2.50
+```
+
+**systemPrompt** — override the default `claude_code` system prompt:
+
+```yaml
+- id: security-review
+  prompt: "Review this code for vulnerabilities"
+  systemPrompt: "You are a security expert specializing in TypeScript. Focus only on security issues."
+```
+
+**fallbackModel** — use a different model if the primary fails:
+
+```yaml
+- id: implement
+  command: implement
+  model: claude-opus-4-5
+  fallbackModel: claude-sonnet-4-6
+```
+
+**betas** — SDK beta feature flags:
+
+```yaml
+- id: long-context-node
+  command: summarize
+  betas: ['context-1m-2025-08-07']
+```
+
+**sandbox** — OS-level filesystem/network restrictions (layers on top of worktree isolation):
+
+```yaml
+- id: untrusted-code-analysis
+  command: analyze-external
+  sandbox:
+    enabled: true
+    network:
+      allowedDomains: []
+      allowManagedDomainsOnly: true
+    filesystem:
+      denyWrite: ['/etc', '/usr']
+```
+
+**Workflow-level defaults** (inherited by all Claude nodes unless overridden per-node):
+
+```yaml
+name: my-workflow
+effort: high         # All Claude nodes use high effort by default
+thinking: adaptive   # All Claude nodes use adaptive thinking
+fallbackModel: claude-haiku-4-5-20251001
+betas: ['context-1m-2025-08-07']
+sandbox:
+  enabled: true
+
+nodes:
+  - id: step1
+    command: step1
+    # Inherits workflow-level effort, thinking, fallbackModel, betas, sandbox
+
+  - id: step2
+    command: step2
+    effort: low      # Per-node override — ignores workflow-level effort
+```
+
+### `trigger_rule` Values
+
+| Value | Behavior |
+|-------|----------|
+| `all_success` | Run only if all upstream deps completed successfully (default) |
+| `one_success` | Run if at least one upstream dep completed successfully |
+| `none_failed_min_one_success` | Run if no deps failed AND at least one succeeded (skipped deps are ok) |
+| `all_done` | Run when all deps are in a terminal state (completed, failed, or skipped) |
+
+### `when:` Condition Syntax
+
+Conditions gate whether a node runs based on upstream node outputs.
+
+**String operators** (value compared as string):
+```yaml
+when: "$nodeId.output == 'VALUE'"
+when: "$nodeId.output != 'VALUE'"
+when: "$nodeId.output.field == 'VALUE'"    # JSON dot notation for output_format nodes
+```
+
+**Numeric operators** (both sides must parse as numbers; fail-closed if not):
+```yaml
+when: "$nodeId.output > '80'"
+when: "$nodeId.output >= '0.9'"
+when: "$nodeId.output < '100'"
+when: "$nodeId.output <= '5'"
+when: "$nodeId.output.score >= '0.9'"      # dot notation + numeric comparison
+```
+
+**Compound expressions** (`&&` binds tighter than `||`):
+```yaml
+when: "$a.output == 'X' && $b.output != 'Y'"
+when: "$a.output == 'X' || $b.output == 'Y'"
+when: "$score.output > '80' && $flag.output == 'true'"
+# Precedence: (A && B) || C
+when: "$a.output == 'X' && $b.output == 'Y' || $c.output == 'Z'"
+```
+
+- `$nodeId.output` references the full output string of a completed node
+- `$nodeId.output.field` accesses a JSON field (for `output_format` nodes)
+- Invalid or unparseable expressions default to `false` (fail-closed — node is skipped with a warning)
+- Numeric operators fail-closed if either side is not a finite number
+- Parentheses are not supported — use standard AND/OR precedence to structure conditions
+- Skipped nodes propagate their skipped state to dependants
+
+### `$node_id.output` Substitution
+
+In node prompts and commands, reference the output of any upstream node:
+
+```yaml
+nodes:
+  - id: classify
+    command: classify-issue
+
+  - id: fix
+    command: implement-fix
+    depends_on: [classify]
+    # The command file can use $classify.output or $classify.output.field
+```
+
+Variable substitution order:
+1. Standard variables (`$WORKFLOW_ID`, `$USER_MESSAGE`, `$ARTIFACTS_DIR`, etc.)
+2. Node output references (`$nodeId.output`, `$nodeId.output.field`)
+
+:::caution[Double-quoting `$node.output` in `bash:` nodes is a silent footgun]
+In `bash:` nodes, `$nodeId.output` and `$nodeId.output.field` are injected pre-quoted by Anvil. For small outputs, values are **single-quoted inline** — the quoting is already provided by the substitution. For outputs exceeding 32 KB, Anvil spills to a temp file and substitutes `$(cat '/tmp/path')` instead. Wrapping the substitution in double quotes breaks the **small (inline) case**: `var="$n.output"` becomes `var="'value'"`, embedding the literal single-quotes as part of the value. (For the large `$(cat ...)` case, double-quoting is harmless — `var="$(cat ...)"` is correct bash — but you can't know the output's size at author time, so the rule is unconditional: never double-quote.)
+
+```bash
+# WRONG — produces status="'ok'" (single quotes become part of the value)
+status="$emit.output.status"
+[ "$status" = "ok" ]   # → always false
+
+# CORRECT — leave unquoted; bash assigns: status=ok
+status=$emit.output.status
+[ "$status" = "ok" ]   # → true
+```
+
+**Rule:** use `var=$node.output.field`, never `var="$node.output.field"`. This applies whether the output is small (single-quoted inline) or large (`$(cat ...)`). Numeric and boolean fields are injected raw (without quotes), so double-quoting accidentally "works" for them — making the bug intermittent and hard to spot.
+:::
+
+### `output_format` for Structured JSON
+
+Use `output_format` to enforce JSON output from an AI node. For Claude, the schema is passed via the SDK's `outputFormat` option and `structured_output` is used directly. For Codex (v0.116.0+), the schema is passed via `TurnOptions.outputSchema` and the agent's inline JSON response is used. Both ensure clean JSON for `when:` conditions and `$nodeId.output` substitution:
+
+> **Codex strict-mode normalization.** OpenAI's Structured Outputs validator rejects any object schema that doesn't set `additionalProperties: false`. Anvil normalizes Codex schemas before sending them, injecting `additionalProperties: false` on every object node automatically — so write portable schemas and you won't notice. One caveat: an open-record `additionalProperties: { type: 'string' }` (or `additionalProperties: true`) is **replaced** with `false`, closing the object. OpenAI would reject the open form regardless, but the rewrite is logged (`codex.output_format_open_record_closed`) so it isn't silent. Open-record maps aren't supported for Codex structured output.
+
+```yaml
+nodes:
+  - id: classify
+    command: classify-issue
+    output_format:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [BUG, FEATURE]
+        severity:
+          type: string
+          enum: [low, medium, high]
+      required: [type]
+```
+
+- The output is captured as a JSON string and available via `$classify.output` (full JSON) or `$classify.output.type` (field access)
+- Use `output_format` when downstream nodes need to branch on specific values via `when:`
+- **Validated + reask + fail-fast.** The parsed output is validated against your schema for *every* provider (a net for refusals / `max_tokens` truncation that bypass even SDK enforcement). On a miss, best-effort providers (Pi/Copilot) re-ask up to 3× with the schema errors appended; enforced providers fail immediately. A node that declares `output_format` but still has no schema-valid output **fails** — it no longer completes-with-prose and silently feeds `''` downstream.
+- **Field access is strict.** `$classify.output.type` resolves only when `type` is in the schema. A reference to a field **not declared** in the schema fails the consuming node (a typo no longer silently becomes `''`); a field you declared **optional** but the model omitted resolves to `''`. For schemaless `bash`/`script` nodes, a `.field` ref requires the output to be JSON containing that key — otherwise the consuming node fails, so always emit every key you reference (or use whole-text `$node.output`).
+
+### `allowed_tools` and `denied_tools` for Tool Restrictions
+
+Restrict which built-in tools a node can use without relying on prompt instructions. Restrictions are enforced at the Claude SDK level.
+
+```yaml
+nodes:
+  - id: review
+    command: code-review
+    allowed_tools: [Read, Grep, Glob]   # whitelist — only these tools available
+
+  - id: implement
+    command: implement-feature
+    denied_tools: [WebSearch, WebFetch] # blacklist — remove these tools
+
+  - id: mcp-only
+    command: mcp-command
+    allowed_tools: []                   # empty list = disable all built-in tools
+```
+
+- `allowed_tools: []` disables all built-in tools (useful for MCP-only nodes). Use the `mcp` field on a node to attach per-node MCP servers — see [Node Fields](#node-fields)
+- If both are set, `denied_tools` is applied after `allowed_tools`
+- `undefined` (field absent) and `[]` have different semantics — absent means use default tool set, `[]` means no tools
+- Claude only — Codex nodes/steps emit a warning and continue (Codex doesn't support per-call tool restrictions)
+
+### Inline sub-agents
+
+Define Claude sub-agents directly in the workflow YAML, without authoring `.claude/agents/*.md` files. The main agent can spawn them in parallel via the `Task` tool — useful for map-reduce patterns where a cheap model (e.g. Haiku) briefs items and a stronger model reduces.
+
+```yaml
+nodes:
+  - id: triage
+    prompt: |
+      Fetch open issues via `gh issue list ...`. For each issue, spawn the
+      brief-gen sub-agent in parallel (one message, multiple Task tool calls)
+      to produce a 2-3 sentence brief. Then cluster briefs for duplicates.
+    model: sonnet
+    allowed_tools: [Bash, Read, Write, Task]
+    agents:
+      brief-gen:
+        description: Summarises a single GitHub issue in 2-3 sentences
+        prompt: |
+          You are concise. Read the issue provided in the caller's prompt.
+          Return JSON { summary, primarySymptom, affectedArea }.
+        model: haiku
+        tools: [Bash, Read]
+```
+
+Keys:
+
+- Agent IDs must be **kebab-case** (`^[a-z0-9]+(-[a-z0-9]+)*$`)
+- Each definition requires `description` and `prompt`; `model`, `tools`, `disallowedTools`, `skills`, and `maxTurns` are optional
+- Map is merged with any SDK-level agents and with the internal `dag-node-skills` wrapper created by `skills:` — user-defined agents win on ID collision (a warning is logged when this happens)
+- Claude only. Codex and community providers that don't support inline agents emit a warning and ignore the field
+
+**When to use `agents:` vs `.claude/agents/*.md` files:**
+
+- **`agents:` (inline)** — use when the sub-agent is specific to ONE workflow's needs. Keeps the workflow self-contained in a single YAML file; travels cleanly in PRs and forks.
+- **`.claude/agents/*.md` (on-disk)** — use when the sub-agent is shared across multiple workflows OR the whole project (for example, a `triage-agent` used by several maintenance workflows). On-disk agents live outside workflow YAMLs and are picked up automatically by the Claude Agent SDK.
+
+Both sources coexist — inline agents and on-disk agents are both available to `Task(subagent_type=...)` at runtime.
+
+---
+
+## Retry Configuration
+
+Every node automatically retries on **transient** errors (SDK subprocess crashes, rate limits, network timeouts) using a default configuration: **2 retries** (3 total attempts), **3 s base delay** with exponential backoff. You will see a platform notification before each retry attempt.
+
+To customise, add a `retry:` block:
+
+```yaml
+nodes:
+  - id: flaky-node
+    command: flaky-command
+    retry:
+      max_attempts: 3       # 3 retries = 4 total attempts
+      delay_ms: 5000
+      on_error: transient
+
+  - id: aggressive-retry
+    prompt: "Summarise the output"
+    retry:
+      max_attempts: 4       # 4 retries = 5 total attempts
+      on_error: all         # Retry even non-transient errors (use with caution)
+```
+
+### Retry Fields
+
+| Field | Type | Default | Constraints | Description |
+|-------|------|---------|-------------|-------------|
+| `max_attempts` | number | `2` | 1–5 | Number of retry attempts (not including the initial attempt). `1` = one retry (2 total attempts) |
+| `delay_ms` | number | `3000` | 1000–60000 | Base delay in ms before the first retry. Doubles each attempt (exponential backoff) |
+| `on_error` | `'transient'` \| `'all'` | `'transient'` | — | Which errors trigger a retry. `'transient'` = SDK crashes, rate limits, network timeouts only. `'all'` = any error including unknown errors (FATAL errors such as auth failures are never retried regardless) |
+
+### Error Classification
+
+Anvil classifies errors into three buckets before deciding whether to retry:
+
+| Class | Examples | Retried by default? |
+|-------|----------|---------------------|
+| **FATAL** | Auth failure, permission denied, credit balance exhausted | Never (even with `on_error: all`) |
+| **TRANSIENT** | Process crashed (`exited with code`), rate limit, network timeout | Yes |
+| **UNKNOWN** | Unrecognised error messages | No (unless `on_error: all`) |
+
+### Retry Notifications
+
+Before each retry the platform receives a message like:
+
+```
+Node `node-id` failed with transient error (attempt 1/3). Retrying in 3s...
+```
+
+### Two-Layer Retry Stack
+
+Anvil uses two independent retry layers:
+
+```
+SDK subprocess retry (claude.ts)  — 3 total attempts, 2 s base backoff
+    ↓ only if all SDK retries exhausted
+Node retry (dag-executor)  — default 2 retries, 3 s base backoff
+    ↓ only if all node retries exhausted
+Workflow fails → user opts in to resume on next invocation
+```
+
+This means a single transient crash may trigger up to **3 SDK retries** before a single node retry attempt is consumed.
+
+> **DAG resume**: For `nodes:` (DAG) workflows, resume is opt-in — pass `--resume` to `anvil workflow run`, run `anvil workflow resume <id>`, or use the web UI resume button. Plain `anvil workflow run <name>` always starts a fresh run. See [DAG Resume on Failure](#dag-resume-on-failure) below.
+
+---
+
+## DAG Resume on Failure
+
+When a `nodes:` (DAG) workflow fails, the prior run stays in the database as a candidate for resume. Resume is **explicit**: you opt in by flag or button.
+
+**How to resume:**
+
+- **CLI**: `anvil workflow run <name> --resume` resumes the most recent failed run for `(workflow_name, cwd)`. Or `anvil workflow resume <run-id>` to target a specific run.
+- **Chat**: Approving or rejecting a _paused_ workflow auto-resumes from where it left off (the platform already knows the run id). For a prior **failed** (or stale `running`) run, `/workflow run <name>` does **not** silently resume — it shows a prompt offering three choices: resume it, abandon it and run fresh, or start fresh anyway. Pass `--force` to skip the prompt: `/workflow run <name> --force <args>` always starts a fresh run.
+- **Web UI**: Resume button on the workflow card.
+
+**What happens on resume:**
+
+1. The CLI / orchestrator looks up the resumable run, loads its `node_completed` events to determine which nodes finished successfully, and transitions the row back to `running`.
+2. Completed nodes are skipped; only failed and not-yet-run nodes are executed.
+3. You receive a platform message like: `Resuming workflow — skipping 3 already-completed node(s).`
+
+> **Why opt-in?** Earlier versions silently auto-resumed on plain `anvil workflow run`, which caused state from prior failed runs (e.g. cached node outputs with stale inputs) to bleed into new invocations of the same workflow at the same path. See #1392 for the bug; now resume is always a user-driven decision.
+
+**Crashed servers / orphaned runs**: Anvil does **not** auto-fail `running` rows on server startup — that would kill workflows actively executing in another process (CLI, adapter). If a server crash leaves a row stuck as `running`, it remains visible in the dashboard (the Dashboard nav tab shows a count of running workflows). Transition it to a terminal status explicitly:
+
+- **Web UI**: click the Abandon or Cancel button on the workflow card. Abandon marks the run `cancelled` and keeps completed-node history. Cancel also terminates any in-flight subprocess.
+- **CLI**: `anvil workflow abandon <run-id>` (equivalent to the dashboard Abandon button). Run IDs are listed by `anvil workflow status`.
+
+Once the row reaches a terminal status, you can resume it explicitly via the paths above. Plain `anvil workflow run` never resumes implicitly.
+
+> Not to be confused with `anvil workflow cleanup [days]`, which **deletes** old terminal runs (`completed`/`failed`/`cancelled`) from the database for disk hygiene. It does not transition `running` rows.
+
+**Known limitation**: AI session context from prior nodes is not restored. If a downstream node relies on in-context knowledge from a prior run's session (rather than artifacts), it may need to re-read those artifacts explicitly.
+
+**Fresh start**: If zero nodes completed in the prior run, Anvil starts fresh (no nodes to skip).
+
+### Opting Out of Resume Caching
+
+By default, resume skips any node that completed successfully in the prior run and feeds its cached output to downstream consumers. That's the right behavior when a node's exit code captures the validity of its output (e.g. AI prompts, scripts that produce structured stdout).
+
+It's the wrong behavior when a node's success status doesn't capture output validity — typically a producer whose exit code reports the side effect (a file written, a service called) but whose downstream consumer parses the side effect's contents on every run. If the producer succeeded but wrote garbage, resume will replay the cached "success" forever without ever re-executing the producer.
+
+Set `always_run: true` on the node to force re-execution on resume, even when the prior run marked it completed:
+
+```yaml
+nodes:
+  - id: fetch-data
+    bash: ./scripts/download.sh > $ARTIFACTS_DIR/data.json
+    always_run: true        # Re-fetch on resume; download.sh exit code doesn't validate the JSON
+
+  - id: process-data
+    prompt: "Summarize $ARTIFACTS_DIR/data.json"
+    depends_on: [fetch-data]
+```
+
+On resume, `fetch-data` re-runs regardless of prior success, so `process-data` reads a freshly produced file. Normal cached nodes in the same run are still skipped — `always_run` is per-node.
+
+---
+
+## Persistent Sessions Across Re-Runs
+
+Different from resume: when you invoke the same workflow *again* with a follow-up prompt, every AI node normally starts fresh and pays to re-establish context. Set `persist_session: true` on a node to make its provider session ID stick across runs, so subsequent invocations continue the prior conversation for that role.
+
+```yaml
+name: feature-dev
+description: plan → implement → review with cross-run memory
+provider: claude
+nodes:
+  - id: planner
+    prompt: "Plan the implementation for: $ARGUMENTS"
+    persist_session: true
+
+  - id: implementer
+    depends_on: [planner]
+    prompt: "Implement: $planner.output"
+    persist_session: true
+
+  - id: reviewer
+    depends_on: [implementer]
+    prompt: "Review the implementation against the plan."
+    persist_session: true
+```
+
+Run it once with `"add OAuth login"`, again with `"now add MFA"` — each role continues its prior conversation. The reviewer remembers what it already flagged; the planner remembers it chose Google OAuth.
+
+### Scope
+
+Sessions are keyed by `(workflow_name, node_id, scope_key, provider)`. The default scope is the current conversation's UUID — so each chat thread has its own per-node memory.
+
+Chat and REST reuse a stable conversation across turns, so resume works automatically. The **CLI is different**: each `anvil workflow run` mints a fresh conversation UUID, so persisted sessions won't resume between separate invocations unless you pass the same `--conversation-id <id>` on each run.
+
+### Workflow-level default
+
+```yaml
+persist_sessions: true   # All AI nodes default to persist_session: true
+nodes:
+  - id: validator
+    persist_session: false   # Opt this node back out
+```
+
+### Capability requirement
+
+The resolved provider must declare `sessionResume: true` in its capabilities. The loader rejects workflows that set `persist_session: true` against a non-resume-capable provider at the explicit-provider level; the executor catches the implicit-default-provider case at runtime.
+
+### Supported node types
+
+`persist_session` applies to `command:` and `prompt:` nodes only. Other node types skip it:
+
+- **`bash:` / `script:`** — never invoke a provider, so the field is meaningless. Setting it produces a warning at load time and is ignored.
+- **`approval:` / `cancel:`** — same: no AI call, no session to persist.
+- **`loop:`** — has its own per-iteration session threading. Cross-run persistence for loops isn't wired in this release; the field is warn-and-dropped on loop nodes. Use a `prompt:` node if you need cross-run memory.
+
+When a workflow-level `persist_sessions: true` is combined with any of these node types, the capability check and persistence logic both skip the non-applicable nodes — no false validation errors, no silent runtime mistakes.
+
+### `context: fresh` overrides
+
+A node with `context: fresh` skips persistence (and in-run threading). The explicit "always fresh" intent wins over `persist_session`.
+
+### Clearing memory
+
+| Surface | Command |
+| --- | --- |
+| Chat | `/workflow reset-sessions <workflow-name> [<node-id>]` (scoped to current conversation) |
+| CLI | `anvil workflow reset-sessions <workflow-name> [--scope <key>] [--node <id>] [--yes]` |
+| REST | `DELETE /api/workflows/{name}/node-sessions?scope=<key>&node=<id>` |
+
+Cross-scope resets are guarded so a dropped scope can't silently wipe every conversation's memory: the CLI requires `--yes` when `--scope` is omitted, and REST requires `?confirm=all-scopes`. Chat always scopes automatically to the current conversation.
+
+### Cost caveat
+
+Persistent sessions on Codex/Pi replay the full rollout on each turn, so token cost grows with iteration depth. Claude auto-compacts. If a workflow's persistent sessions get expensive, reset them and start fresh.
+
+### When a resume can't be restored
+
+If the stored session is gone (Codex thread expired, Pi JSONL missing or moved, OpenCode session not found), the provider can't resume it. Rather than silently pretending nothing was lost, the provider starts a **fresh** session for that node and the executor surfaces a visible warning:
+
+> ⚠️ Node `planner`: could not resume the prior session — continued with a fresh session, so the earlier context was not restored.
+
+The node still completes on that fresh session, and its new session id is persisted so the *next* run continues from it. The node is **not** re-run — the fresh session is already a clean start, so re-running would only repeat it. Expect this only for `persist_session` nodes whose prior session became unavailable; warm resumes and first-time runs are unaffected.
+
+### Distinct from `AgentRequestOptions.persistSession`
+
+The Claude Agent SDK also has a `persistSession` flag controlling whether the SDK writes its session transcript to disk. That is a *different* concept — local file persistence inside the SDK. This `persist_session:` field is about Anvil's database-stored cross-run session ID for workflow nodes. The two operate at different layers and don't conflict.
+
+---
+
+## The Artifact Chain
+
+Workflows work because **artifacts pass data between nodes**:
+
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│ Node 1          │     │ Node 2          │     │ Node 3          │
+│ investigate     │     │ implement       │     │ create-pr       │
+│                 │     │                 │     │                 │
+│ Reads: input    │     │ Reads: artifact │     │ Reads: git diff │
+│ Writes: artifact│────▶│ Writes: code    │────▶│ Writes: PR      │
+└─────────────────┘     └─────────────────┘     └─────────────────┘
+         │                       │
+         ▼                       ▼
+  $ARTIFACTS_DIR/         src/feature.ts
+  issues/issue-123.md     src/feature.test.ts
+```
+
+### Designing Artifact Flow
+
+When creating a workflow, plan the artifact chain:
+
+| Node | Reads | Writes |
+|------|-------|--------|
+| `investigate-issue` | GitHub issue via `gh` | `$ARTIFACTS_DIR/issues/issue-{n}.md` |
+| `implement-issue` | Artifact from `investigate-issue` | Code files, tests |
+| `create-pr` | Git diff | GitHub PR |
+
+Each command must know:
+- Where to find its input
+- Where to write its output
+- What format to use
+
+### Typed Artifacts (`output_type`)
+
+The chain above relies on each node knowing the exact filename its upstream wrote. To locate an output **by type** instead of by guessed filename, declare `output_type` on a node:
+
+```yaml
+nodes:
+  - id: planner
+    command: plan-feature
+    output_type: plan        # tag this node's output
+```
+
+When a node sets `output_type`, the executor writes a typed sidecar after the node completes:
+
+- `$ARTIFACTS_DIR/nodes/<id>.md` — the node's output text
+- `$ARTIFACTS_DIR/nodes/<id>.meta.json` — metadata (`outputType`, `runId`, `producedAt`, `size`, and `sessionId` when available)
+
+This works on **every** node type (`bash`/`script` produce typed outputs too, just without a `sessionId`). The write is **best-effort** — if it fails, the node still succeeds and a warning is logged; the typed sidecar may simply be absent. `output_type` is an open set of labels (`plan`, `findings`, `code`, `summary`, …) — pick a convention and keep casing consistent, since lookup is case-sensitive.
+
+---
+
+## Model Configuration
+
+Workflows can configure AI models and provider-specific options at the workflow level.
+
+### Configuration Priority
+
+Model and options are resolved in this order:
+
+1. **Workflow-level** - Explicit settings in the workflow YAML
+2. **Config defaults** - `assistants.*` in `.anvil/config.yaml`
+3. **SDK defaults** - Built-in defaults from Claude/Codex SDKs
+
+For the Claude SDK advanced options (`effort`, `thinking`, `fallbackModel`, `betas`, `sandbox`) a per-node value sits above the workflow level: a node uses its own value if set, otherwise it inherits the workflow-level default. See [Claude SDK Advanced Options](#claude-sdk-advanced-options).
+
+### Provider and Model
+
+```yaml
+name: my-workflow
+provider: claude     # Any registered provider (default: from config)
+model: medium        # Tier, alias, or literal model override
+```
+
+### Portable Model References
+
+`model:` accepts three shapes:
+
+- `small`, `medium`, or `large` - portable tier refs resolved from built-in defaults plus `tiers:` in `~/.anvil/config.yaml` and `.anvil/config.yaml`
+- `@name` - custom aliases from `aliases:`; use these for project workflows, not bundled or global workflows, because aliases are project-specific
+- Any other string - a literal model id passed through to the resolved provider's SDK
+
+Tier and alias refs resolve to a provider, model, and optional provider-specific options such as `effort` or `thinking`. If a workflow or node sets both `provider:` and a model ref that resolves to a different provider, Anvil warns and uses the provider from the resolved preset. Literal model strings keep the normal provider chain (`node.provider ?? workflow.provider ?? config.assistant`).
+
+Anvil does not keep an internal allow-list for literal model ids because vendor SDKs ship new models faster than this doc can. The provider's API decides whether a literal string is valid at request time.
+
+Common shapes you'll see in practice:
+
+- **Claude (Anthropic):** family aliases (`sonnet`, `opus`, `haiku`), full model IDs (`claude-opus-4-7`, `claude-3-5-sonnet-20241022`), context-window suffixed forms (`opus[1m]`, `claude-opus-4-7[1m]`), or `inherit` to reuse the previous session's model.
+- **Codex (OpenAI):** any OpenAI model ID — `gpt-5.3-codex`, `gpt-5.2`, `o5-pro`, etc.
+- **Pi (community):** `<backend>/<model-id>` refs — e.g. `google/gemini-2.5-pro`, `openrouter/qwen/qwen3-coder`.
+- **Copilot (community):** GitHub Copilot model names — e.g. `gpt-5`, `gpt-5-mini`, `claude-sonnet-4.5`, or `auto`.
+
+If the SDK rejects a literal string at request time, the node fails loudly with the SDK's error message. Use portable tiers for cross-provider workflow defaults, and pair provider-specific literal strings with an explicit `provider:` on the workflow or node.
+
+### Codex-Specific Options
+
+```yaml
+name: my-workflow
+provider: codex
+model: gpt-5.3-codex
+modelReasoningEffort: medium    # 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+webSearchMode: live             # 'disabled' | 'cached' | 'live'
+additionalDirectories:
+  - /absolute/path/to/other/repo
+  - /path/to/shared/library
+```
+
+**Model reasoning effort:**
+- `minimal`, `low` - Fast, cheaper
+- `medium` - Balanced (default)
+- `high`, `xhigh` - More thorough, expensive
+
+**Web search mode:**
+- `disabled` - No web access (default)
+- `cached` - Use cached search results
+- `live` - Real-time web search
+
+**Additional directories:**
+- Codex can access files outside the codebase
+- Useful for shared libraries, documentation repos
+- Must be absolute paths
+
+### Web Execution Mode
+
+By default, workflows started from the **Web UI** run in the background — execution is
+dispatched to an internal worker conversation and results appear only in the workflow run
+log, not in the chat window.
+
+Set `interactive: true` to run the workflow in the **foreground** (same as CLI, Slack,
+Telegram, and GitHub): all AI output and approval gate messages stream directly to the
+user's chat window.
+
+```yaml
+name: my-interactive-workflow
+interactive: true   # Web UI: foreground execution (output visible in chat)
+
+nodes:
+  - id: plan
+    prompt: "Create a plan for $USER_MESSAGE"
+  - id: review-gate
+    approval:
+      message: "Does this plan look good?"
+    depends_on: [plan]
+  - id: implement
+    command: implement
+    depends_on: [review-gate]
+```
+
+**When to use `interactive: true`:**
+- Workflows with **approval nodes** — users must see the AI output and respond inline
+- Workflows with **interactive loop nodes** (`loop.interactive: true`) — the loop gate pause requires foreground execution to deliver the gate message and run ID to the user
+- Multi-turn workflows where the user needs to provide feedback at each step
+- Any workflow where the response must appear in the user's active chat thread
+
+**Platforms:** `interactive` only affects the web platform. CLI, Slack, Telegram, and
+GitHub always run workflows in foreground mode regardless of this setting.
+
+### Provider Validation
+
+Workflows are validated at load time for **provider identity only**:
+- Both the workflow-level `provider:` and any per-node `provider:` overrides must name a registered provider (`claude`, `codex`, `pi`, `copilot`).
+- Validation errors are shown in `/workflow list`.
+
+Example validation error:
+```
+Unknown provider 'claud'. Registered: claude, codex, pi, copilot
+```
+
+Tier and alias model refs are resolved during workflow validation so malformed `tiers:` / `aliases:` config, unknown aliases, and missing tier presets fail before execution. Literal model strings are not API-validated by Anvil; they are forwarded to the SDK and validated by the upstream API at request time.
+
+### Resource Validation (CLI)
+
+To validate that all referenced command files, MCP config files, and skill directories exist on disk, run:
+
+```bash
+anvil validate workflows <name>
+```
+
+This checks resource resolution beyond what load-time validation covers. Bundled and global workflows also reject `@custom` model aliases because those refs are not portable across projects. Use `--json` for machine-readable output. See the [CLI Reference](/reference/cli/) for details.
+
+### Example: Config Defaults + Workflow Override
+
+**`.anvil/config.yaml`:**
+```yaml
+assistants:
+  claude:
+    model: haiku  # Fast model for most tasks
+  codex:
+    model: gpt-5.3-codex
+    modelReasoningEffort: low
+    webSearchMode: disabled
+```
+
+**Workflow with override:**
+```yaml
+name: complex-analysis
+description: Deep code analysis requiring powerful model
+provider: claude
+model: opus  # Override config default (haiku) for this workflow
+
+nodes:
+  - id: analyze
+    command: analyze-architecture
+
+  - id: report
+    command: generate-report
+    depends_on: [analyze]
+    context: fresh
+```
+
+The workflow uses `opus` instead of the config default `haiku`, but other settings inherit from config.
+
+---
+
+## Workflow Description Best Practices
+
+Write descriptions that help with routing and user understanding:
+
+```yaml
+description: |
+  Investigate and fix a GitHub issue end-to-end.
+
+  **Use when**: User provides a GitHub issue number or URL
+  **NOT for**: Feature requests, refactoring, documentation
+
+  **Produces**:
+  - Investigation artifact
+  - Code changes
+  - Pull request linked to issue
+
+  **Steps**:
+  1. Investigate root cause
+  2. Implement fix with tests
+  3. Create PR
+```
+
+Good descriptions include:
+- What the workflow does
+- When to use it (and when NOT to)
+- What it produces
+- High-level steps
+
+---
+
+## Variable Substitution
+
+All workflows support variable substitution in prompts and commands. The most commonly used:
+
+| Variable | Description |
+|----------|-------------|
+| `$ARGUMENTS` / `$USER_MESSAGE` | The user's input message that triggered the workflow |
+| `$WORKFLOW_ID` | Unique ID for this workflow run |
+| `$ARTIFACTS_DIR` | Pre-created artifacts directory for this workflow run |
+| `$BASE_BRANCH` | Base branch (auto-detected or configured) |
+| `$DOCS_DIR` | Documentation directory path (default: `docs/`) |
+| `$CONTEXT` | GitHub issue/PR context (if available) |
+| `$nodeId.output` | Output of a completed upstream node |
+| `$nodeId.output.field` | JSON field from a structured upstream node output |
+
+See the [Variable Reference](/reference/variables/) for the complete list, including `$LOOP_USER_INPUT`, `$REJECTION_REASON`, positional arguments, substitution order, and context variable behavior.
+
+Example:
+```yaml
+prompt: |
+  Workflow: $WORKFLOW_ID
+  Original request: $USER_MESSAGE
+
+  GitHub context:
+  $CONTEXT
+
+  [Instructions...]
+```
+
+---
+
+## Example Workflows
+
+### Quick Fix
+
+```yaml
+name: quick-fix
+description: |
+  Fast bug fix without full investigation.
+  Use when: Simple, obvious bugs.
+
+nodes:
+  - id: fix
+    command: analyze-and-fix
+
+  - id: pr
+    command: create-pr
+    depends_on: [fix]
+    context: fresh
+```
+
+### Investigation Pipeline
+
+```yaml
+name: fix-github-issue
+description: |
+  Full investigation and fix for GitHub issues.
+  Use when: User provides issue number/URL
+
+nodes:
+  - id: investigate
+    command: investigate-issue
+
+  - id: implement
+    command: implement-issue
+    depends_on: [investigate]
+    context: fresh
+```
+
+### Parallel Review
+
+```yaml
+name: comprehensive-pr-review
+description: |
+  Multi-agent PR review covering code, comments, tests, and security.
+
+nodes:
+  - id: scope
+    command: create-review-scope
+
+  - id: code-review
+    command: code-review-agent
+    depends_on: [scope]
+    context: fresh
+
+  - id: comment-review
+    command: comment-quality-agent
+    depends_on: [scope]
+    context: fresh
+
+  - id: test-review
+    command: test-coverage-agent
+    depends_on: [scope]
+    context: fresh
+
+  - id: security-review
+    command: security-review-agent
+    depends_on: [scope]
+    context: fresh
+
+  - id: synthesize
+    command: synthesize-reviews
+    depends_on: [code-review, comment-review, test-review, security-review]
+    context: fresh
+```
+
+### Iterative Implementation (Loop Node)
+
+```yaml
+name: implement-prd
+description: |
+  Autonomously implement a PRD, iterating until all stories pass.
+
+nodes:
+  - id: implement-loop
+    loop:
+      prompt: |
+        Read PRD from `.anvil/prd.md`.
+        Read progress from `.anvil/progress.json`.
+        Implement the next incomplete story with tests.
+        Run validation: `bun run validate`.
+        Update progress file.
+        If ALL stories complete: <promise>COMPLETE</promise>
+      until: COMPLETE
+      max_iterations: 15
+      fresh_context: true
+```
+
+### Classify and Route
+
+```yaml
+name: classify-and-fix
+description: |
+  Classify issue type and run the appropriate path.
+
+  Use when: User reports a bug or requests a feature
+  Produces: Code fix (bug path) or feature plan (feature path), then PR
+
+nodes:
+  - id: classify
+    command: classify-issue
+    output_format:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [BUG, FEATURE]
+      required: [type]
+
+  - id: investigate
+    command: investigate-bug
+    depends_on: [classify]
+    when: "$classify.output.type == 'BUG'"
+
+  - id: plan
+    command: plan-feature
+    depends_on: [classify]
+    when: "$classify.output.type == 'FEATURE'"
+
+  - id: implement
+    command: implement-changes
+    depends_on: [investigate, plan]
+    trigger_rule: none_failed_min_one_success
+
+  - id: create-pr
+    command: create-pr
+    depends_on: [implement]
+    context: fresh
+```
+
+---
+
+## Common Patterns
+
+### Pattern: Gated Execution
+
+Run different paths based on conditions:
+
+```yaml
+name: smart-fix
+description: Route to appropriate fix strategy based on issue complexity
+
+nodes:
+  - id: analyze
+    command: analyze-complexity
+    output_format:
+      type: object
+      properties:
+        complexity:
+          type: string
+          enum: [simple, complex]
+      required: [complexity]
+
+  - id: quick-fix
+    command: quick-fix
+    depends_on: [analyze]
+    when: "$analyze.output.complexity == 'simple'"
+
+  - id: deep-fix
+    command: deep-investigation
+    depends_on: [analyze]
+    when: "$analyze.output.complexity == 'complex'"
+```
+
+### Pattern: Checkpoint and Resume
+
+For long workflows, DAG resume lets you skip already-completed nodes — opt in with `--resume`:
+
+```yaml
+name: large-migration
+description: Multi-file migration with automatic checkpoint recovery
+
+nodes:
+  - id: plan
+    command: create-migration-plan
+
+  - id: batch-1
+    command: migrate-batch-1
+    depends_on: [plan]
+    context: fresh
+
+  - id: batch-2
+    command: migrate-batch-2
+    depends_on: [batch-1]
+    context: fresh
+
+  - id: validate
+    command: validate-migration
+    depends_on: [batch-2]
+    context: fresh
+```
+
+If the workflow fails at `batch-2`, run `anvil workflow run large-migration --resume` to skip `plan` and `batch-1`. Plain `anvil workflow run large-migration` (without `--resume`) starts fresh.
+
+### Pattern: Human-in-the-Loop
+
+Use an `approval` node to pause for human review before continuing:
+
+```yaml
+name: careful-refactor
+description: Refactor with human approval gate
+
+nodes:
+  - id: propose
+    command: propose-refactor
+
+  - id: review-gate
+    approval:
+      message: "Review the proposed refactor before proceeding. Check the artifacts directory."
+    depends_on: [propose]
+
+  - id: execute
+    command: execute-approved-refactor
+    depends_on: [review-gate]
+
+  - id: pr
+    command: create-pr
+    depends_on: [execute]
+    context: fresh
+```
+
+When the workflow reaches `review-gate`, it pauses and notifies you. Approve or reject via:
+
+- **Natural language** (recommended): Just type your response in the conversation — the system detects the paused workflow and auto-resumes
+- **CLI**: `bun run cli workflow approve <run-id>` or `bun run cli workflow reject <run-id>` — auto-resumes
+- **Explicit command**: `/workflow approve <run-id>` or `/workflow reject <run-id>` — auto-resumes when issued in the originating conversation
+- **Web UI**: Click the Approve/Reject buttons on the dashboard card — auto-resumes for Web-UI-dispatched runs; the Reject dialog includes an optional reason field that flows to `$REJECTION_REASON`
+- **API**: `POST /api/workflows/runs/<run-id>/approve` or `/reject`
+
+All four paths auto-resume the workflow from the next node. The user's approval comment is available as `$review-gate.output` in downstream nodes only when `capture_response: true` is set on the approval node. Cross-platform caveat: Web-UI approvals on Slack / Telegram / GitHub-dispatched runs record the decision but do not auto-resume — re-run from the originating platform to continue.
+
+Without `on_reject`: rejecting cancels the workflow.
+With `on_reject`: rejecting triggers an AI rework prompt and re-pauses for re-review.
+See [Approval Nodes](/guides/approval-nodes/) for full details.
+
+### Pattern: Early Termination with Cancel
+
+Use a `cancel:` node to stop a workflow when a precondition fails — preventing wasted compute on downstream branches:
+
+```yaml
+nodes:
+  - id: check
+    bash: "git merge-base --is-ancestor HEAD origin/main && echo ok || echo blocked"
+
+  - id: stop-if-blocked
+    cancel: "PR has merge conflicts — cannot proceed with review"
+    depends_on: [check]
+    when: "$check.output == 'blocked'"
+
+  - id: review
+    prompt: "Review the PR..."
+    depends_on: [check]
+    when: "$check.output == 'ok'"
+```
+
+When a `cancel:` node executes (passes its `when:` gate), it sets the workflow run to `cancelled` with the reason string and stops all in-flight nodes. Unlike node failure, cancellation is intentional — the status is `cancelled`, not `failed`.
+
+### Choosing: Interactive Loop vs Approval with on_reject
+
+Two primitives handle human-in-the-loop iteration. Use the right one for your pattern:
+
+| | Interactive Loop | Approval + on_reject |
+|---|---|---|
+| YAML | `loop.interactive: true` | `approval.on_reject: { prompt }` |
+| User input variable | `$LOOP_USER_INPUT` | `$REJECTION_REASON` |
+| How it works | Same prompt runs each iteration, user input injected as variable | Specific on_reject prompt runs only on rejection |
+| Best for | **Conversational iteration** — explore, refine, review cycles where the AI and human go back and forth | **Gate-then-fix** — approve to proceed, or reject to trigger a specific corrective action |
+| Approval signal | AI detects user intent in its output (`<promise>DONE</promise>`) | User explicitly approves or rejects via button/command |
+| Example | PIV loop: explore → user feedback → explore again | Report generation: generate → user rejects → AI revises specific section |
+
+**Interactive loop** (`loop.interactive: true`):
+
+```yaml
+- id: refine-plan
+  loop:
+    prompt: |
+      User's feedback: $LOOP_USER_INPUT
+      Read the plan, apply feedback, present changes.
+    until: PLAN_APPROVED
+    max_iterations: 10
+    interactive: true
+    gate_message: "Review the plan. Provide feedback or say 'approved'."
+```
+
+The AI runs each iteration, pauses for user input, user's text feeds into the next iteration via `$LOOP_USER_INPUT`. The AI decides when to emit the completion signal based on the user's response.
+
+**Approval with on_reject** (`approval.on_reject`):
+
+```yaml
+- id: review
+  approval:
+    message: "Review the report. Approve or request changes."
+    capture_response: true
+    on_reject: { prompt: "Revise based on: $REJECTION_REASON", max_attempts: 5 }
+  depends_on: [generate]
+```
+
+The workflow pauses at the approval gate. User approves -> workflow continues. User rejects with feedback -> the `on_reject` prompt runs with `$REJECTION_REASON`, then re-pauses at the same gate.
+
+**Rule of thumb**: If the human and AI are having a conversation (exploring, refining, iterating), use an interactive loop. If the workflow should proceed unless the human objects, use an approval gate with `on_reject`.
+
+---
+
+## Debugging Workflows
+
+### Check Workflow Discovery
+
+```bash
+bun run cli workflow list
+```
+
+### Run with Verbose Output
+
+```bash
+bun run cli workflow run {name} "test input"
+```
+
+Watch the streaming output to see each step.
+
+### Check Artifacts
+
+After a workflow runs, check the artifacts in the `$ARTIFACTS_DIR` for that run (located at `~/.anvil/workspaces/owner/repo/artifacts/runs/{workflow-id}/`).
+
+### Check Logs
+
+Workflow execution logs to:
+```
+~/.anvil/workspaces/owner/repo/logs/{workflow-id}.jsonl
+```
+
+Each line is a JSON event (step start, AI response, tool call, etc.).
+
+---
+
+## Workflow Validation
+
+Before deploying a workflow:
+
+1. **Test each command individually**
+   ```bash
+   bun run cli workflow run {workflow} "test input"
+   ```
+
+2. **Verify artifact flow**
+   - Does the first node produce what the second expects?
+   - Are paths correct?
+   - Is the format complete?
+
+3. **Test edge cases**
+   - What if the input is invalid?
+   - What if a node fails?
+   - What if an artifact is missing?
+
+4. **Check iteration limits** (for loops)
+   - Is `max_iterations` reasonable?
+   - What happens when limit is hit?
+
+---
+
+## Summary
+
+1. **Workflows orchestrate commands** — YAML files defining a DAG of execution nodes
+2. **`nodes:` define the graph** — each node runs a command, inline prompt, bash script, or loop
+3. **Artifacts are the glue** — commands communicate via files, not in-memory context
+4. **`context: fresh`** — forces a fresh AI session for a node (works from artifacts only)
+5. **Parallel by default** — nodes in the same topological layer run concurrently
+6. **Conditional branching** — `when:` conditions and `trigger_rule` control which nodes run
+7. **`output_format`** — enforce structured JSON output from AI nodes for reliable branching
+8. **`allowed_tools` / `denied_tools`** — restrict tools per node (Claude only, SDK-enforced)
+9. **`retry:`** — auto-retries transient errors (default: 2 retries / 3 total attempts, 3 s backoff); customize per node
+10. **`hooks`** — attach SDK hook callbacks to Claude nodes for tool control and context injection
+11. **`mcp:`** — attach per-node MCP servers via JSON config (Codex and Claude)
+12. **`skills:`** — preload skills into Claude nodes for domain expertise
+13. **`agents:`** — inline Claude sub-agent definitions invokable via the `Task` tool
+14. **`effort` / `thinking`** — control reasoning depth and thinking mode per node or workflow (Claude only)
+15. **`maxBudgetUsd`** — set a USD cost cap per node; fails with error if exceeded (Claude only)
+16. **`systemPrompt`** — override the default system prompt per node (Claude only)
+17. **`sandbox`** — OS-level filesystem/network restrictions per node or workflow (Claude only)
+18. **`output_type`** — tag a node's output with a semantic type; the engine writes a typed sidecar (`$ARTIFACTS_DIR/nodes/<id>.md` + `.meta.json`) for cross-node/cross-run lookup by type (any node type)
+19. **Loop nodes** — use `loop:` within a DAG node for iterative execution until completion signal
+20. **Defaults as templates** — browse `.anvil/workflows/defaults/` for real examples to copy and modify
+21. **Test thoroughly** — each command, the artifact flow, and edge cases
