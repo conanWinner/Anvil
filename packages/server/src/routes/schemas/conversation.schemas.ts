@@ -38,6 +38,7 @@ export const createConversationBodySchema = z
   .object({
     codebaseId: z.string().optional(),
     message: z.string().optional(),
+    clientRequestId: z.string().uuid().optional(),
   })
   .strict()
   .openapi('CreateConversationBody');

@@ -35,6 +35,36 @@ export type {
 export type WorkflowTokenUsage = TokenUsage;
 
 // ---------------------------------------------------------------------------
+// Generic deterministic action executors
+// ---------------------------------------------------------------------------
+
+export interface WorkflowActionContext {
+  runId: string;
+  nodeId: string;
+  cwd: string;
+  artifactsDir: string;
+  signal: AbortSignal;
+}
+
+export interface WorkflowActionResult {
+  output: string;
+  structuredOutput?: unknown;
+}
+
+/**
+ * Domain-neutral registry used by `action` DAG nodes. Implementations own
+ * permission checks, input/output validation, and the actual capability.
+ */
+export interface IWorkflowActionRegistry {
+  has(executorId: string): boolean;
+  execute(
+    executorId: string,
+    input: Readonly<Record<string, unknown>>,
+    context: WorkflowActionContext
+  ): Promise<WorkflowActionResult>;
+}
+
+// ---------------------------------------------------------------------------
 // Platform-specific types (NOT mirrors — unique to workflow engine)
 // ---------------------------------------------------------------------------
 
@@ -115,6 +145,8 @@ export interface WorkflowDeps {
   store: IWorkflowStore;
   getAgentProvider: AgentProviderFactory;
   loadConfig: (cwd: string) => Promise<WorkflowConfig>;
+  /** Optional because existing Anvil workflows do not use deterministic actions. */
+  actionRegistry?: IWorkflowActionRegistry;
   /**
    * Optional: resolve a fresh GitHub bot token for the given (owner, repo).
    * Used to inject GH_TOKEN/GITHUB_TOKEN into bash/script subprocess env so

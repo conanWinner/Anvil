@@ -112,29 +112,3 @@ nodes:
   - id: implement-fixes
     command: anvil-implement-review-fixes
     depends_on: [synthesize]
-
-  # Optional: push notification when review completes.
-  # To enable, create .anvil/mcp/ntfy.json — see docs/mcp-servers.md
-  - id: check-ntfy
-    bash: "test -f .anvil/mcp/ntfy.json && echo 'true' || echo 'false'"
-    depends_on: [implement-fixes]
-
-  - id: notify
-    depends_on: [check-ntfy, synthesize, implement-fixes]
-    when: "$check-ntfy.output == 'true'"
-    trigger_rule: all_success
-    mcp: .anvil/mcp/ntfy.json
-    allowed_tools: []
-    prompt: |
-      Send a push notification summarizing the PR review results.
-
-      Review synthesis:
-      $synthesize.output
-
-      Fix results:
-      $implement-fixes.output
-
-      Send with:
-      - title: "PR Review Complete"
-      - message: 1-2 sentence summary — verdict and issue count. Short enough for a lock screen.
-      - priority: 3 if ready to merge, 4 if needs fixes, 5 if critical issues remain

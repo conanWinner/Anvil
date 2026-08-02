@@ -134,6 +134,117 @@ describe('findSimilar', () => {
 });
 
 // =============================================================================
+// validateWorkflowResources — workflow composition
+// =============================================================================
+
+describe('validateWorkflowResources — workflow composition', () => {
+  const workflowNode = (id: string, name: string, dependsOn?: string[]): DagNode =>
+    ({
+      id,
+      workflow: { name, inputs: {} },
+      ...(dependsOn ? { depends_on: dependsOn } : {}),
+    }) as DagNode;
+
+  test('rejects a missing child workflow', async () => {
+    const root = makeWorkflow('root', [workflowNode('child', 'missing')]);
+    const issues = await validateWorkflowResources(root, tmpDir, { availableWorkflows: [root] });
+    expect(issues.some(issue => issue.message.includes("'missing' was not found"))).toBe(true);
+  });
+
+  test('rejects direct and indirect composition cycles', async () => {
+    const direct = makeWorkflow('direct', [workflowNode('self', 'direct')]);
+    const a = makeWorkflow('a', [workflowNode('to-b', 'b')]);
+    const b = makeWorkflow('b', [workflowNode('to-a', 'a')]);
+    const directIssues = await validateWorkflowResources(direct, tmpDir, {
+      availableWorkflows: [direct],
+    });
+    const indirectIssues = await validateWorkflowResources(a, tmpDir, {
+      availableWorkflows: [a, b],
+    });
+    expect(directIssues.some(issue => issue.message.includes('cycle detected'))).toBe(true);
+    expect(indirectIssues.some(issue => issue.message.includes('cycle detected'))).toBe(true);
+  });
+
+  test('requires child nodes to be sequential and exclusive in v1', async () => {
+    const childA = makeWorkflow('child-a', [{ id: 'a', prompt: 'a' }]);
+    const childB = makeWorkflow('child-b', [{ id: 'b', prompt: 'b' }]);
+    const root = makeWorkflow('root', [
+      workflowNode('first', 'child-a'),
+      workflowNode('second', 'child-b'),
+    ]);
+    const issues = await validateWorkflowResources(root, tmpDir, {
+      availableWorkflows: [root, childA, childB],
+    });
+    expect(issues.some(issue => issue.message.includes('exclusive'))).toBe(true);
+    expect(issues.some(issue => issue.message.includes('explicitly ordered'))).toBe(true);
+  });
+
+  test('checks required child input mappings', async () => {
+    const child = {
+      ...makeWorkflow('child', [{ id: 'build', prompt: 'build' }]),
+      input_schema: { type: 'object', required: ['request_path'] },
+    } as WorkflowDefinition;
+    const root = makeWorkflow('root', [workflowNode('child', 'child')]);
+    const issues = await validateWorkflowResources(root, tmpDir, {
+      availableWorkflows: [root, child],
+    });
+    expect(issues.some(issue => issue.field === 'workflow.inputs.request_path')).toBe(true);
+  });
+
+  test('validates manual progression targets as unique workflow nodes', async () => {
+    const child = makeWorkflow('child', [{ id: 'build', prompt: 'build' }]);
+    const root = {
+      ...makeWorkflow('root', [workflowNode('child', 'child'), { id: 'atomic', prompt: 'x' }]),
+      progression: { mode: 'manual' as const, auto_continue_after: ['child', 'atomic', 'child'] },
+    } as WorkflowDefinition;
+    const issues = await validateWorkflowResources(root, tmpDir, {
+      availableWorkflows: [root, child],
+    });
+    expect(issues.some(issue => issue.message.includes('listed more than once'))).toBe(true);
+    expect(issues.some(issue => issue.message.includes('must reference a workflow node'))).toBe(
+      true
+    );
+  });
+
+  test('validates intake fields against the typed workflow input contract', async () => {
+    const workflow = {
+      ...makeWorkflow('intake-root', [{ id: 'prepare', prompt: 'prepare' }]),
+      input_schema: {
+        type: 'object',
+        properties: { blueprint: { type: 'object' } },
+        required: ['blueprint', 'dataset'],
+      },
+      intake: {
+        version: 1 as const,
+        title: 'Prepare',
+        fields: [
+          { input: 'blueprint', control: 'file' as const, prompt: 'Blueprint' },
+          { input: 'unknown', control: 'textarea' as const, prompt: 'Unknown' },
+        ],
+      },
+    } as WorkflowDefinition;
+    const issues = await validateWorkflowResources(workflow, tmpDir);
+    expect(issues.some(issue => issue.message.includes("'unknown' is missing"))).toBe(true);
+    expect(issues.some(issue => issue.message.includes("'dataset' has no intake"))).toBe(true);
+  });
+
+  test('rejects composition deeper than five child levels', async () => {
+    const chain = Array.from({ length: 7 }, (_, index) =>
+      makeWorkflow(
+        `level-${String(index)}`,
+        index === 6
+          ? [{ id: 'leaf', prompt: 'done' }]
+          : [workflowNode(`to-${String(index + 1)}`, `level-${String(index + 1)}`)]
+      )
+    );
+    const issues = await validateWorkflowResources(chain[0], tmpDir, {
+      availableWorkflows: chain,
+    });
+    expect(issues.some(issue => issue.message.includes('depth exceeds 5'))).toBe(true);
+  });
+});
+
+// =============================================================================
 // validateWorkflowResources — command nodes
 // =============================================================================
 

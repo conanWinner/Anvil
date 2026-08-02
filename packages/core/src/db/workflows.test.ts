@@ -31,6 +31,7 @@ import {
   deleteOldWorkflowRuns,
   deleteWorkflowRun,
 } from './workflows';
+import { claimWorkflowIntakeDraftStart, getLatestWorkflowIntakeDraft } from './workflow-intakes';
 
 describe('workflows database', () => {
   beforeEach(() => {
@@ -76,6 +77,8 @@ describe('workflows database', () => {
           null,
           null,
           null,
+          null,
+          null,
         ]
       );
     });
@@ -107,6 +110,8 @@ describe('workflows database', () => {
           null,
           null,
           null,
+          null,
+          null,
         ]
       );
     });
@@ -124,7 +129,18 @@ describe('workflows database', () => {
       expect(result.codebase_id).toBeNull();
       expect(mockQuery).toHaveBeenCalledWith(
         expect.stringContaining('INSERT INTO remote_agent_workflow_runs'),
-        ['feature-development', 'conv-456', null, 'Add dark mode support', '{}', null, null, null]
+        [
+          'feature-development',
+          'conv-456',
+          null,
+          'Add dark mode support',
+          '{}',
+          null,
+          null,
+          null,
+          null,
+          null,
+        ]
       );
     });
   });
@@ -672,6 +688,25 @@ describe('workflows database', () => {
 
       expect(result).toEqual([mockWorkflowRun]);
     });
+
+    test('restricts project history to root workflow runs', async () => {
+      mockQuery.mockResolvedValueOnce(createQueryResult([]));
+
+      await listWorkflowRuns({ rootOnly: true });
+
+      const [query] = mockQuery.mock.calls[0] as [string, unknown[]];
+      expect(query).toContain('parent_workflow_run_id IS NULL');
+    });
+
+    test('filters by the user-facing parent conversation', async () => {
+      mockQuery.mockResolvedValueOnce(createQueryResult([]));
+
+      await listWorkflowRuns({ parentConversationId: 'parent-conversation-id' });
+
+      const [query, params] = mockQuery.mock.calls[0] as [string, unknown[]];
+      expect(query).toContain('parent_conversation_id = $1');
+      expect(params).toEqual(['parent-conversation-id', 50]);
+    });
   });
 
   describe('failOrphanedRuns', () => {
@@ -723,7 +758,8 @@ describe('workflows database', () => {
       expect(updateQuery).toContain('completed_at = NULL');
       // $1 = id, $2 = ORPHAN_RESUME_STALE_DAYS. The day param MUST be bound or the
       // CAS predicate's `< $2 days` references an unbound placeholder (PR #1830 C1).
-      expect(updateParams).toEqual(['workflow-run-123', 1]);
+      expect(updateParams).toEqual(['workflow-run-123', 1, JSON.stringify({ error: null })]);
+      expect(updateQuery).toContain('metadata =');
       // Second call: SELECT
       const [selectQuery, selectParams] = mockQuery.mock.calls[1] as [string, unknown[]];
       expect(selectQuery).toContain('SELECT *');
@@ -762,7 +798,7 @@ describe('workflows database', () => {
       expect(updateQuery).toContain("status = 'running' AND");
       // The stale-orphan arm references $2 — it MUST be bound to the day count.
       expect(updateQuery).toContain('$2');
-      expect(updateParams).toEqual(['workflow-run-123', 1]);
+      expect(updateParams).toEqual(['workflow-run-123', 1, JSON.stringify({ error: null })]);
     });
 
     test('throws when no row matched and the run is gone (not found)', async () => {
@@ -951,5 +987,38 @@ describe('workflows database', () => {
         'Failed to delete workflow run: constraint violation'
       );
     });
+  });
+});
+
+describe('workflow intake start persistence', () => {
+  beforeEach(() => {
+    mockQuery.mockReset();
+    mockQuery.mockImplementation(() => Promise.resolve(createQueryResult([])));
+  });
+
+  test('loads the latest draft including immutable started drafts', async () => {
+    mockQuery.mockResolvedValueOnce(createQueryResult([]));
+
+    await getLatestWorkflowIntakeDraft('codebase-1', 'system3-master');
+
+    const [query, params] = mockQuery.mock.calls[0] as [string, unknown[]];
+    expect(query).not.toContain("status IN ('draft', 'ready', 'starting')");
+    expect(query).toContain('ORDER BY updated_at DESC LIMIT 1');
+    expect(params).toEqual(['codebase-1', 'system3-master']);
+  });
+
+  test('atomically claims only a ready intake draft', async () => {
+    mockQuery.mockResolvedValueOnce(createQueryResult([], 1));
+
+    expect(await claimWorkflowIntakeDraftStart('draft-1')).toBe(true);
+
+    const [query, params] = mockQuery.mock.calls[0] as [string, unknown[]];
+    expect(query).toContain("WHERE id = $1 AND status = 'ready'");
+    expect(params).toEqual(['draft-1']);
+  });
+
+  test('reports a lost concurrent start claim', async () => {
+    mockQuery.mockResolvedValueOnce(createQueryResult([], 0));
+    expect(await claimWorkflowIntakeDraftStart('draft-1')).toBe(false);
   });
 });

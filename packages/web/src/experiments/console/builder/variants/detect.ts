@@ -17,6 +17,7 @@ import type { VariantId, WireDagNode } from '../types';
  * silently becoming an empty prompt node.
  */
 export function detectVariantOrNull(node: WireDagNode): VariantId | null {
+  if (node.workflow !== undefined) return 'workflow';
   if (node.loop !== undefined) return 'loop';
   if (node.approval !== undefined) return 'approval';
   if (node.cancel !== undefined) return 'cancel';

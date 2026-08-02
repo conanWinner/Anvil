@@ -8,12 +8,19 @@ const mockGetWorkflowRun = mock(() => Promise.resolve(null));
 const mockListWorkflowRuns = mock(() => Promise.resolve([]));
 const mockUpdateWorkflowRun = mock(() => Promise.resolve());
 const mockCancelWorkflowRun = mock(() => Promise.resolve());
+const mockFindActivePausedDescendant = mock(() => Promise.resolve(null));
+const mockGetRootWorkflowRun = mock(() => Promise.resolve(null));
+const mockMarkPausedAncestorsResumable = mock(() => Promise.resolve());
 
 mock.module('../db/workflows', () => ({
   getWorkflowRun: mockGetWorkflowRun,
   listWorkflowRuns: mockListWorkflowRuns,
   updateWorkflowRun: mockUpdateWorkflowRun,
   cancelWorkflowRun: mockCancelWorkflowRun,
+  cancelWorkflowRunTree: mockCancelWorkflowRun,
+  findActivePausedDescendant: mockFindActivePausedDescendant,
+  getRootWorkflowRun: mockGetRootWorkflowRun,
+  markPausedAncestorsResumable: mockMarkPausedAncestorsResumable,
 }));
 
 const mockCreateWorkflowEvent = mock(() => Promise.resolve());
@@ -45,6 +52,7 @@ mock.module('@anvil/paths', () => ({
 // Import AFTER mocks
 const {
   approveWorkflow,
+  continueWorkflow,
   rejectWorkflow,
   getWorkflowStatus,
   resumeWorkflow,
@@ -90,6 +98,9 @@ describe('approveWorkflow', () => {
     mockGetWorkflowRun.mockClear();
     mockCreateWorkflowEvent.mockClear();
     mockUpdateWorkflowRun.mockClear();
+    mockFindActivePausedDescendant.mockClear();
+    mockGetRootWorkflowRun.mockClear();
+    mockMarkPausedAncestorsResumable.mockClear();
   });
 
   test('approves standard approval gate — writes node_completed + approval_received', async () => {
@@ -261,6 +272,54 @@ describe('rejectWorkflow', () => {
       "Cannot reject run with status 'completed'"
     );
   });
+
+  test('refuses to reject a manual phase transition', async () => {
+    mockGetWorkflowRun.mockResolvedValueOnce(
+      makePausedRun({
+        metadata: { approval: { nodeId: 'intake', message: '', type: 'phase_transition' } },
+      })
+    );
+    await expect(rejectWorkflow('run-1')).rejects.toThrow('Use workflow continue instead');
+  });
+});
+
+describe('continueWorkflow', () => {
+  beforeEach(() => {
+    mockGetWorkflowRun.mockClear();
+    mockCreateWorkflowEvent.mockClear();
+    mockUpdateWorkflowRun.mockClear();
+    mockMarkPausedAncestorsResumable.mockClear();
+  });
+
+  test('continues a phase transition without writing node_completed', async () => {
+    mockGetWorkflowRun.mockResolvedValueOnce(
+      makePausedRun({
+        metadata: {
+          approval: {
+            nodeId: 'intake',
+            message: '',
+            type: 'phase_transition',
+            nextNodeIds: ['readiness'],
+          },
+        },
+      })
+    );
+    const result = await continueWorkflow('run-1');
+    expect(result.type).toBe('phase_transition');
+    expect(mockCreateWorkflowEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ event_type: 'phase_transition_continued', step_name: 'intake' })
+    );
+    expect(
+      mockCreateWorkflowEvent.mock.calls.some(call => call[0].event_type === 'node_completed')
+    ).toBe(false);
+    expect(mockUpdateWorkflowRun).toHaveBeenCalledWith('run-1', {
+      status: 'failed',
+      metadata: {
+        approval: null,
+        continued_phase_transitions: ['intake'],
+      },
+    });
+  });
 });
 
 describe('getWorkflowStatus', () => {
@@ -303,6 +362,16 @@ describe('resumeWorkflow', () => {
     await expect(resumeWorkflow('run-1')).rejects.toThrow(
       "Cannot resume run with status 'completed'"
     );
+  });
+
+  test('refuses to resume through a manual phase transition', async () => {
+    mockGetWorkflowRun.mockResolvedValueOnce(makePausedRun({ status: 'failed' }));
+    mockFindActivePausedDescendant.mockResolvedValueOnce(
+      makePausedRun({
+        metadata: { approval: { nodeId: 'intake', message: '', type: 'phase_transition' } },
+      })
+    );
+    await expect(resumeWorkflow('run-1')).rejects.toThrow('Use workflow continue instead');
   });
 
   test('throws wrapped message and logs when DB throws', async () => {

@@ -1,8 +1,9 @@
 /**
  * Workflow Executor - runs DAG-based workflows
  */
-import { mkdir, writeFile } from 'fs/promises';
-import { dirname, join } from 'path';
+import { access, mkdir, readFile, writeFile } from 'fs/promises';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'path';
+import { createHash } from 'node:crypto';
 import type { IWorkflowPlatform, WorkflowMessageMetadata } from './deps';
 import type { WorkflowDeps, WorkflowConfig } from './deps';
 import * as anvilPaths from '@anvil/paths';
@@ -13,9 +14,12 @@ import type {
   WorkflowRun,
   WorkflowExecutionResult,
   WorkflowSource,
+  WorkflowNode,
+  NodeOutput,
 } from './schemas';
-import { isLoopNode, isApprovalNode, isScriptNode, isBashNode } from './schemas';
-import { executeDagWorkflow } from './dag-executor';
+import { isLoopNode, isApprovalNode, isScriptNode, isBashNode, isWorkflowNode } from './schemas';
+import { executeDagWorkflow, substituteNodeOutputRefs } from './dag-executor';
+import { discoverWorkflowsWithConfig } from './workflow-discovery';
 import { logWorkflowStart, logWorkflowError } from './logger';
 import { formatDuration, parseDbTimestamp } from './utils/duration';
 import { getWorkflowEventEmitter } from './event-emitter';
@@ -28,6 +32,7 @@ import {
 } from './executor-shared';
 import { resolveGithubTokenOverrides } from './utils/github-token-policy';
 import { buildAiProfile, isLiteralSpec, resolveModelSpec } from './model-validation';
+import { resolveNodeOutputField } from './output-ref';
 import type { ModelAliasPreset, ResolvedAiProfile } from './model-validation';
 
 /** The per-user prefs layer as returned by `WorkflowDeps.getUserAiPrefs`. */
@@ -235,14 +240,17 @@ async function resolveProjectPaths(
     try {
       const codebase = await deps.store.getCodebase(codebaseId);
       if (codebase) {
-        const parsed = anvilPaths.parseOwnerRepo(codebase.name);
-        if (parsed) {
+        const projectRoot = anvilPaths.resolveRegisteredProjectRoot(
+          codebase.name,
+          codebase.default_cwd
+        );
+        if (projectRoot) {
           return {
-            artifactsDir: anvilPaths.getRunArtifactsPath(parsed.owner, parsed.repo, workflowRunId),
-            logDir: anvilPaths.getProjectLogsPath(parsed.owner, parsed.repo),
+            artifactsDir: join(projectRoot, 'artifacts', 'runs', workflowRunId),
+            logDir: join(projectRoot, 'logs'),
           };
         }
-        getLog().warn({ codebaseName: codebase.name }, 'codebase_name_not_owner_repo_format');
+        getLog().warn({ codebaseName: codebase.name }, 'codebase_workspace_not_resolved');
       }
     } catch (error) {
       const fallbackArtifactsDir = join(cwd, '.anvil', 'artifacts', 'runs', workflowRunId);
@@ -313,7 +321,281 @@ export type ExecuteWorkflowOptions = ResumePayload & {
    * is preserved on resume.
    */
   userId?: string;
+  /** Typed input object supplied to this workflow invocation. */
+  inputs?: Record<string, unknown>;
+  /** Resolved artifact aliases inherited from the parent node. */
+  artifactInputs?: Record<string, string>;
+  /** Internal composition state. */
+  compositionDepth?: number;
+  compositionAncestors?: readonly string[];
+  /** Child runs inherit the root lock and use a namespaced artifacts directory. */
+  skipPathLock?: boolean;
+  artifactsDirOverride?: string;
+  compositionDefinitions?: ReadonlyMap<string, WorkflowDefinition>;
 };
+
+const MAX_COMPOSITION_DEPTH = 5;
+const INTAKE_CONTEXT_KEY = '__anvil_intake_context';
+
+interface IntakeExecutionContext {
+  draftId?: string;
+  definitionHash?: string;
+  provenance?: Record<string, unknown>;
+}
+
+function splitIntakeContext(rawInputs: Record<string, unknown>): {
+  inputs: Record<string, unknown>;
+  context: IntakeExecutionContext | undefined;
+} {
+  const rawContext = rawInputs[INTAKE_CONTEXT_KEY];
+  const inputs = Object.fromEntries(
+    Object.entries(rawInputs).filter(([key]) => key !== INTAKE_CONTEXT_KEY)
+  );
+  if (rawContext === null || typeof rawContext !== 'object' || Array.isArray(rawContext)) {
+    return { inputs, context: undefined };
+  }
+  const record = rawContext as Record<string, unknown>;
+  return {
+    inputs,
+    context: {
+      ...(typeof record.draftId === 'string' ? { draftId: record.draftId } : {}),
+      ...(typeof record.definitionHash === 'string'
+        ? { definitionHash: record.definitionHash }
+        : {}),
+      ...(record.provenance !== null &&
+      typeof record.provenance === 'object' &&
+      !Array.isArray(record.provenance)
+        ? { provenance: record.provenance as Record<string, unknown> }
+        : {}),
+    },
+  };
+}
+
+function stringifyCompositionValue(value: unknown): string {
+  if (value === undefined || value === null) return '';
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  return JSON.stringify(value);
+}
+
+function replaceCompositionVariables(
+  value: unknown,
+  inputs: Record<string, unknown>,
+  artifactInputs: Record<string, string>
+): unknown {
+  if (typeof value === 'string') {
+    const encodedInputs = Buffer.from(JSON.stringify(inputs), 'utf8').toString('base64url');
+    if (value === '$INPUTS_JSON_BASE64') return encodedInputs;
+    const exactInput = /^\$INPUTS\.([A-Za-z_][A-Za-z0-9_]*)$/.exec(value);
+    if (exactInput?.[1]) return inputs[exactInput[1]];
+    const exactArtifact = /^\$ARTIFACT_INPUTS\.([A-Za-z_][A-Za-z0-9_]*)$/.exec(value);
+    if (exactArtifact?.[1]) return artifactInputs[exactArtifact[1]] ?? '';
+    return value
+      .replace(/\$INPUTS_JSON_BASE64\b/g, encodedInputs)
+      .replace(/\$INPUTS\.([A-Za-z_][A-Za-z0-9_]*)/g, (_, key: string) =>
+        stringifyCompositionValue(inputs[key])
+      )
+      .replace(
+        /\$ARTIFACT_INPUTS\.([A-Za-z_][A-Za-z0-9_]*)/g,
+        (_, key: string) => artifactInputs[key] ?? ''
+      );
+  }
+  if (Array.isArray(value)) {
+    return value.map(item => replaceCompositionVariables(item, inputs, artifactInputs));
+  }
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+        key,
+        replaceCompositionVariables(item, inputs, artifactInputs),
+      ])
+    );
+  }
+  return value;
+}
+
+function assertObjectContract(
+  label: string,
+  value: Record<string, unknown>,
+  schema: Record<string, unknown> | undefined
+): void {
+  if (!schema) return;
+  if (schema.type !== undefined && schema.type !== 'object') {
+    throw new Error(`${label} schema must have type: object`);
+  }
+  const required = Array.isArray(schema.required)
+    ? schema.required.filter((item): item is string => typeof item === 'string')
+    : [];
+  for (const field of required) {
+    if (!(field in value)) throw new Error(`${label} is missing required field '${field}'`);
+  }
+  const properties = schema.properties;
+  if (properties === null || typeof properties !== 'object' || Array.isArray(properties)) return;
+  for (const [field, fieldSchema] of Object.entries(properties as Record<string, unknown>)) {
+    if (!(field in value) || fieldSchema === null || typeof fieldSchema !== 'object') continue;
+    const expected = (fieldSchema as Record<string, unknown>).type;
+    const actual = value[field];
+    const matches =
+      expected === undefined ||
+      (expected === 'string' && typeof actual === 'string') ||
+      (expected === 'number' && typeof actual === 'number') ||
+      (expected === 'integer' && typeof actual === 'number' && Number.isInteger(actual)) ||
+      (expected === 'boolean' && typeof actual === 'boolean') ||
+      (expected === 'array' && Array.isArray(actual)) ||
+      (expected === 'object' &&
+        actual !== null &&
+        typeof actual === 'object' &&
+        !Array.isArray(actual));
+    if (!matches) {
+      throw new Error(
+        `${label} field '${field}' must be ${typeof expected === 'string' ? expected : 'a declared type'}`
+      );
+    }
+  }
+}
+
+function redactIntakeSecrets(value: unknown, key = ''): unknown {
+  if (/(?:token|secret|password|api[_-]?key)/i.test(key)) return '[redacted]';
+  if (Array.isArray(value)) return value.map(item => redactIntakeSecrets(item));
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([childKey, childValue]) => [
+        childKey,
+        redactIntakeSecrets(childValue, childKey),
+      ])
+    );
+  }
+  return value;
+}
+
+function resolvePublishedOutput(
+  mapping: string,
+  nodeOutputs: Map<string, NodeOutput>,
+  expectedType: unknown
+): unknown {
+  const rendered = substituteNodeOutputRefs(mapping, nodeOutputs);
+  if (!/^\$[A-Za-z_][A-Za-z0-9_-]*\.output(?:\.[A-Za-z_][A-Za-z0-9_]*)?$/.test(mapping)) {
+    return rendered;
+  }
+  if (
+    expectedType === 'boolean' ||
+    expectedType === 'number' ||
+    expectedType === 'integer' ||
+    expectedType === 'array' ||
+    expectedType === 'object'
+  ) {
+    try {
+      return JSON.parse(rendered) as unknown;
+    } catch {
+      return rendered;
+    }
+  }
+  return rendered;
+}
+
+/** Preserve structured values for exact refs used as composed-child inputs. */
+function resolveCompositionInput(
+  value: string,
+  nodeOutputs: ReadonlyMap<string, NodeOutput>
+): unknown {
+  const exact = /^\$([A-Za-z_][A-Za-z0-9_-]*)\.output(?:\.([A-Za-z_][A-Za-z0-9_]*))?$/.exec(value);
+  if (!exact?.[1]) return substituteNodeOutputRefs(value, new Map(nodeOutputs));
+  const nodeId = exact[1];
+  const nodeOutput = nodeOutputs.get(nodeId);
+  if (!nodeOutput) throw new Error(`Child input references unknown node '${nodeId}'`);
+  const field = exact[2];
+  if (field) {
+    const resolution = resolveNodeOutputField(nodeOutput, nodeId, field);
+    return resolution.kind === 'empty' ? '' : resolution.value;
+  }
+  if ('structuredOutput' in nodeOutput && nodeOutput.structuredOutput !== undefined) {
+    return nodeOutput.structuredOutput;
+  }
+  try {
+    return JSON.parse(nodeOutput.output) as unknown;
+  } catch {
+    return nodeOutput.output;
+  }
+}
+
+function resolveArtifactPath(root: string, configuredPath: string, label: string): string {
+  const resolved = resolve(root, configuredPath);
+  const rel = relative(root, resolved);
+  if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+    throw new Error(`${label} escapes artifact root`);
+  }
+  return resolved;
+}
+
+function validateCompositionGraph(
+  root: WorkflowDefinition,
+  definitions: ReadonlyMap<string, WorkflowDefinition>
+): void {
+  const visit = (current: WorkflowDefinition, path: readonly string[], depth: number): void => {
+    if (depth > MAX_COMPOSITION_DEPTH) {
+      throw new Error(
+        `Maximum workflow composition depth (${String(MAX_COMPOSITION_DEPTH)}) exceeded`
+      );
+    }
+    const workflowNodes = current.nodes.filter(isWorkflowNode);
+    const dependencies = new Map(current.nodes.map(node => [node.id, node.depends_on ?? []]));
+    const layerMemo = new Map<string, number>();
+    const layerOf = (nodeId: string): number => {
+      const cached = layerMemo.get(nodeId);
+      if (cached !== undefined) return cached;
+      const deps = dependencies.get(nodeId) ?? [];
+      const layer = deps.length === 0 ? 0 : 1 + Math.max(...deps.map(layerOf));
+      layerMemo.set(nodeId, layer);
+      return layer;
+    };
+    const dependsOn = (nodeId: string, expected: string): boolean => {
+      const pending = [...(dependencies.get(nodeId) ?? [])];
+      const visited = new Set<string>();
+      while (pending.length > 0) {
+        const candidate = pending.pop();
+        if (!candidate || visited.has(candidate)) continue;
+        if (candidate === expected) return true;
+        visited.add(candidate);
+        pending.push(...(dependencies.get(candidate) ?? []));
+      }
+      return false;
+    };
+
+    for (let index = 0; index < workflowNodes.length; index++) {
+      const node = workflowNodes[index];
+      if (
+        current.nodes.filter(candidate => layerOf(candidate.id) === layerOf(node.id)).length > 1
+      ) {
+        throw new Error(`Workflow node '${node.id}' must be exclusive in its topological layer`);
+      }
+      const previous = workflowNodes[index - 1];
+      if (previous && !dependsOn(node.id, previous.id)) {
+        throw new Error(`Child workflow node '${node.id}' must depend on '${previous.id}'`);
+      }
+      if (path.includes(node.workflow.name)) {
+        throw new Error(
+          `Workflow composition cycle detected: ${[...path, node.workflow.name].join(' -> ')}`
+        );
+      }
+      const child = definitions.get(node.workflow.name);
+      if (!child) throw new Error(`Child workflow '${node.workflow.name}' was not found`);
+      const requiredInputs = Array.isArray(child.input_schema?.required)
+        ? child.input_schema.required.filter((field): field is string => typeof field === 'string')
+        : [];
+      for (const field of requiredInputs) {
+        if (!(field in (node.workflow.inputs ?? {}))) {
+          throw new Error(
+            `Child workflow '${child.name}' required input '${field}' is not mapped by node '${node.id}'`
+          );
+        }
+      }
+      visit(child, [...path, child.name], depth + 1);
+    }
+  };
+
+  visit(root, [root.name], 0);
+}
 
 /**
  * Hydrate an already-located resumable `WorkflowRun` candidate into the form
@@ -378,7 +660,35 @@ export async function executeWorkflow(
     priorCompletedNodes,
     userId,
     source,
+    inputs: suppliedInputs,
+    artifactInputs = {},
+    compositionDepth = 0,
+    compositionAncestors = [],
+    skipPathLock = false,
+    artifactsDirOverride,
+    compositionDefinitions: inheritedCompositionDefinitions,
   } = opts;
+  const persistedInputs = preCreatedRun?.metadata.inputs;
+  const rawInputs =
+    suppliedInputs ??
+    (persistedInputs !== null &&
+    persistedInputs !== undefined &&
+    typeof persistedInputs === 'object' &&
+    !Array.isArray(persistedInputs)
+      ? (persistedInputs as Record<string, unknown>)
+      : {});
+  const { inputs, context: intakeContext } = splitIntakeContext(rawInputs);
+  const isCompositeResume =
+    preCreatedRun !== undefined &&
+    priorCompletedNodes !== undefined &&
+    workflow.nodes.some(isWorkflowNode);
+  // Composite resumes restore their root contract from the immutable snapshot
+  // below. Validating against mutable current YAML here would mix definition
+  // versions and can reject an otherwise valid historical run.
+  if (!isCompositeResume) {
+    assertObjectContract(`Workflow '${workflow.name}' inputs`, inputs, workflow.input_schema);
+  }
+  workflow = replaceCompositionVariables(workflow, inputs, artifactInputs) as WorkflowDefinition;
   // Load config once for the entire workflow execution
   const fileConfig = await deps.loadConfig(cwd);
   const dbEnvVars = codebaseId ? await deps.store.getCodebaseEnvVars(codebaseId) : {};
@@ -555,7 +865,10 @@ export async function executeWorkflow(
         codebase_id: codebaseId,
         user_message: userMessage,
         working_path: cwd,
-        metadata: issueContext ? { github_context: issueContext } : {},
+        metadata: {
+          ...(issueContext ? { github_context: issueContext } : {}),
+          inputs,
+        },
         parent_conversation_id: parentConversationId,
         user_id: userId,
       });
@@ -584,7 +897,7 @@ export async function executeWorkflow(
   // older-wins tiebreaker. The query treats `pending` rows older than 5 min
   // as orphaned, so leaks from crashed dispatches or resume orphans don't
   // permanently block the path.
-  if (workflow.mutates_checkout !== false) {
+  if (!skipPathLock && workflow.mutates_checkout !== false) {
     try {
       const activeWorkflow = await deps.store.getActiveWorkflowRunByPath(cwd, {
         id: workflowRun.id,
@@ -670,7 +983,9 @@ export async function executeWorkflow(
   }
 
   // Resolve external artifact and log directories
-  const { artifactsDir, logDir } = await resolveProjectPaths(deps, cwd, workflowRun.id, codebaseId);
+  const resolvedProjectPaths = await resolveProjectPaths(deps, cwd, workflowRun.id, codebaseId);
+  const artifactsDir = artifactsDirOverride ?? resolvedProjectPaths.artifactsDir;
+  const { logDir } = resolvedProjectPaths;
 
   // Pre-create the artifacts directory so commands can write to it immediately
   try {
@@ -700,7 +1015,146 @@ export async function executeWorkflow(
       error: `Artifacts directory creation failed: ${err.message}`,
     };
   }
+  // Persist the resolved location for every run. API readers cannot derive a
+  // local project's directory from an owner/repo name, and child composition
+  // runs use nested namespaces. Keeping the concrete path on the run makes
+  // artifact listing deterministic across local, remote, and resumed runs.
+  await deps.store
+    .updateWorkflowRun(workflowRun.id, { metadata: { artifacts_dir: artifactsDir } })
+    .catch((error: Error) => {
+      getLog().warn(
+        { err: error, artifactsDir, workflowRunId: workflowRun.id },
+        'workflow.artifacts_dir_persist_failed'
+      );
+    });
   getLog().debug({ artifactsDir, logDir }, 'workflow_paths_resolved');
+
+  // Intake is a root-run contract. Persist the accepted typed values next to
+  // the run, rather than relying on mutable chat history or the draft row.
+  // Keep the manifest deliberately free of credentials even if a malformed
+  // client submitted a secret-shaped field.
+  if (compositionDepth === 0 && workflow.intake) {
+    const intakeDir = join(artifactsDir, 'input');
+    await mkdir(intakeDir, { recursive: true });
+    await writeFile(
+      join(intakeDir, 'intake_manifest.json'),
+      JSON.stringify(
+        {
+          version: workflow.intake.version,
+          workflowName: workflow.name,
+          definitionHash:
+            intakeContext?.definitionHash ??
+            createHash('sha256').update(JSON.stringify(workflow)).digest('hex'),
+          draftId: intakeContext?.draftId ?? null,
+          acceptedAt: new Date().toISOString(),
+          inputs: redactIntakeSecrets(inputs),
+          provenance: intakeContext?.provenance ?? {},
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+  }
+
+  // Freeze the full effective workflow graph at root start. This also covers
+  // single-workflow runs: dynamically compiled definitions may not exist on
+  // disk, and the run console must still be able to render exactly what ran.
+  // Resumes keep this manifest as the audit source even if project YAML changes.
+  let compositionDefinitions = inheritedCompositionDefinitions;
+  if (compositionDepth === 0) {
+    const compositionDir = join(artifactsDir, 'composition');
+    const isSnapshotResume = preCreatedRun !== undefined && priorCompletedNodes !== undefined;
+    if (isSnapshotResume) {
+      try {
+        const manifest = JSON.parse(
+          await readFile(join(compositionDir, 'manifest.json'), 'utf8')
+        ) as { rootWorkflow?: string; workflows?: { name: string; snapshot: string }[] };
+        const restored = new Map<string, WorkflowDefinition>();
+        for (const item of manifest.workflows ?? []) {
+          restored.set(
+            item.name,
+            JSON.parse(
+              await readFile(join(compositionDir, item.snapshot), 'utf8')
+            ) as WorkflowDefinition
+          );
+        }
+        const restoredRoot = restored.get(manifest.rootWorkflow ?? workflow.name);
+        if (!restoredRoot) {
+          throw new Error(`root workflow snapshot '${workflow.name}' was not found`);
+        }
+        workflow = restoredRoot;
+        assertObjectContract(`Workflow '${workflow.name}' inputs`, inputs, workflow.input_schema);
+        compositionDefinitions = restored;
+      } catch (error) {
+        // Legacy non-composite runs predate definition snapshots and can still
+        // resume from their current definition. Composite runs cannot safely do
+        // that because child definitions may have drifted independently.
+        if (workflow.nodes.some(isWorkflowNode)) {
+          throw new Error(
+            `Cannot resume composite workflow: composition snapshot is unavailable (${(error as Error).message})`
+          );
+        }
+      }
+    }
+    const discovered = compositionDefinitions
+      ? undefined
+      : await discoverWorkflowsWithConfig(cwd, deps.loadConfig);
+    const byName =
+      compositionDefinitions ??
+      new Map(discovered?.workflows.map(item => [item.workflow.name, item.workflow]) ?? []);
+    validateCompositionGraph(workflow, byName);
+    const snapshots = new Map<string, { hash: string; definition: WorkflowDefinition }>();
+    const pending = [workflow];
+    while (pending.length > 0) {
+      const current = pending.pop();
+      if (!current || snapshots.has(current.name)) continue;
+      const serialized = JSON.stringify(current);
+      const hash = createHash('sha256').update(serialized).digest('hex');
+      snapshots.set(current.name, { hash, definition: current });
+      for (const node of current.nodes.filter(isWorkflowNode)) {
+        const child = byName.get(node.workflow.name);
+        if (!child) throw new Error(`Child workflow '${node.workflow.name}' was not found`);
+        pending.push(child);
+      }
+    }
+    compositionDefinitions = new Map(
+      [...snapshots.entries()].map(([name, snapshot]) => [name, snapshot.definition])
+    );
+    if (
+      !isSnapshotResume &&
+      !(await access(join(compositionDir, 'manifest.json'))
+        .then(() => true)
+        .catch(() => false))
+    ) {
+      await mkdir(compositionDir, { recursive: true });
+      for (const snapshot of snapshots.values()) {
+        await writeFile(
+          join(compositionDir, `${snapshot.hash}.json`),
+          JSON.stringify(snapshot.definition, null, 2),
+          'utf8'
+        );
+      }
+      await writeFile(
+        join(compositionDir, 'manifest.json'),
+        JSON.stringify(
+          {
+            schemaVersion: 1,
+            rootWorkflow: workflow.name,
+            maxDepth: MAX_COMPOSITION_DEPTH,
+            workflows: [...snapshots.entries()].map(([name, snapshot]) => ({
+              name,
+              hash: snapshot.hash,
+              snapshot: `${snapshot.hash}.json`,
+            })),
+          },
+          null,
+          2
+        ),
+        'utf8'
+      );
+    }
+  }
 
   // Per-user AI-provider credentials (Phase 2). Resolved AFTER artifactsDir is
   // created because file-based deliveries (Codex `CODEX_HOME/auth.json`) live
@@ -777,7 +1231,10 @@ export async function executeWorkflow(
     // Set status to running now that execution has started (skip for resumed runs — already running)
     if (!dagPriorCompletedNodes) {
       try {
-        await deps.store.updateWorkflowRun(workflowRun.id, { status: 'running' });
+        await deps.store.updateWorkflowRun(workflowRun.id, {
+          status: 'running',
+          metadata: { inputs },
+        });
       } catch (dbError) {
         getLog().error(
           { err: dbError as Error, workflowRunId: workflowRun.id },
@@ -863,6 +1320,227 @@ export async function executeWorkflow(
       // Continue anyway - workflow is already recorded in database
     }
 
+    const childWorkflowRunner = async (
+      node: WorkflowNode,
+      currentNodeOutputs: ReadonlyMap<string, NodeOutput>
+    ): Promise<NodeOutput> => {
+      if (compositionDepth >= MAX_COMPOSITION_DEPTH) {
+        return {
+          state: 'failed',
+          output: '',
+          error: `Maximum workflow composition depth (${String(MAX_COMPOSITION_DEPTH)}) exceeded`,
+        };
+      }
+      if (
+        workflow.name === node.workflow.name ||
+        compositionAncestors.includes(node.workflow.name)
+      ) {
+        return {
+          state: 'failed',
+          output: '',
+          error: `Workflow composition cycle detected: ${[...compositionAncestors, workflow.name, node.workflow.name].join(' -> ')}`,
+        };
+      }
+
+      const snapshottedChild = compositionDefinitions?.get(node.workflow.name);
+      const discovery = snapshottedChild
+        ? undefined
+        : await discoverWorkflowsWithConfig(cwd, deps.loadConfig);
+      const discoveredChild = discovery?.workflows.find(
+        item => item.workflow.name === node.workflow.name
+      );
+      const childDefinition = snapshottedChild ?? discoveredChild?.workflow;
+      if (!childDefinition) {
+        return {
+          state: 'failed',
+          output: '',
+          error: `Child workflow '${node.workflow.name}' was not found`,
+        };
+      }
+
+      const mutableNodeOutputs = new Map(currentNodeOutputs);
+      const mappedInputs = Object.fromEntries(
+        Object.entries(node.workflow.inputs ?? {}).map(([key, value]) => [
+          key,
+          typeof value === 'string' ? resolveCompositionInput(value, mutableNodeOutputs) : value,
+        ])
+      );
+      assertObjectContract(
+        `Child workflow '${childDefinition.name}' inputs`,
+        mappedInputs,
+        childDefinition.input_schema
+      );
+
+      const mappedArtifacts: Record<string, string> = {};
+      for (const [alias, configuredPath] of Object.entries(node.workflow.artifacts?.inputs ?? {})) {
+        const renderedPath = substituteNodeOutputRefs(configuredPath, mutableNodeOutputs);
+        const path = resolveArtifactPath(artifactsDir, renderedPath, `Artifact input '${alias}'`);
+        await access(path);
+        mappedArtifacts[alias] = path;
+      }
+
+      let childRun = await deps.store.getChildWorkflowRun(workflowRun.id, node.id);
+      if (!childRun) {
+        childRun = await deps.store.createWorkflowRun({
+          workflow_name: childDefinition.name,
+          conversation_id: conversationDbId,
+          codebase_id: codebaseId,
+          user_message: userMessage,
+          working_path: cwd,
+          parent_conversation_id: parentConversationId,
+          parent_workflow_run_id: workflowRun.id,
+          parent_node_id: node.id,
+          user_id: userId,
+          metadata: { composition_depth: compositionDepth + 1, inputs: mappedInputs },
+        });
+        await deps.store.createWorkflowEvent({
+          workflow_run_id: workflowRun.id,
+          event_type: 'child_workflow_started',
+          step_name: node.id,
+          data: { childRunId: childRun.id, workflowName: childRun.workflow_name },
+        });
+      }
+
+      const childRunId = childRun.id;
+      const childArtifactsDir = join(artifactsDir, 'children', node.id, childRunId);
+
+      const collectChildOutput = async (): Promise<NodeOutput> => {
+        const completed = await deps.store.getCompletedDagNodeOutputs(childRunId);
+        const childNodeOutputs = new Map<string, NodeOutput>();
+        for (const [nodeId, output] of completed) {
+          childNodeOutputs.set(nodeId, { state: 'completed', output });
+        }
+        const outputProperties =
+          childDefinition.output_schema?.properties !== null &&
+          typeof childDefinition.output_schema?.properties === 'object' &&
+          !Array.isArray(childDefinition.output_schema.properties)
+            ? (childDefinition.output_schema.properties as Record<string, unknown>)
+            : {};
+        const publishedOutputs = Object.fromEntries(
+          Object.entries(childDefinition.outputs ?? {}).map(([key, mapping]) => {
+            const property = outputProperties[key];
+            const expectedType =
+              property !== null && typeof property === 'object'
+                ? (property as Record<string, unknown>).type
+                : undefined;
+            return [key, resolvePublishedOutput(mapping, childNodeOutputs, expectedType)];
+          })
+        );
+        assertObjectContract(
+          `Child workflow '${childDefinition.name}' outputs`,
+          publishedOutputs,
+          childDefinition.output_schema
+        );
+        const publishedArtifacts: Record<string, string> = {};
+        for (const [alias, configuredPath] of Object.entries(
+          node.workflow.artifacts?.outputs ?? {}
+        )) {
+          const path = resolveArtifactPath(
+            childArtifactsDir,
+            configuredPath,
+            `Artifact output '${alias}'`
+          );
+          await access(path);
+          publishedArtifacts[alias] = path;
+        }
+        const structuredOutput = { ...publishedOutputs, artifacts: publishedArtifacts };
+        await deps.store.updateWorkflowRun(childRunId, {
+          metadata: { composition_outputs: structuredOutput, artifacts_dir: childArtifactsDir },
+        });
+        return {
+          state: 'completed',
+          output: JSON.stringify(structuredOutput),
+          structuredOutput,
+          declaredFields: Object.keys(publishedOutputs),
+        };
+      };
+
+      if (childRun.status === 'completed') return collectChildOutput();
+      if (childRun.status === 'paused') {
+        await deps.store.pauseWorkflowRun(workflowRun.id, {
+          nodeId: node.id,
+          message: `Child workflow '${childRun.workflow_name}' is paused`,
+          type: 'child_workflow',
+          childRunId: childRun.id,
+        });
+        return { state: 'running', output: '' };
+      }
+      if (childRun.status === 'running') {
+        return {
+          state: 'failed',
+          output: '',
+          error: `Child workflow '${childRun.workflow_name}' is already running in another process`,
+        };
+      }
+
+      let priorChildOutputs: Map<string, string> | undefined;
+      if (childRun.status === 'failed') {
+        priorChildOutputs = await deps.store.getCompletedDagNodeOutputs(childRun.id);
+        childRun = await deps.store.resumeWorkflowRun(childRun.id);
+      }
+
+      const childResult = await executeWorkflow(
+        deps,
+        platform,
+        conversationId,
+        cwd,
+        childDefinition,
+        userMessage,
+        conversationDbId,
+        {
+          codebaseId,
+          issueContext,
+          isolationContext,
+          parentConversationId,
+          preCreatedRun: childRun,
+          ...(priorChildOutputs ? { priorCompletedNodes: priorChildOutputs } : {}),
+          userId,
+          source: discoveredChild?.source ?? source,
+          inputs: mappedInputs,
+          artifactInputs: mappedArtifacts,
+          compositionDepth: compositionDepth + 1,
+          compositionAncestors: [...compositionAncestors, workflow.name],
+          skipPathLock: true,
+          artifactsDirOverride: childArtifactsDir,
+          compositionDefinitions,
+        }
+      );
+
+      if (childResult.success && 'paused' in childResult && childResult.paused) {
+        await deps.store.createWorkflowEvent({
+          workflow_run_id: workflowRun.id,
+          event_type: 'child_workflow_paused',
+          step_name: node.id,
+          data: { childRunId: childRun.id },
+        });
+        await deps.store.pauseWorkflowRun(workflowRun.id, {
+          nodeId: node.id,
+          message: `Child workflow '${childRun.workflow_name}' is paused`,
+          type: 'child_workflow',
+          childRunId: childRun.id,
+        });
+        return { state: 'running', output: '' };
+      }
+      if (!childResult.success) {
+        await deps.store.createWorkflowEvent({
+          workflow_run_id: workflowRun.id,
+          event_type: 'child_workflow_failed',
+          step_name: node.id,
+          data: { childRunId: childRun.id, error: childResult.error },
+        });
+        return { state: 'failed', output: '', error: childResult.error };
+      }
+
+      const output = await collectChildOutput();
+      await deps.store.createWorkflowEvent({
+        workflow_run_id: workflowRun.id,
+        event_type: 'child_workflow_completed',
+        step_name: node.id,
+        data: { childRunId: childRun.id },
+      });
+      return output;
+    };
+
     // Execute the DAG workflow
     const dagSummary = await executeDagWorkflow(
       deps,
@@ -883,7 +1561,8 @@ export async function executeWorkflow(
       dagPriorCompletedNodes,
       source,
       aiProfile,
-      workflowPreset
+      workflowPreset,
+      childWorkflowRunner
     );
 
     // executeDagWorkflow throws on fatal errors; check DB status for result

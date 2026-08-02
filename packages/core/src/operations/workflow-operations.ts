@@ -36,7 +36,7 @@ export interface ApprovalOperationResult {
   codebaseId: string | null;
   /** Internal DB UUID — resolve via getConversationById() to get platform_conversation_id. */
   conversationId: string;
-  type: 'interactive_loop' | 'approval_gate';
+  type: 'interactive_loop' | 'approval_gate' | 'phase_transition';
 }
 
 export interface RejectionOperationResult {
@@ -91,13 +91,67 @@ export async function getWorkflowStatus(): Promise<WorkflowStatusData> {
  * Does NOT execute the workflow — callers decide whether to run.
  */
 export async function resumeWorkflow(runId: string): Promise<WorkflowRun> {
-  const run = await getRunOrThrow(runId, 'operations.workflow_resume_lookup_failed');
+  const requestedRun = await getRunOrThrow(runId, 'operations.workflow_resume_lookup_failed');
+  const pausedDescendant = await workflowDb.findActivePausedDescendant(requestedRun.id);
+  if (
+    (pausedDescendant?.metadata.approval as ApprovalContext | undefined)?.type ===
+    'phase_transition'
+  ) {
+    throw new Error(
+      'This run is waiting to continue to the next phase. Use workflow continue instead.'
+    );
+  }
+  const run = (await workflowDb.getRootWorkflowRun(requestedRun.id)) ?? requestedRun;
   if (!RESUMABLE_WORKFLOW_STATUSES.includes(run.status)) {
     throw new Error(
       `Cannot resume run with status '${run.status}'. Only failed or paused runs can be resumed.`
     );
   }
   return run;
+}
+
+/** Record a manual phase transition and make the root run resumable. */
+export async function continueWorkflow(runId: string): Promise<ApprovalOperationResult> {
+  const requestedRun = await getRunOrThrow(runId, 'operations.workflow_continue_lookup_failed');
+  const run = (await workflowDb.findActivePausedDescendant(requestedRun.id)) ?? requestedRun;
+  if (run.status !== 'paused') {
+    throw new Error(
+      `Cannot continue run with status '${run.status}'. Only a paused phase can continue.`
+    );
+  }
+  const approval = isApprovalContext(run.metadata.approval) ? run.metadata.approval : undefined;
+  if (approval?.type !== 'phase_transition') {
+    throw new Error('This run is not waiting for a manual phase transition.');
+  }
+
+  await workflowEventDb.createWorkflowEvent({
+    workflow_run_id: run.id,
+    event_type: 'phase_transition_continued',
+    step_name: approval.nodeId,
+    data: { nextNodeIds: approval.nextNodeIds ?? [] },
+  });
+  const continuedTransitions = Array.isArray(run.metadata.continued_phase_transitions)
+    ? run.metadata.continued_phase_transitions.filter(
+        (nodeId): nodeId is string => typeof nodeId === 'string'
+      )
+    : [];
+  await workflowDb.updateWorkflowRun(run.id, {
+    status: 'failed',
+    metadata: {
+      approval: null,
+      continued_phase_transitions: [...new Set([...continuedTransitions, approval.nodeId])],
+    },
+  });
+  await workflowDb.markPausedAncestorsResumable(run.id);
+  const root = (await workflowDb.getRootWorkflowRun(run.id)) ?? requestedRun;
+  return {
+    workflowName: root.workflow_name,
+    workingPath: root.working_path,
+    userMessage: root.user_message,
+    codebaseId: root.codebase_id,
+    conversationId: root.conversation_id,
+    type: 'phase_transition',
+  };
 }
 
 /**
@@ -116,7 +170,7 @@ export async function abandonWorkflow(runId: string): Promise<WorkflowRun> {
     );
   }
   try {
-    await workflowDb.cancelWorkflowRun(runId);
+    await workflowDb.cancelWorkflowRunTree(runId);
   } catch (error) {
     const err = error as Error;
     getLog().error(
@@ -139,7 +193,8 @@ export async function approveWorkflow(
   runId: string,
   comment?: string
 ): Promise<ApprovalOperationResult> {
-  const run = await getRunOrThrow(runId, 'operations.workflow_approve_lookup_failed');
+  const requestedRun = await getRunOrThrow(runId, 'operations.workflow_approve_lookup_failed');
+  const run = (await workflowDb.findActivePausedDescendant(requestedRun.id)) ?? requestedRun;
   if (run.status !== 'paused') {
     throw new Error(
       `Cannot approve run with status '${run.status}'. Only paused runs can be approved.`
@@ -152,6 +207,11 @@ export async function approveWorkflow(
   if (!approval?.nodeId) {
     throw new Error('Workflow run is paused but missing approval context.');
   }
+  if (approval.type === 'phase_transition') {
+    throw new Error(
+      'This run is waiting to continue to the next phase. Use workflow continue instead.'
+    );
+  }
 
   const approvalComment = comment ?? 'Approved';
 
@@ -162,7 +222,7 @@ export async function approveWorkflow(
     // here would cause the resume to skip the loop node entirely.
     if (approval.type === 'interactive_loop') {
       await workflowEventDb.createWorkflowEvent({
-        workflow_run_id: runId,
+        workflow_run_id: run.id,
         event_type: 'approval_received',
         step_name: approval.nodeId,
         data: { decision: 'approved', comment: approvalComment, iteration: approval.iteration },
@@ -172,16 +232,18 @@ export async function approveWorkflow(
       // Transition to 'failed' so findResumableRun picks it up.
       // IMPORTANT: metadata is MERGED (not replaced) — the approval context must survive
       // intact so the resumed executor can detect the correct startIteration.
-      await workflowDb.updateWorkflowRun(runId, {
+      await workflowDb.updateWorkflowRun(run.id, {
         status: 'failed',
         metadata: { loop_user_input: approvalComment },
       });
+      await workflowDb.markPausedAncestorsResumable(run.id);
+      const root = (await workflowDb.getRootWorkflowRun(run.id)) ?? requestedRun;
       return {
-        workflowName: run.workflow_name,
-        workingPath: run.working_path,
-        userMessage: run.user_message,
-        codebaseId: run.codebase_id,
-        conversationId: run.conversation_id,
+        workflowName: root.workflow_name,
+        workingPath: root.working_path,
+        userMessage: root.user_message,
+        codebaseId: root.codebase_id,
+        conversationId: root.conversation_id,
         type: 'interactive_loop',
       };
     }
@@ -189,13 +251,13 @@ export async function approveWorkflow(
     // Standard approval node path
     const nodeOutput = approval.captureResponse === true ? approvalComment : '';
     await workflowEventDb.createWorkflowEvent({
-      workflow_run_id: runId,
+      workflow_run_id: run.id,
       event_type: 'node_completed',
       step_name: approval.nodeId,
       data: { node_output: nodeOutput, approval_decision: 'approved' },
     });
     await workflowEventDb.createWorkflowEvent({
-      workflow_run_id: runId,
+      workflow_run_id: run.id,
       event_type: 'approval_received',
       step_name: approval.nodeId,
       data: { decision: 'approved', comment: approvalComment },
@@ -203,7 +265,7 @@ export async function approveWorkflow(
     // Anonymous telemetry: binary resolution only — no ids/comments/names.
     captureApprovalResolved({ resolution: 'approved' });
     // Transition to 'failed' so findResumableRun picks it up. Clear any rejection state.
-    await workflowDb.updateWorkflowRun(runId, {
+    await workflowDb.updateWorkflowRun(run.id, {
       status: 'failed',
       metadata: { approval_response: 'approved', rejection_reason: '', rejection_count: 0 },
     });
@@ -215,12 +277,14 @@ export async function approveWorkflow(
     );
     throw new Error(`Failed to approve workflow run ${runId}: ${err.message}`);
   }
+  await workflowDb.markPausedAncestorsResumable(run.id);
+  const root = (await workflowDb.getRootWorkflowRun(run.id)) ?? requestedRun;
   return {
-    workflowName: run.workflow_name,
-    workingPath: run.working_path,
-    userMessage: run.user_message,
-    codebaseId: run.codebase_id,
-    conversationId: run.conversation_id,
+    workflowName: root.workflow_name,
+    workingPath: root.working_path,
+    userMessage: root.user_message,
+    codebaseId: root.codebase_id,
+    conversationId: root.conversation_id,
     type: 'approval_gate',
   };
 }
@@ -235,7 +299,8 @@ export async function rejectWorkflow(
   runId: string,
   reason?: string
 ): Promise<RejectionOperationResult> {
-  const run = await getRunOrThrow(runId, 'operations.workflow_reject_lookup_failed');
+  const requestedRun = await getRunOrThrow(runId, 'operations.workflow_reject_lookup_failed');
+  const run = (await workflowDb.findActivePausedDescendant(requestedRun.id)) ?? requestedRun;
   if (run.status !== 'paused') {
     throw new Error(
       `Cannot reject run with status '${run.status}'. Only paused runs can be rejected.`
@@ -245,13 +310,18 @@ export async function rejectWorkflow(
   const approval: ApprovalContext | undefined = isApprovalContext(rawApproval)
     ? rawApproval
     : undefined;
+  if (approval?.type === 'phase_transition') {
+    throw new Error(
+      'This run is waiting to continue to the next phase. Use workflow continue instead.'
+    );
+  }
   const rejectReason = reason ?? 'Rejected';
   const currentCount = (run.metadata.rejection_count as number | undefined) ?? 0;
   const maxAttempts = approval?.onRejectMaxAttempts ?? 3;
 
   try {
     await workflowEventDb.createWorkflowEvent({
-      workflow_run_id: runId,
+      workflow_run_id: run.id,
       event_type: 'approval_received',
       step_name: approval?.nodeId ?? 'unknown',
       data: { decision: 'rejected', reason: rejectReason },
@@ -261,7 +331,7 @@ export async function rejectWorkflow(
 
     if (approval?.onRejectPrompt !== undefined) {
       if (currentCount + 1 >= maxAttempts) {
-        await workflowDb.cancelWorkflowRun(runId);
+        await workflowDb.cancelWorkflowRunTree(run.id);
         return {
           workflowName: run.workflow_name,
           workingPath: run.working_path,
@@ -272,22 +342,24 @@ export async function rejectWorkflow(
           maxAttemptsReached: true,
         };
       }
-      await workflowDb.updateWorkflowRun(runId, {
+      await workflowDb.updateWorkflowRun(run.id, {
         status: 'failed',
         metadata: { rejection_reason: rejectReason, rejection_count: currentCount + 1 },
       });
+      await workflowDb.markPausedAncestorsResumable(run.id);
+      const root = (await workflowDb.getRootWorkflowRun(run.id)) ?? requestedRun;
       return {
-        workflowName: run.workflow_name,
-        workingPath: run.working_path,
-        userMessage: run.user_message,
-        codebaseId: run.codebase_id,
-        conversationId: run.conversation_id,
+        workflowName: root.workflow_name,
+        workingPath: root.working_path,
+        userMessage: root.user_message,
+        codebaseId: root.codebase_id,
+        conversationId: root.conversation_id,
         cancelled: false,
         maxAttemptsReached: false,
       };
     }
 
-    await workflowDb.cancelWorkflowRun(runId);
+    await workflowDb.cancelWorkflowRunTree(run.id);
   } catch (error) {
     const err = error as Error;
     getLog().error(

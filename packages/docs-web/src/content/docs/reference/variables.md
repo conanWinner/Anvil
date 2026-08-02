@@ -139,3 +139,15 @@ These are standard environment variables read from `process.env` at clone time. 
 | `GH_TOKEN` | GitHub personal access token for authenticated clone operations |
 | `GITLAB_TOKEN` | GitLab personal or project access token (`glpat-*`) for authenticated GitLab clones |
 | `GITEA_TOKEN` | Gitea API token for authenticated Gitea/Forgejo clones |
+## Workflow composition variables
+
+- `$INPUTS.<field>` reads a typed input supplied to the current workflow.
+- `$node.output.<field>` reads a published node or child-workflow output.
+- `$node.artifacts.<alias>` reads an artifact published by a child workflow.
+- `$ARTIFACT_INPUTS.<alias>` reads an artifact mapped from the parent run.
+- `$ARTIFACTS_DIR` is the current run's artifact namespace. A child uses
+  `children/<parent-node-id>/<child-run-id>/` beneath the parent artifact root.
+
+Artifact mappings are confined to the parent artifact root. Traversal outside
+that root is rejected, and declared child outputs must exist before the child
+can complete.

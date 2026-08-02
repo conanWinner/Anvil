@@ -40,6 +40,7 @@ mock.module('@anvil/core', () => ({
     }
   },
   generateAndSetTitle: mockGenerateAndSetTitle,
+  handoffConversationMemory: mock(async () => ({ updated: false, entries: 0 })),
   getAnvilWorkspacesPath: () => '/tmp/.anvil/workspaces',
   createLogger: () => ({
     fatal: mock(() => undefined),
@@ -74,6 +75,24 @@ mock.module('@anvil/core/db/conversations', () => ({
     deleted_at: null,
     codebase_id: null,
   })),
+  createWebConversationIdempotent: mock(async () => ({
+    created: true,
+    conversation: {
+      id: 'internal-uuid-123',
+      platform_conversation_id: 'web-test-abc',
+      ai_assistant_type: 'claude',
+      codebase_id: null,
+    },
+  })),
+}));
+
+mock.module('@anvil/core/db/project-memory', () => ({
+  deactivateUneditedMemoryFromConversation: mock(async () => 0),
+  softDeleteConversationWithMemory: mockSoftDeleteConversation,
+  listProjectMemoryEntries: mock(async () => []),
+}));
+mock.module('@anvil/core/db/workflow-intakes', () => ({
+  getActiveWorkflowIntakeDraftByConversation: mock(async () => null),
 }));
 
 mock.module('@anvil/core/db/isolation-environments', () => ({}));

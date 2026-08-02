@@ -130,6 +130,16 @@ export const agentDefinitionSchema = z.object({
 
 export type AgentDefinition = z.infer<typeof agentDefinitionSchema>;
 
+/** Optional presentation metadata consumed by generic workflow visualizers. */
+export const workflowUiSchema = z.object({
+  label: z.string().trim().min(1).optional(),
+  phase: z.string().trim().min(1).optional(),
+  phase_label: z.string().trim().min(1).optional(),
+  gate: z.string().trim().min(1).optional(),
+});
+
+export type WorkflowUi = z.infer<typeof workflowUiSchema>;
+
 // Kebab-case: no leading/trailing/double hyphens (e.g. `brief-gen`, not `-brief`, `brief-`, `brief--gen`).
 const AGENT_ID_REGEX = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
@@ -139,6 +149,7 @@ const AGENT_ID_REGEX = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
 export const dagNodeBaseSchema = z.object({
   id: z.string(),
+  ui: workflowUiSchema.optional(),
   depends_on: z.array(z.string()).optional(),
   when: z.string().optional(),
   trigger_rule: triggerRuleSchema.optional(),
@@ -215,6 +226,7 @@ export const commandNodeSchema = dagNodeBaseSchema.extend({
 
 /** DAG node that runs a named command from .anvil/commands/ */
 export type CommandNode = z.infer<typeof commandNodeSchema> & {
+  action?: never;
   prompt?: never;
   bash?: never;
   loop?: never;
@@ -229,6 +241,7 @@ export const promptNodeSchema = dagNodeBaseSchema.extend({
 
 /** DAG node with an inline prompt (no command file) */
 export type PromptNode = z.infer<typeof promptNodeSchema> & {
+  action?: never;
   command?: never;
   bash?: never;
   loop?: never;
@@ -248,6 +261,7 @@ export const bashNodeSchema = dagNodeBaseSchema.extend({
 
 /** DAG node that runs a shell script without AI */
 export type BashNode = z.infer<typeof bashNodeSchema> & {
+  action?: never;
   command?: never;
   prompt?: never;
   loop?: never;
@@ -268,8 +282,45 @@ export const scriptNodeSchema = dagNodeBaseSchema.extend({
   timeout: z.number().optional(),
 });
 
+/** Artifact paths declared by a composed child are always relative names. */
+const workflowArtifactMapSchema = z.record(z.string().min(1), z.string().min(1));
+
+/**
+ * Configuration for a workflow-composition node. `inputs` are templates and
+ * are validated against the referenced child's input_schema during preflight.
+ */
+export const childWorkflowConfigSchema = z.object({
+  name: z.string().trim().min(1, "'workflow.name' must be a non-empty string"),
+  inputs: z.record(z.string().min(1), z.unknown()).optional(),
+  artifacts: z
+    .object({
+      inputs: workflowArtifactMapSchema.optional(),
+      outputs: workflowArtifactMapSchema.optional(),
+    })
+    .optional(),
+});
+
+export type ChildWorkflowConfig = z.infer<typeof childWorkflowConfigSchema>;
+
+export const workflowNodeSchema = dagNodeBaseSchema.extend({
+  workflow: childWorkflowConfigSchema,
+});
+
+/** DAG node that executes another workflow as a first-class child run. */
+export type WorkflowNode = z.infer<typeof workflowNodeSchema> & {
+  action?: never;
+  command?: never;
+  prompt?: never;
+  bash?: never;
+  loop?: never;
+  approval?: never;
+  cancel?: never;
+  script?: never;
+};
+
 /** DAG node that runs a TypeScript or Python script via bun or uv */
 export type ScriptNode = z.infer<typeof scriptNodeSchema> & {
+  action?: never;
   command?: never;
   prompt?: never;
   bash?: never;
@@ -289,6 +340,7 @@ export const loopNodeSchema = dagNodeBaseSchema.extend({
 
 /** DAG node that runs an AI prompt in a loop until a completion condition is met */
 export type LoopNode = z.infer<typeof loopNodeSchema> & {
+  action?: never;
   command?: never;
   prompt?: never;
   bash?: never;
@@ -319,6 +371,7 @@ export const approvalNodeSchema = dagNodeBaseSchema.extend({
 
 /** DAG node that pauses workflow execution for human approval */
 export type ApprovalNode = z.infer<typeof approvalNodeSchema> & {
+  action?: never;
   command?: never;
   prompt?: never;
   bash?: never;
@@ -337,12 +390,42 @@ export const cancelNodeSchema = dagNodeBaseSchema.extend({
 
 /** DAG node that cancels the workflow run with a reason string */
 export type CancelNode = z.infer<typeof cancelNodeSchema> & {
+  action?: never;
   command?: never;
   prompt?: never;
   bash?: never;
   loop?: never;
   approval?: never;
   script?: never;
+};
+
+/**
+ * Generic deterministic executor reference. The workflow engine deliberately
+ * knows nothing about the domain behind an executor ID; composition roots
+ * provide the registry and validators through WorkflowDeps.
+ */
+export const actionConfigSchema = z.object({
+  executor: z.string().trim().min(1, "'action.executor' must be a non-empty string"),
+  input: z.record(z.string(), z.unknown()).optional(),
+});
+
+export type ActionConfig = z.infer<typeof actionConfigSchema>;
+
+export const actionNodeSchema = dagNodeBaseSchema.extend({
+  action: actionConfigSchema,
+  timeout: z.number().optional(),
+});
+
+/** DAG node dispatched to an injected deterministic action executor. */
+export type ActionNode = z.infer<typeof actionNodeSchema> & {
+  command?: never;
+  prompt?: never;
+  bash?: never;
+  loop?: never;
+  approval?: never;
+  cancel?: never;
+  script?: never;
+  workflow?: never;
 };
 
 /** A single node in a DAG workflow. command, prompt, bash, loop, approval, cancel, and script are mutually exclusive. */
@@ -353,7 +436,9 @@ export type DagNode =
   | LoopNode
   | ApprovalNode
   | CancelNode
-  | ScriptNode;
+  | ScriptNode
+  | WorkflowNode
+  | ActionNode;
 
 // ---------------------------------------------------------------------------
 // AI-specific fields that are meaningless on non-AI nodes
@@ -383,6 +468,9 @@ export const BASH_NODE_AI_FIELDS: readonly string[] = [
 
 /** AI-specific fields that are meaningless on script nodes — same as bash nodes */
 export const SCRIPT_NODE_AI_FIELDS: readonly string[] = BASH_NODE_AI_FIELDS;
+
+/** AI-specific fields that are meaningless on deterministic action nodes. */
+export const ACTION_NODE_AI_FIELDS: readonly string[] = BASH_NODE_AI_FIELDS;
 
 /**
  * AI-specific fields that are unsupported on loop nodes.
@@ -429,6 +517,8 @@ export const dagNodeSchema = dagNodeBaseSchema
     cancel: z.string().optional(),
     // Script-only
     script: z.string().optional(),
+    workflow: childWorkflowConfigSchema.optional(),
+    action: actionConfigSchema.optional(),
     runtime: z.enum(['bun', 'uv']).optional(),
     deps: z.array(z.string().min(1, 'each dep must be a non-empty string')).optional(),
     // Bash/Script shared
@@ -454,6 +544,8 @@ export const dagNodeSchema = dagNodeBaseSchema
     const hasApproval = data.approval !== undefined;
     const hasCancel = typeof data.cancel === 'string' && data.cancel.trim().length > 0;
     const hasScript = typeof data.script === 'string' && data.script.trim().length > 0;
+    const hasWorkflow = data.workflow !== undefined;
+    const hasAction = data.action !== undefined;
 
     const modeCount = [
       hasCommand,
@@ -463,13 +555,15 @@ export const dagNodeSchema = dagNodeBaseSchema
       hasApproval,
       hasCancel,
       hasScript,
+      hasWorkflow,
+      hasAction,
     ].filter(Boolean).length;
 
     if (modeCount > 1) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message:
-          "'command', 'prompt', 'bash', 'loop', 'approval', 'cancel', and 'script' are mutually exclusive",
+          "'command', 'prompt', 'bash', 'loop', 'approval', 'cancel', 'script', 'workflow', and 'action' are mutually exclusive",
       });
       return z.NEVER;
     }
@@ -501,7 +595,7 @@ export const dagNodeSchema = dagNodeBaseSchema
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message:
-          "must have either 'command', 'prompt', 'bash', 'loop', 'approval', 'cancel', or 'script'",
+          "must have either 'command', 'prompt', 'bash', 'loop', 'approval', 'cancel', 'script', 'workflow', or 'action'",
       });
       return z.NEVER;
     }
@@ -544,6 +638,14 @@ export const dagNodeSchema = dagNodeBaseSchema
       }
     }
 
+    if (hasAction && data.timeout !== undefined && (data.timeout <= 0 || !isFinite(data.timeout))) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "'timeout' must be a positive number (ms)",
+        path: ['timeout'],
+      });
+    }
+
     // Loop node: retry not supported
     if (hasLoop && data.retry !== undefined) {
       ctx.addIssue({
@@ -571,6 +673,7 @@ export const dagNodeSchema = dagNodeBaseSchema
     // Common base fields (sparse — only include defined values)
     const base = {
       id,
+      ...(data.ui !== undefined ? { ui: data.ui } : {}),
       ...(data.depends_on !== undefined && data.depends_on.length > 0
         ? { depends_on: data.depends_on }
         : {}),
@@ -640,6 +743,17 @@ export const dagNodeSchema = dagNodeBaseSchema
     if (data.cancel !== undefined && data.cancel.trim().length > 0) {
       return { ...base, ...shared, cancel: data.cancel.trim() } as CancelNode;
     }
+    if (data.workflow !== undefined) {
+      return { ...base, ...shared, workflow: data.workflow } as WorkflowNode;
+    }
+    if (data.action !== undefined) {
+      return {
+        ...base,
+        ...shared,
+        action: data.action,
+        ...(data.timeout !== undefined ? { timeout: data.timeout } : {}),
+      } as ActionNode;
+    }
     // loop — guaranteed by superRefine to be defined at this point
     if (!data.loop) throw new Error('unreachable: loop must be defined after superRefine');
     return { ...base, loop: data.loop } as LoopNode;
@@ -675,6 +789,16 @@ export function isScriptNode(node: DagNode): node is ScriptNode {
   return 'script' in node && typeof node.script === 'string';
 }
 
+/** Type guard: check if a DAG node invokes a child workflow. */
+export function isWorkflowNode(node: DagNode): node is WorkflowNode {
+  return 'workflow' in node && typeof node.workflow === 'object' && node.workflow !== null;
+}
+
+/** Type guard: check if a DAG node invokes a registered action executor. */
+export function isActionNode(node: DagNode): node is ActionNode {
+  return 'action' in node && typeof node.action === 'object' && node.action !== null;
+}
+
 /** Type guard: validates a value is a known TriggerRule */
 export function isTriggerRule(value: unknown): value is TriggerRule {
   return typeof value === 'string' && (TRIGGER_RULES as readonly string[]).includes(value);
@@ -694,6 +818,8 @@ export function isPersistableNode(node: DagNode): boolean {
     !isApprovalNode(node) &&
     !isCancelNode(node) &&
     !isScriptNode(node) &&
-    !isBashNode(node)
+    !isBashNode(node) &&
+    !isActionNode(node) &&
+    !isWorkflowNode(node)
   );
 }

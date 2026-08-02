@@ -47,6 +47,7 @@ import { Toolbar } from './components/Toolbar';
 interface BuilderPageProps {
   initialWorkflow: BuilderWorkflow;
   onChange?: (bw: BuilderWorkflow) => void;
+  availableWorkflows?: readonly string[];
 }
 
 const VALIDATION_DEBOUNCE_MS = 300;
@@ -58,7 +59,11 @@ type UnstampedAction = EditorAction extends infer A
     : never
   : never;
 
-export function BuilderPage({ initialWorkflow, onChange }: BuilderPageProps): ReactElement {
+export function BuilderPage({
+  initialWorkflow,
+  onChange,
+  availableWorkflows,
+}: BuilderPageProps): ReactElement {
   const [state, dispatch] = useReducer(editorReducer, initialWorkflow, createEditorState);
   const [issues, setIssues] = useState<Issue[]>(() => runValidation(initialWorkflow));
   const [helpOpen, setHelpOpen] = useState(false);
@@ -333,6 +338,51 @@ export function BuilderPage({ initialWorkflow, onChange }: BuilderPageProps): Re
         </div>
 
         <div className="flex w-[340px] shrink-0 flex-col border-l border-border bg-surface">
+          <section className="border-b border-border p-3">
+            <label className="block font-mono text-[10px] font-bold uppercase tracking-[0.12em] text-text-tertiary">
+              Phase progression
+              <select
+                value={state.workflow.meta.progression?.mode ?? 'automatic'}
+                onChange={event => {
+                  const progression =
+                    event.target.value === 'manual'
+                      ? { mode: 'manual' as const, auto_continue_after: [] }
+                      : undefined;
+                  stamped({
+                    type: 'patch-meta',
+                    meta: { ...state.workflow.meta, progression },
+                  });
+                }}
+                className="mt-1 w-full rounded border border-border bg-surface-inset px-2 py-1.5 text-xs text-text-primary"
+              >
+                <option value="automatic">Automatic</option>
+                <option value="manual">Manual after workflow phases</option>
+              </select>
+            </label>
+            {state.workflow.meta.progression?.mode === 'manual' ? (
+              <label className="mt-2 block font-mono text-[10px] text-text-tertiary">
+                Auto-continue after (workflow node IDs, comma-separated)
+                <input
+                  value={(state.workflow.meta.progression.auto_continue_after ?? []).join(', ')}
+                  onChange={event => {
+                    const autoContinueAfter = event.target.value
+                      .split(',')
+                      .map(value => value.trim())
+                      .filter(Boolean);
+                    stamped({
+                      type: 'patch-meta',
+                      meta: {
+                        ...state.workflow.meta,
+                        progression: { mode: 'manual', auto_continue_after: autoContinueAfter },
+                      },
+                    });
+                  }}
+                  placeholder="readiness"
+                  className="mt-1 w-full rounded border border-border bg-surface-inset px-2 py-1.5 text-xs text-text-primary"
+                />
+              </label>
+            ) : null}
+          </section>
           <div className="flex border-b border-border">
             {(['inspect', 'yaml'] as const).map(tab => (
               <button
@@ -366,6 +416,7 @@ export function BuilderPage({ initialWorkflow, onChange }: BuilderPageProps): Re
                 otherIds={state.workflow.nodes
                   .filter(n => n.id !== selectedNode?.id)
                   .map(n => n.id)}
+                availableWorkflows={availableWorkflows}
                 onPatch={(node): void => {
                   stamped({ type: 'patch-node', node });
                 }}

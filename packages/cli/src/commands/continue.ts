@@ -6,7 +6,7 @@ import * as isolationDb from '@anvil/core/db/isolation-environments';
 import * as codebaseDb from '@anvil/core/db/codebases';
 import * as workflowDb from '@anvil/core/db/workflows';
 import { execFileAsync } from '@anvil/git';
-import { createLogger, getRunArtifactsPath, parseOwnerRepo } from '@anvil/paths';
+import { createLogger, resolveRegisteredProjectRoot } from '@anvil/paths';
 import type { WorkflowRun } from '@anvil/workflows/schemas/workflow-run';
 import { readdir, readFile, stat } from 'fs/promises';
 import { join } from 'path';
@@ -210,9 +210,9 @@ async function resolveArtifactsDir(
   try {
     const codebase = await codebaseDb.getCodebase(codebaseId);
     if (codebase) {
-      const parsed = parseOwnerRepo(codebase.name);
-      if (parsed) {
-        const dir = getRunArtifactsPath(parsed.owner, parsed.repo, runId);
+      const projectRoot = resolveRegisteredProjectRoot(codebase.name, codebase.default_cwd);
+      if (projectRoot) {
+        const dir = join(projectRoot, 'artifacts', 'runs', runId);
         try {
           await stat(dir);
           return dir;

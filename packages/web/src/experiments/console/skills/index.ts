@@ -11,13 +11,16 @@ export * from './projects';
 export * from './workflows';
 export * from './worktrees';
 export * from './runs';
+export * from './flow';
 export * from './startRun';
 export * from './messages';
 export * from './conversations';
+export * from './projectMemory';
 export * from './envVars';
 export * from './settings';
 export * from './providers';
 export * from './github';
+export * from './intakes';
 export * from './providerKeys';
 
 export { HttpError } from '../lib/http';

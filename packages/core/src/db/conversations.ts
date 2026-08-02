@@ -116,6 +116,55 @@ export async function getOrCreateConversation(
   return created.rows[0];
 }
 
+export async function createWebConversationIdempotent(data: {
+  platformId: string;
+  codebaseId?: string;
+  clientRequestId?: string;
+  userId?: string;
+}): Promise<{ conversation: Conversation; created: boolean }> {
+  if (data.clientRequestId) {
+    const existing = await pool.query<Conversation>(
+      'SELECT * FROM remote_agent_conversations WHERE client_request_id = $1',
+      [data.clientRequestId]
+    );
+    if (existing.rows[0]) return { conversation: existing.rows[0], created: false };
+  }
+
+  let assistantType = process.env.DEFAULT_AI_ASSISTANT ?? 'claude';
+  if (data.codebaseId) {
+    const codebase = await pool.query<{ ai_assistant_type: string }>(
+      'SELECT ai_assistant_type FROM remote_agent_codebases WHERE id = $1',
+      [data.codebaseId]
+    );
+    assistantType = codebase.rows[0]?.ai_assistant_type ?? assistantType;
+  }
+  try {
+    const result = await pool.query<Conversation>(
+      `INSERT INTO remote_agent_conversations
+       (platform_type, platform_conversation_id, client_request_id, ai_assistant_type, codebase_id, user_id)
+       VALUES ('web', $1, $2, $3, $4, $5) RETURNING *`,
+      [
+        data.platformId,
+        data.clientRequestId ?? null,
+        assistantType,
+        data.codebaseId ?? null,
+        data.userId ?? null,
+      ]
+    );
+    const conversation = result.rows[0];
+    if (!conversation) throw new Error('Failed to create conversation');
+    return { conversation, created: true };
+  } catch (error: unknown) {
+    if (!data.clientRequestId) throw error;
+    const raced = await pool.query<Conversation>(
+      'SELECT * FROM remote_agent_conversations WHERE client_request_id = $1',
+      [data.clientRequestId]
+    );
+    if (raced.rows[0]) return { conversation: raced.rows[0], created: false };
+    throw error;
+  }
+}
+
 export async function updateConversation(
   id: string,
   updates: Partial<Pick<Conversation, 'codebase_id' | 'cwd' | 'isolation_env_id'>> & {

@@ -168,10 +168,12 @@ mock.module('../workflows/store-adapter', () => ({
 const mockGetPausedWorkflowRun = mock(() => Promise.resolve(null as unknown));
 const mockFindResumableRunByParentConversation = mock(() => Promise.resolve(null as unknown));
 const mockUpdateWorkflowRun = mock(() => Promise.resolve());
+const mockFailWorkflowRun = mock(() => Promise.resolve());
 mock.module('../db/workflows', () => ({
   getPausedWorkflowRun: mockGetPausedWorkflowRun,
   findResumableRunByParentConversation: mockFindResumableRunByParentConversation,
   updateWorkflowRun: mockUpdateWorkflowRun,
+  failWorkflowRun: mockFailWorkflowRun,
 }));
 
 const mockCreateWorkflowEvent = mock(() => Promise.resolve());
@@ -1693,6 +1695,34 @@ describe('workflow dispatch routing — interactive flag', () => {
     expect(opts.parentConversationId).toBe('conv-1');
     expect(opts.preCreatedRun?.id).toBe('resumable-run-1');
     expect(opts.priorCompletedNodes?.size).toBeGreaterThan(0);
+  });
+
+  test('foreground_resume_detected: finalizes a claimed run when executor setup throws', async () => {
+    mockGetOrCreateConversation.mockReturnValueOnce(Promise.resolve(makeDispatchConversation()));
+    mockGetCodebase.mockReturnValueOnce(Promise.resolve(makeDispatchCodebase()));
+    mockHandleCommand.mockReturnValueOnce(Promise.resolve(makeWorkflowResult(true)));
+    mockFindResumableRunByParentConversation.mockReturnValueOnce(
+      Promise.resolve(makeResumableRun({ status: 'paused' }))
+    );
+    mockExecuteWorkflow.mockRejectedValueOnce(new Error('composition snapshot is unavailable'));
+
+    const platform = makePlatform();
+    await handleMessage(platform, 'conv-1', '/workflow run test-workflow');
+
+    expect(mockFailWorkflowRun).toHaveBeenCalledWith(
+      'resumable-run-1',
+      'Resume failed: composition snapshot is unavailable'
+    );
+    expect(mockCreateWorkflowEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workflow_run_id: 'resumable-run-1',
+        event_type: 'workflow_failed',
+      })
+    );
+    expect(platform.sendMessage).toHaveBeenCalledWith(
+      'conv-1',
+      '❌ **Workflow resume failed**: composition snapshot is unavailable'
+    );
   });
 
   test('foreground_resume_detected: falls through to fresh run when hydration returns null', async () => {

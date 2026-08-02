@@ -9,6 +9,8 @@
       "@anvil/core/*": ["../core/src/*"],
       "@anvil/server": ["../server/src"],
       "@anvil/server/*": ["../server/src/*"],
+      "@anvil/system3": ["../system3/src"],
+      "@anvil/system3/*": ["../system3/src/*"],
       "@anvil/workflows": ["../workflows/src"],
       "@anvil/workflows/*": ["../workflows/src/*"],
       "@anvil/paths": ["../paths/src"],
@@ -19,6 +21,7 @@
     "src/**/*",
     "../core/src/**/*.ts",
     "../server/src/**/*.ts",
+    "../system3/src/**/*.ts",
     "../adapters/src/**/*.ts",
     "../workflows/src/defaults/text-imports.d.ts"
   ],

@@ -127,7 +127,7 @@ export function DraftRunCard({ projectId, projectCwd }: DraftRunCardProps): Reac
     skill.listWorkflows(projectCwd)
   );
 
-  const allWorkflows = workflowData?.workflows ?? [];
+  const allWorkflows = workflowData?.workflows.filter(wf => wf.source === 'bundled') ?? [];
   const recommendedNames = workflowData?.recommended ?? [];
 
   // Recommended workflows pinned on top in declared order, then the rest by

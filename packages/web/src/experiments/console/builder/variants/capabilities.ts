@@ -26,4 +26,5 @@ export const VARIANT_CAPABILITIES: Record<VariantId, VariantCapabilities> = {
   bash: { honorsAiFields: false },
   script: { honorsAiFields: false },
   cancel: { honorsAiFields: false },
+  workflow: { honorsAiFields: false },
 };

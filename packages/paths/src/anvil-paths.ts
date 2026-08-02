@@ -111,6 +111,11 @@ export function getCredentialKeyPath(): string {
   return join(getAnvilHome(), 'credential-key');
 }
 
+/** Durable, Anvil-managed copies of files uploaded during workflow intake. */
+export function getWorkflowIntakesPath(): string {
+  return join(getAnvilHome(), 'intakes');
+}
+
 /**
  * Get the home-scoped workflows directory (`~/.anvil/workflows/`).
  * Workflows placed here are discovered from every repo and apply globally —
@@ -446,6 +451,35 @@ export function getRunArtifactsPath(owner: string, repo: string, workflowRunId: 
  */
 export function getRunLogPath(owner: string, repo: string, workflowRunId: string): string {
   return join(getProjectLogsPath(owner, repo), `${workflowRunId}.jsonl`);
+}
+
+/**
+ * Resolve the canonical workspace root for a registered codebase.
+ *
+ * Managed codebases already point inside `workspaces/<owner>/<repo>/source`.
+ * A registered local codebase can instead point at the real external checkout;
+ * its Anvil-owned files still belong under `workspaces/_local/<name>`.
+ */
+export function resolveRegisteredProjectRoot(
+  codebaseName: string,
+  defaultCwd: string
+): string | null {
+  const managedRoot = resolveProjectRootFromCwd(normalize(defaultCwd));
+  if (managedRoot) return managedRoot;
+
+  const parsed = parseOwnerRepo(codebaseName);
+  if (parsed) return getProjectRoot(parsed.owner, parsed.repo);
+
+  if (
+    codebaseName.length > 0 &&
+    codebaseName !== '.' &&
+    codebaseName !== '..' &&
+    SAFE_NAME.test(codebaseName)
+  ) {
+    return getProjectRoot('_local', codebaseName);
+  }
+
+  return null;
 }
 
 /**

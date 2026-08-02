@@ -29,6 +29,14 @@ export async function addProjectByPath(path: string): Promise<Project> {
   return toProject(raw);
 }
 
+export async function createProject(name: string): Promise<Project> {
+  const raw = await requestJson<Parameters<typeof toProject>[0]>('/api/codebases', {
+    method: 'POST',
+    body: JSON.stringify({ create: { name } }),
+  });
+  return toProject(raw);
+}
+
 export async function removeProject(id: string): Promise<void> {
   await requestJson(`/api/codebases/${encodeURIComponent(id)}`, {
     method: 'DELETE',

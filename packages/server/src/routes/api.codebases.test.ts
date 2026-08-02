@@ -1,5 +1,8 @@
-import { describe, test, expect, mock, beforeEach } from 'bun:test';
+import { describe, test, expect, mock, beforeEach, afterAll } from 'bun:test';
 import { OpenAPIHono } from '@hono/zod-openapi';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import type { ConversationLockManager } from '@anvil/core';
 import type { WebAdapter } from '../adapters/web';
 import { validationErrorHook } from './openapi-defaults';
@@ -28,6 +31,10 @@ const mockCloneRepository = mock(async (_url: string) => ({
   codebaseId: 'clone-uuid-1',
   alreadyExisted: false,
 }));
+const mockCreateRepository = mock(async (_name: string) => ({
+  codebaseId: 'create-uuid-1',
+  alreadyExisted: false,
+}));
 const mockRegisterRepository = mock(async (_path: string) => ({
   codebaseId: 'register-uuid-1',
   alreadyExisted: false,
@@ -35,12 +42,38 @@ const mockRegisterRepository = mock(async (_path: string) => ({
 const mockListByCodebase = mock(async (_id: string) => [] as unknown[]);
 const mockRemoveWorktree = mock(async () => {});
 const mockUpdateStatus = mock(async (_id: string, _status: string) => {});
+const intakeRoot = await mkdtemp(join(tmpdir(), 'anvil-api-intakes-'));
+const mockFindConversationByPlatformId = mock(
+  async (_id: string) => null as MockConversation | null
+);
+const mockAddMessage = mock(async () => ({
+  id: 'msg-1',
+  conversation_id: 'conversation-db-1',
+  role: 'user',
+  content: 'intake',
+  metadata: '{}',
+  created_at: new Date().toISOString(),
+}));
+const mockGetActiveIntakeDraft = mock(async () => null as MockIntakeDraft | null);
+const mockUpdateIntakeDraft = mock(
+  async (_id: string, update: Partial<MockIntakeDraft>) =>
+    null as MockIntakeDraft | null | Promise<MockIntakeDraft | null>
+);
+const mockFindOrCreateUser = mock(async () => ({
+  id: 'local-web-user',
+  display_name: 'Local Web',
+  email: null,
+  role: 'admin' as const,
+  created_at: new Date(),
+  updated_at: new Date(),
+}));
 
 mock.module('@anvil/core', () => ({
   handleMessage: mock(async () => {}),
   getDatabaseType: () => 'sqlite',
   loadConfig: mock(async () => ({})),
   cloneRepository: mockCloneRepository,
+  createRepository: mockCreateRepository,
   registerRepository: mockRegisterRepository,
   ConversationNotFoundError: class ConversationNotFoundError extends Error {
     constructor(id: string) {
@@ -49,6 +82,7 @@ mock.module('@anvil/core', () => ({
     }
   },
   getAnvilWorkspacesPath: () => '/tmp/.anvil/workspaces',
+  getWorkflowIntakesPath: () => intakeRoot,
   generateAndSetTitle: mock(async () => {}),
   createLogger: () => ({
     fatal: mock(() => undefined),
@@ -85,10 +119,51 @@ mock.module('@anvil/paths', () => ({
   getCommandFolderSearchPaths: mock(() => ['.anvil/commands']),
   getDefaultCommandsPath: mock(() => '/tmp/.anvil-test-nonexistent/commands/defaults'),
   getDefaultWorkflowsPath: mock(() => '/tmp/.anvil-test-nonexistent/workflows/defaults'),
+  getWorkflowIntakesPath: () => intakeRoot,
   getAnvilWorkspacesPath: () => '/tmp/.anvil/workspaces',
+  resolveProjectRootFromCwd: (cwd: string) => {
+    const match = /^\/tmp\/\.anvil\/workspaces\/([^/]+)\/([^/]+)/.exec(cwd);
+    return match ? `/tmp/.anvil/workspaces/${match[1]}/${match[2]}` : null;
+  },
+  resolveRegisteredProjectRoot: (name: string, cwd: string) => {
+    const match = /^\/tmp\/\.anvil\/workspaces\/([^/]+)\/([^/]+)/.exec(cwd);
+    return match
+      ? `/tmp/.anvil/workspaces/${match[1]}/${match[2]}`
+      : `/tmp/.anvil/workspaces/_local/${name}`;
+  },
 }));
 
 mockAllWorkflowModules();
+
+mock.module('@anvil/workflows/workflow-discovery', () => ({
+  discoverWorkflowsWithConfig: mock(async () => ({
+    workflows: [
+      {
+        filename: '/tmp/project/.anvil/workflows/intake-demo.yaml',
+        source: 'project',
+        workflow: {
+          name: 'intake-demo',
+          description: 'Intake upload test',
+          input_schema: {
+            type: 'object',
+            properties: { blueprint: { type: 'object' }, dataset: { type: 'object' } },
+            required: ['blueprint', 'dataset'],
+          },
+          intake: {
+            version: 1,
+            title: 'Prepare test',
+            fields: [
+              { input: 'blueprint', control: 'file', prompt: 'Blueprint?' },
+              { input: 'dataset', control: 'dataset', prompt: 'Dataset?' },
+            ],
+          },
+          nodes: [],
+        },
+      },
+    ],
+    errors: [],
+  })),
+}));
 
 mock.module('@anvil/git', () => ({
   removeWorktree: mockRemoveWorktree,
@@ -97,7 +172,7 @@ mock.module('@anvil/git', () => ({
 }));
 
 mock.module('@anvil/core/db/conversations', () => ({
-  findConversationByPlatformId: mock(async () => null),
+  findConversationByPlatformId: mockFindConversationByPlatformId,
   listConversations: mock(async () => []),
   getOrCreateConversation: mock(async () => ({
     id: 'internal-uuid-123',
@@ -112,6 +187,10 @@ mock.module('@anvil/core/db/conversations', () => ({
   softDeleteConversation: mock(async () => {}),
   updateConversationTitle: mock(async () => {}),
   getConversationById: mock(async () => null),
+}));
+
+mock.module('@anvil/core/db/users', () => ({
+  findOrCreateUserByPlatformIdentity: mockFindOrCreateUser,
 }));
 
 mock.module('@anvil/core/db/codebases', () => ({
@@ -142,15 +221,19 @@ mock.module('@anvil/core/db/workflow-events', () => ({
 }));
 
 mock.module('@anvil/core/db/messages', () => ({
-  addMessage: mock(async () => ({
-    id: 'msg-1',
-    conversation_id: 'conv-1',
-    role: 'user',
-    content: 'hello',
-    metadata: '{}',
-    created_at: new Date().toISOString(),
-  })),
+  addMessage: mockAddMessage,
   listMessages: mock(async () => []),
+}));
+
+mock.module('@anvil/core/db/workflow-intakes', () => ({
+  getActiveWorkflowIntakeDraft: mockGetActiveIntakeDraft,
+  getLatestWorkflowIntakeDraft: mock(async () => null),
+  createWorkflowIntakeDraft: mock(async () => {
+    throw new Error('not expected');
+  }),
+  updateWorkflowIntakeDraft: mockUpdateIntakeDraft,
+  claimWorkflowIntakeDraftStart: mock(async () => false),
+  discardWorkflowIntakeDraft: mock(async () => {}),
 }));
 
 mock.module('@anvil/core/utils/commands', () => ({
@@ -192,6 +275,31 @@ const MOCK_ENV = {
   created_at: new Date().toISOString(),
   updated_at: new Date().toISOString(),
 };
+
+interface MockConversation {
+  id: string;
+  codebase_id: string | null;
+}
+
+interface MockIntakeDraft {
+  id: string;
+  codebase_id: string;
+  workflow_name: string;
+  definition_hash: string;
+  status: 'draft' | 'ready' | 'starting' | 'started' | 'discarded';
+  values: Record<string, unknown>;
+  current_field: string | null;
+  validation_errors: string[];
+  started_run_id: string | null;
+  created_by_user_id: string | null;
+  updated_by_user_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+afterAll(async () => {
+  await rm(intakeRoot, { recursive: true, force: true });
+});
 
 function makeApp(): OpenAPIHono {
   const app = new OpenAPIHono({ defaultHook: validationErrorHook });
@@ -381,6 +489,7 @@ describe('POST /api/codebases', () => {
   beforeEach(() => {
     mockGetCodebase.mockReset();
     mockCloneRepository.mockReset();
+    mockCreateRepository.mockReset();
     mockRegisterRepository.mockReset();
   });
 
@@ -439,6 +548,42 @@ describe('POST /api/codebases', () => {
     });
     expect(response.status).toBe(201);
     expect(mockRegisterRepository).toHaveBeenCalledWith('/home/user/my-repo');
+  });
+
+  test('creates a managed local project and returns 201', async () => {
+    mockCreateRepository.mockImplementationOnce(async () => ({
+      codebaseId: 'create-uuid-1',
+      alreadyExisted: false,
+    }));
+    mockGetCodebase.mockImplementationOnce(async () => ({
+      ...MOCK_CODEBASE,
+      id: 'create-uuid-1',
+      name: 'new-project',
+      repository_url: null,
+      default_cwd: '/tmp/.anvil/workspaces/_local/new-project/source',
+    }));
+
+    const app = makeApp();
+    const response = await app.request('/api/codebases', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ create: { name: 'new-project' } }),
+    });
+
+    expect(response.status).toBe(201);
+    expect(mockCreateRepository).toHaveBeenCalledWith('new-project');
+  });
+
+  test('returns 400 for an unsafe managed project name', async () => {
+    const app = makeApp();
+    const response = await app.request('/api/codebases', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ create: { name: '../outside' } }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(mockCreateRepository).not.toHaveBeenCalled();
   });
 
   test('returns 400 when both url and path are provided', async () => {
@@ -615,5 +760,69 @@ describe('DELETE /api/codebases/:id', () => {
 
     const body = (await response.json()) as { error: string };
     expect(body.error).toContain('Failed to delete codebase');
+  });
+});
+
+describe('POST /api/codebases/:id/workflow-intakes/:workflowName/attachments', () => {
+  beforeEach(() => {
+    mockGetCodebase.mockReset();
+    mockFindConversationByPlatformId.mockReset();
+    mockGetActiveIntakeDraft.mockReset();
+    mockUpdateIntakeDraft.mockReset();
+    mockAddMessage.mockClear();
+  });
+
+  test('stores an external Blueprint and advances the persisted draft to Dataset', async () => {
+    const now = new Date().toISOString();
+    const draft: MockIntakeDraft = {
+      id: 'draft-uuid-1',
+      codebase_id: 'codebase-uuid-1',
+      workflow_name: 'intake-demo',
+      definition_hash: 'definition-hash',
+      status: 'draft',
+      values: {},
+      current_field: 'blueprint',
+      validation_errors: ['Thiếu đầu vào bắt buộc: blueprint'],
+      started_run_id: null,
+      created_by_user_id: null,
+      updated_by_user_id: null,
+      created_at: now,
+      updated_at: now,
+    };
+    mockGetCodebase.mockImplementation(async () => MOCK_CODEBASE);
+    mockFindConversationByPlatformId.mockImplementation(async () => ({
+      id: 'conversation-db-1',
+      codebase_id: 'codebase-uuid-1',
+    }));
+    mockGetActiveIntakeDraft.mockImplementation(async () => draft);
+    mockUpdateIntakeDraft.mockImplementation(async (_id, update) => ({
+      ...draft,
+      ...update,
+      updated_at: new Date().toISOString(),
+    }));
+
+    const form = new FormData();
+    form.append('conversationId', 'web-conversation-1');
+    form.append('files', new File(['# System 2 Blueprint\n'], 'outside-blueprint.md'));
+
+    const response = await makeApp().request(
+      '/api/codebases/codebase-uuid-1/workflow-intakes/intake-demo/attachments',
+      { method: 'POST', body: form }
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      state: string;
+      draft: { currentField: string; values: Record<string, unknown> };
+      attachment: { path: string; name: string; sha256: string };
+    };
+    expect(body.state).toBe('collecting');
+    expect(body.draft.currentField).toBe('dataset');
+    expect(body.attachment.name).toBe('outside-blueprint.md');
+    expect(body.attachment.path).toContain(join('codebase-uuid-1', 'draft-uuid-1'));
+    expect(await readFile(body.attachment.path, 'utf8')).toBe('# System 2 Blueprint\n');
+    expect(body.attachment.sha256).toHaveLength(64);
+    expect(mockUpdateIntakeDraft).toHaveBeenCalledTimes(1);
+    expect(mockAddMessage).toHaveBeenCalledTimes(2);
+    await rm(dirname(dirname(body.attachment.path)), { recursive: true, force: true });
   });
 });

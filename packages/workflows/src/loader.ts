@@ -8,6 +8,7 @@ import {
   isCancelNode,
   isScriptNode,
   isPersistableNode,
+  isActionNode,
 } from './schemas';
 import { createLogger } from '@anvil/paths';
 import {
@@ -20,12 +21,19 @@ import {
   BASH_NODE_AI_FIELDS,
   SCRIPT_NODE_AI_FIELDS,
   LOOP_NODE_AI_FIELDS,
+  ACTION_NODE_AI_FIELDS,
   effortLevelSchema,
   thinkingConfigSchema,
   sandboxSettingsSchema,
   betasSchema,
+  workflowUiSchema,
 } from './schemas/dag-node';
-import { modelReasoningEffortSchema, webSearchModeSchema } from './schemas/workflow';
+import {
+  modelReasoningEffortSchema,
+  webSearchModeSchema,
+  workflowProgressionSchema,
+  workflowIntakeSchema,
+} from './schemas/workflow';
 import { workflowNodeHooksSchema } from './schemas/hooks';
 import { z } from '@hono/zod-openapi';
 
@@ -113,6 +121,8 @@ function parseDagNode(raw: unknown, index: number, errors: string[]): DagNode | 
     nonAiNode = { type: 'loop', fields: LOOP_NODE_AI_FIELDS };
   } else if (isScriptNode(node)) {
     nonAiNode = { type: 'script', fields: SCRIPT_NODE_AI_FIELDS };
+  } else if (isActionNode(node)) {
+    nonAiNode = { type: 'action', fields: ACTION_NODE_AI_FIELDS };
   } else if ('bash' in node && typeof node.bash === 'string') {
     nonAiNode = { type: 'bash', fields: BASH_NODE_AI_FIELDS };
   }
@@ -527,6 +537,42 @@ export function parseWorkflow(content: string, filename: string): ParseResult {
       filename,
       'invalid_workflow_sandbox_value_ignored'
     );
+    const inputSchema = parseOptionalField(
+      raw.input_schema,
+      z.record(z.string(), z.unknown()),
+      filename,
+      'invalid_workflow_input_schema_ignored'
+    );
+    const outputSchema = parseOptionalField(
+      raw.output_schema,
+      z.record(z.string(), z.unknown()),
+      filename,
+      'invalid_workflow_output_schema_ignored'
+    );
+    const outputs = parseOptionalField(
+      raw.outputs,
+      z.record(z.string().min(1), z.string().min(1)),
+      filename,
+      'invalid_workflow_outputs_ignored'
+    );
+    const ui = parseOptionalField(
+      raw.ui,
+      workflowUiSchema,
+      filename,
+      'invalid_workflow_ui_ignored'
+    );
+    const progression = parseOptionalField(
+      raw.progression,
+      workflowProgressionSchema,
+      filename,
+      'invalid_workflow_progression_ignored'
+    );
+    const intake = parseOptionalField(
+      raw.intake,
+      workflowIntakeSchema,
+      filename,
+      'invalid_workflow_intake_ignored'
+    );
 
     // fallbackModel: non-empty trimmed string. Inline trim rather than
     // `safeParse` so a stray surrounding space is normalised rather than rejected.
@@ -565,6 +611,7 @@ export function parseWorkflow(content: string, filename: string): ParseResult {
       workflow: {
         name: raw.name,
         description: raw.description,
+        ...(ui !== undefined ? { ui } : {}),
         provider,
         model,
         modelReasoningEffort,
@@ -577,6 +624,11 @@ export function parseWorkflow(content: string, filename: string): ParseResult {
         ...(fallbackModel !== undefined ? { fallbackModel } : {}),
         ...(betas !== undefined ? { betas } : {}),
         ...(sandbox !== undefined ? { sandbox } : {}),
+        ...(inputSchema !== undefined ? { input_schema: inputSchema } : {}),
+        ...(outputSchema !== undefined ? { output_schema: outputSchema } : {}),
+        ...(outputs !== undefined ? { outputs } : {}),
+        ...(progression !== undefined ? { progression } : {}),
+        ...(intake !== undefined ? { intake } : {}),
         ...(workflowPersistSessions ? { persist_sessions: true } : {}),
         nodes: dagNodes,
         ...(worktreePolicy ? { worktree: worktreePolicy } : {}),

@@ -8,6 +8,23 @@
 
 /* Dark-only theme - uses our custom palette as root defaults */
 :root {
+  /* Canonical Anvil application accent — a calm blue-to-teal spectrum. */
+  --anvil-brand-blue: oklch(0.57 0.2 255);
+  --anvil-brand-cyan: oklch(0.72 0.145 220);
+  --anvil-brand-teal: oklch(0.755 0.165 168);
+  --anvil-brand-gradient: linear-gradient(
+    135deg,
+    var(--anvil-brand-blue) 0%,
+    var(--anvil-brand-cyan) 50%,
+    var(--anvil-brand-teal) 100%
+  );
+  --anvil-brand-gradient-soft: linear-gradient(
+    135deg,
+    oklch(0.57 0.2 255 / 0.16) 0%,
+    oklch(0.72 0.145 220 / 0.12) 50%,
+    oklch(0.755 0.165 168 / 0.16) 100%
+  );
+
   /* App-specific colors */
   --surface: oklch(0.18 0.008 260);
   --surface-elevated: oklch(0.22 0.01 260);

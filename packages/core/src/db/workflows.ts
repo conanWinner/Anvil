@@ -99,6 +99,8 @@ export async function createWorkflowRun(data: {
   metadata?: Record<string, unknown>;
   working_path?: string;
   parent_conversation_id?: string;
+  parent_workflow_run_id?: string;
+  parent_node_id?: string;
   user_id?: string;
 }): Promise<WorkflowRun> {
   // Serialize metadata with validation to catch circular references early
@@ -134,8 +136,8 @@ export async function createWorkflowRun(data: {
   try {
     const result = await pool.query<WorkflowRun>(
       `INSERT INTO remote_agent_workflow_runs
-       (workflow_name, conversation_id, codebase_id, user_message, metadata, working_path, parent_conversation_id, user_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       (workflow_name, conversation_id, codebase_id, user_message, metadata, working_path, parent_conversation_id, user_id, parent_workflow_run_id, parent_node_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
       [
         data.workflow_name,
@@ -146,6 +148,8 @@ export async function createWorkflowRun(data: {
         data.working_path ?? null,
         data.parent_conversation_id ?? null,
         data.user_id ?? null,
+        data.parent_workflow_run_id ?? null,
+        data.parent_node_id ?? null,
       ]
     );
     const row = result.rows[0];
@@ -175,6 +179,129 @@ export async function getWorkflowRun(id: string): Promise<WorkflowRun | null> {
     getLog().error({ err }, 'db.workflow_run_get_failed');
     throw new Error(`Failed to get workflow run: ${err.message}`);
   }
+}
+
+/** Return the single child owned by a parent workflow node. */
+export async function getChildWorkflowRun(
+  parentWorkflowRunId: string,
+  parentNodeId: string
+): Promise<WorkflowRun | null> {
+  try {
+    const result = await pool.query<WorkflowRun>(
+      `SELECT * FROM remote_agent_workflow_runs
+       WHERE parent_workflow_run_id = $1 AND parent_node_id = $2
+       LIMIT 1`,
+      [parentWorkflowRunId, parentNodeId]
+    );
+    const row = result.rows[0];
+    return row ? normalizeWorkflowRun(row) : null;
+  } catch (error) {
+    const err = error as Error;
+    getLog().error({ err, parentWorkflowRunId, parentNodeId }, 'db.workflow_run_get_child_failed');
+    throw new Error(`Failed to get child workflow run: ${err.message}`);
+  }
+}
+
+/** List direct children in stable creation order. */
+export async function listChildWorkflowRuns(parentWorkflowRunId: string): Promise<WorkflowRun[]> {
+  try {
+    const result = await pool.query<WorkflowRun>(
+      `SELECT * FROM remote_agent_workflow_runs
+       WHERE parent_workflow_run_id = $1
+       ORDER BY started_at ASC, id ASC`,
+      [parentWorkflowRunId]
+    );
+    return result.rows.map(normalizeWorkflowRun);
+  } catch (error) {
+    const err = error as Error;
+    getLog().error({ err, parentWorkflowRunId }, 'db.workflow_run_list_children_failed');
+    throw new Error(`Failed to list child workflow runs: ${err.message}`);
+  }
+}
+
+/** Find the deepest paused run below a parent, including the parent itself. */
+export async function findActivePausedDescendant(
+  workflowRunId: string
+): Promise<WorkflowRun | null> {
+  try {
+    const result = await pool.query<WorkflowRun>(
+      `WITH RECURSIVE descendants AS (
+         SELECT *, 0 AS composition_depth
+         FROM remote_agent_workflow_runs WHERE id = $1
+         UNION ALL
+         SELECT child.*, parent.composition_depth + 1
+         FROM remote_agent_workflow_runs child
+         JOIN descendants parent ON child.parent_workflow_run_id = parent.id
+         WHERE child.status IN ('pending', 'running', 'paused')
+       )
+       SELECT * FROM descendants
+       WHERE status = 'paused'
+       ORDER BY composition_depth DESC, started_at DESC
+       LIMIT 1`,
+      [workflowRunId]
+    );
+    const row = result.rows[0];
+    return row ? normalizeWorkflowRun(row) : null;
+  } catch (error) {
+    const err = error as Error;
+    getLog().error({ err, workflowRunId }, 'db.workflow_run_find_paused_descendant_failed');
+    throw new Error(`Failed to find paused workflow descendant: ${err.message}`);
+  }
+}
+
+/** Resolve the root run for any node in a composition tree. */
+export async function getRootWorkflowRun(workflowRunId: string): Promise<WorkflowRun | null> {
+  const result = await pool.query<WorkflowRun>(
+    `WITH RECURSIVE ancestors AS (
+       SELECT * FROM remote_agent_workflow_runs WHERE id = $1
+       UNION ALL
+       SELECT parent.* FROM remote_agent_workflow_runs parent
+       JOIN ancestors child ON child.parent_workflow_run_id = parent.id
+     )
+     SELECT * FROM ancestors WHERE parent_workflow_run_id IS NULL LIMIT 1`,
+    [workflowRunId]
+  );
+  const row = result.rows[0];
+  return row ? normalizeWorkflowRun(row) : null;
+}
+
+/** Make paused ancestors resumable after the active leaf receives a decision. */
+export async function markPausedAncestorsResumable(workflowRunId: string): Promise<void> {
+  await pool.query(
+    `WITH RECURSIVE ancestors AS (
+       SELECT parent_workflow_run_id AS id
+       FROM remote_agent_workflow_runs WHERE id = $1
+       UNION ALL
+       SELECT run.parent_workflow_run_id
+       FROM remote_agent_workflow_runs run
+       JOIN ancestors child ON run.id = child.id
+       WHERE run.parent_workflow_run_id IS NOT NULL
+     )
+     UPDATE remote_agent_workflow_runs
+     SET status = 'failed'
+     WHERE id IN (SELECT id FROM ancestors WHERE id IS NOT NULL) AND status = 'paused'`,
+    [workflowRunId]
+  );
+}
+
+/** Cancel a composition subtree and its ancestor chain. */
+export async function cancelWorkflowRunTree(workflowRunId: string): Promise<void> {
+  const dialect = getDialect();
+  await pool.query(
+    `WITH RECURSIVE related AS (
+       SELECT id, parent_workflow_run_id FROM remote_agent_workflow_runs WHERE id = $1
+       UNION
+       SELECT child.id, child.parent_workflow_run_id
+       FROM remote_agent_workflow_runs child JOIN related parent ON child.parent_workflow_run_id = parent.id
+       UNION
+       SELECT parent.id, parent.parent_workflow_run_id
+       FROM remote_agent_workflow_runs parent JOIN related child ON child.parent_workflow_run_id = parent.id
+     )
+     UPDATE remote_agent_workflow_runs
+     SET status = 'cancelled', completed_at = ${dialect.now()}
+     WHERE id IN (SELECT id FROM related) AND status IN ('pending', 'running', 'paused', 'failed')`,
+    [workflowRunId]
+  );
 }
 
 /**
@@ -468,9 +595,10 @@ export async function resumeWorkflowRun(id: string): Promise<WorkflowRun> {
        SET status = 'running',
            completed_at = NULL,
            started_at = ${dialect.now()},
-           last_activity_at = ${dialect.now()}
+           last_activity_at = ${dialect.now()},
+           metadata = ${dialect.jsonMerge('metadata', 3)}
        WHERE id = $1 AND ${resumableStatusClause(dialect, 2)}`,
-      [id, ORPHAN_RESUME_STALE_DAYS]
+      [id, ORPHAN_RESUME_STALE_DAYS, JSON.stringify({ error: null })]
     );
   } catch (error) {
     const err = error as Error;
@@ -571,7 +699,8 @@ export async function updateWorkflowRun(
     const isApprovalTransition =
       updates.status === 'failed' &&
       (updates.metadata?.approval_response !== undefined ||
-        updates.metadata?.loop_user_input !== undefined);
+        updates.metadata?.loop_user_input !== undefined ||
+        updates.metadata?.continued_phase_transitions !== undefined);
     if (
       !isApprovalTransition &&
       (updates.status === 'completed' ||
@@ -763,6 +892,9 @@ function buildDashboardWhereClauses(
     values.push(options.before);
     whereClauses.push(`r.started_at < $${String(values.length)}`);
   }
+  if (options?.rootOnly === true) {
+    whereClauses.push('r.parent_workflow_run_id IS NULL');
+  }
 
   return whereClauses;
 }
@@ -895,9 +1027,13 @@ export async function listDashboardRuns(
  */
 export async function listWorkflowRuns(options?: {
   conversationId?: string;
+  /** Restrict runs to those launched from this user-facing conversation. */
+  parentConversationId?: string;
   status?: WorkflowRunStatus | WorkflowRunStatus[];
   limit?: number;
   codebaseId?: string;
+  /** Restrict the list to top-level workflow runs used by project history selectors. */
+  rootOnly?: boolean;
   /**
    * Non-enforcing "mine" filter: when set, restrict to runs attributed to this
    * user (`user_id = $N`). Absent → all runs (default visibility stays open).
@@ -910,6 +1046,10 @@ export async function listWorkflowRuns(options?: {
   if (options?.conversationId) {
     values.push(options.conversationId);
     whereClauses.push(`conversation_id = $${String(values.length)}`);
+  }
+  if (options?.parentConversationId) {
+    values.push(options.parentConversationId);
+    whereClauses.push(`parent_conversation_id = $${String(values.length)}`);
   }
   if (options?.userId) {
     values.push(options.userId);
@@ -929,6 +1069,9 @@ export async function listWorkflowRuns(options?: {
     whereClauses.push(
       `conversation_id IN (SELECT id FROM remote_agent_conversations WHERE codebase_id = $${String(values.length)})`
     );
+  }
+  if (options?.rootOnly === true) {
+    whereClauses.push('parent_workflow_run_id IS NULL');
   }
 
   const limit = options?.limit ?? 50;

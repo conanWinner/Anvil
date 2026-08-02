@@ -32,6 +32,7 @@ export const WORKFLOW_EVENT_TYPES = [
   'node_skipped',
   'node_skipped_prior_success',
   'node_always_run_reset',
+  'node_io_recorded',
   'loop_iteration_started',
   'loop_iteration_completed',
   'loop_iteration_failed',
@@ -41,7 +42,14 @@ export const WORKFLOW_EVENT_TYPES = [
   'ralph_story_completed',
   'approval_requested',
   'approval_received',
+  'phase_transition_requested',
+  'phase_transition_continued',
   'workflow_cancelled',
+  'child_workflow_started',
+  'child_workflow_paused',
+  'child_workflow_completed',
+  'child_workflow_failed',
+  'child_workflow_cancelled',
   'workflow_artifact',
   'node_session_resumed',
   // Phase 2 of #975 — subagent task lifecycle (aggregated from provider
@@ -64,10 +72,20 @@ export interface IWorkflowStore {
     metadata?: Record<string, unknown>;
     working_path?: string;
     parent_conversation_id?: string;
+    /** Parent run linkage for first-class workflow composition. */
+    parent_workflow_run_id?: string;
+    /** Workflow node in the parent that owns this child run. */
+    parent_node_id?: string;
     /** Anvil user UUID; populated via ExecuteWorkflowOptions.userId. */
     user_id?: string;
   }): Promise<WorkflowRun>;
   getWorkflowRun(id: string): Promise<WorkflowRun | null>;
+  getChildWorkflowRun(
+    parentWorkflowRunId: string,
+    parentNodeId: string
+  ): Promise<WorkflowRun | null>;
+  listChildWorkflowRuns(parentWorkflowRunId: string): Promise<WorkflowRun[]>;
+  findActivePausedDescendant(workflowRunId: string): Promise<WorkflowRun | null>;
   /**
    * Find the workflow run currently holding the lock on `workingPath`.
    *

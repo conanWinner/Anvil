@@ -1359,3 +1359,51 @@ Before deploying a workflow:
 19. **Loop nodes** — use `loop:` within a DAG node for iterative execution until completion signal
 20. **Defaults as templates** — browse `.anvil/workflows/defaults/` for real examples to copy and modify
 21. **Test thoroughly** — each command, the artifact flow, and edge cases
+## Composing workflows
+
+A DAG node can invoke another workflow directly. The child gets its own run,
+events, status, and artifact namespace while inheriting the root checkout and
+worktree. Child workflow nodes execute sequentially in v1 and composition is
+limited to five child levels.
+
+```yaml
+name: release-master
+input_schema:
+  type: object
+  properties:
+    request_path: { type: string }
+  required: [request_path]
+nodes:
+  - id: plan
+    workflow:
+      name: release-plan
+      inputs:
+        request_path: "$INPUTS.request_path"
+      artifacts:
+        inputs:
+          request: "input/request.json"
+        outputs:
+          plan: "plan/implementation.json"
+```
+
+The child declares its contract and published outputs at the workflow root:
+
+```yaml
+input_schema:
+  type: object
+  properties:
+    request_path: { type: string }
+  required: [request_path]
+output_schema:
+  type: object
+  properties:
+    plan_path: { type: string }
+  required: [plan_path]
+outputs:
+  plan_path: "$build.output.path"
+```
+
+Workflow lookup follows project, global, then bundled precedence. Validation
+rejects missing children, cycles, excessive depth, unordered children, and
+missing required input mappings before a child executes. Child workflows must
+not configure their own worktree; they inherit the root isolation context.

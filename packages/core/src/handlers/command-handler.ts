@@ -28,6 +28,7 @@ import type {
 import * as workflowDb from '../db/workflows';
 import {
   approveWorkflow,
+  continueWorkflow,
   rejectWorkflow,
   getWorkflowStatus,
   resumeWorkflow,
@@ -686,7 +687,7 @@ async function handleWorkflowCommand(
           };
         }
 
-        await workflowDb.cancelWorkflowRun(activeWorkflow.id);
+        await workflowDb.cancelWorkflowRunTree(activeWorkflow.id);
         return {
           success: true,
           message: `Cancelled workflow: \`${activeWorkflow.workflow_name}\``,
@@ -781,6 +782,7 @@ async function handleWorkflowCommand(
             args: run.user_message,
             resumeRunId: run.id,
             resumeRun: run,
+            availableWorkflows: workflows,
           },
         };
       } catch (error) {
@@ -866,6 +868,29 @@ async function handleWorkflowCommand(
       }
     }
 
+    case 'continue': {
+      const runId = args[1];
+      if (!runId) {
+        return {
+          success: false,
+          message:
+            'Usage: /workflow continue <id>\n\nContinues a workflow after a completed phase.',
+        };
+      }
+      try {
+        const result = await continueWorkflow(runId);
+        const pathInfo = result.workingPath ? `\nPath: \`${result.workingPath}\`` : '';
+        return {
+          success: true,
+          message: `Workflow \`${result.workflowName}\` will continue to its next phase.${pathInfo}\nType your response in this conversation to resume the workflow.`,
+        };
+      } catch (error) {
+        const err = error as Error;
+        getLog().error({ err, runId }, 'cmd.workflow_continue_failed');
+        return { success: false, message: `Failed to continue workflow run: ${err.message}` };
+      }
+    }
+
     case 'reject': {
       const runId = args[1];
       if (!runId) {
@@ -902,7 +927,29 @@ async function handleWorkflowCommand(
       const workflowName = args[1];
       const restArgs = args.slice(2);
       const force = restArgs.includes('--force');
-      const workflowArgs = restArgs.filter(arg => arg !== '--force').join(' ');
+      const inputsFlagIndex = restArgs.indexOf('--inputs-json');
+      let inputs: Record<string, unknown> | undefined;
+      if (inputsFlagIndex !== -1) {
+        const encoded = restArgs[inputsFlagIndex + 1];
+        try {
+          const decoded = encoded
+            ? (JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as unknown)
+            : undefined;
+          if (decoded === null || typeof decoded !== 'object' || Array.isArray(decoded)) {
+            throw new Error('decoded value is not an object');
+          }
+          inputs = decoded as Record<string, unknown>;
+        } catch {
+          return { success: false, message: 'Invalid workflow inputs payload.' };
+        }
+      }
+      const workflowArgs = restArgs
+        .filter(
+          (arg, index) =>
+            arg !== '--force' &&
+            (inputsFlagIndex === -1 || (index !== inputsFlagIndex && index !== inputsFlagIndex + 1))
+        )
+        .join(' ');
 
       if (!workflowName) {
         return {
@@ -987,6 +1034,8 @@ async function handleWorkflowCommand(
           definition: workflow,
           args: workflowArgs,
           force: force ? true : undefined,
+          inputs,
+          availableWorkflows: workflows,
         },
       };
     }
@@ -995,7 +1044,7 @@ async function handleWorkflowCommand(
       return {
         success: false,
         message:
-          'Usage:\n  /workflow list - Show available workflows\n  /workflow reload - Reload workflow definitions\n  /workflow status - Show all active workflows\n  /workflow cancel - Cancel running workflow\n  /workflow resume <id> - Resume a failed run\n  /workflow abandon <id> - Discard a failed run\n  /workflow approve <id> [comment] - Approve a paused run\n  /workflow reject <id> [reason] - Reject a paused run\n  /workflow reset-sessions <name> [<node-id>] - Clear persisted AI session memory for this conversation\n  /workflow run <name> [args] - Run a workflow directly',
+          'Usage:\n  /workflow list - Show available workflows\n  /workflow reload - Reload workflow definitions\n  /workflow status - Show all active workflows\n  /workflow cancel - Cancel running workflow\n  /workflow resume <id> - Resume a failed run\n  /workflow abandon <id> - Discard a failed run\n  /workflow approve <id> [comment] - Approve a paused run\n  /workflow reject <id> [reason] - Reject a paused run\n  /workflow continue <id> - Continue after a completed phase\n  /workflow reset-sessions <name> [<node-id>] - Clear persisted AI session memory for this conversation\n  /workflow run <name> [args] - Run a workflow directly',
       };
   }
 }
@@ -1030,6 +1079,7 @@ Talk naturally — the orchestrator routes your requests to the right workflow a
 - \`/workflow abandon <id>\` — Discard a failed run
 - \`/workflow approve <id>\` — Approve a paused run
 - \`/workflow reject <id>\` — Reject a paused run
+- \`/workflow continue <id>\` — Continue after a completed phase
 - \`/workflow reset-sessions <name> [<node-id>]\` — Clear persisted AI session memory for this conversation
 
 **Projects**
@@ -1179,6 +1229,55 @@ Talk naturally — the orchestrator routes your requests to the right workflow a
 
     case 'workflow':
       return handleWorkflowCommand(conversation, args);
+
+    case 'continue': {
+      const run = await workflowDb.getActiveWorkflowRun(conversation.id);
+      if (!run) return { success: false, message: 'Không có workflow đang chờ Continue.' };
+      try {
+        const result = await continueWorkflow(run.id);
+        return { success: true, message: `Đã tiếp tục workflow: \`${result.workflowName}\`` };
+      } catch (error) {
+        return { success: false, message: (error as Error).message };
+      }
+    }
+
+    case 'approve': {
+      const run = await workflowDb.getActiveWorkflowRun(conversation.id);
+      if (!run) return { success: false, message: 'Không có workflow đang chờ phê duyệt.' };
+      try {
+        const result = await approveWorkflow(run.id, args.join(' '));
+        return { success: true, message: `Đã phê duyệt workflow: \`${result.workflowName}\`` };
+      } catch (error) {
+        return { success: false, message: (error as Error).message };
+      }
+    }
+
+    case 'reject': {
+      const run = await workflowDb.getActiveWorkflowRun(conversation.id);
+      if (!run) return { success: false, message: 'Không có workflow đang chờ phê duyệt.' };
+      try {
+        const result = await rejectWorkflow(run.id, args.join(' '));
+        return { success: true, message: `Đã từ chối workflow: \`${result.workflowName}\`` };
+      } catch (error) {
+        return { success: false, message: (error as Error).message };
+      }
+    }
+
+    case 'stop': {
+      const run = await workflowDb.getActiveWorkflowRun(conversation.id);
+      if (!run) return { success: true, message: 'Không có workflow đang hoạt động.' };
+      await workflowDb.cancelWorkflowRunTree(run.id);
+      return { success: true, message: `Đã dừng workflow: \`${run.workflow_name}\`` };
+    }
+
+    case 'start':
+      return {
+        success: true,
+        message:
+          args[0] === 'system3' || args[0] === 'system3-master'
+            ? 'System 3 cần Intake trước khi tạo run. Mở Chat của project và chọn **Prepare in Chat** trong workflow System 3.'
+            : 'Chọn workflow tại tab Workflows để bắt đầu. Workflow có Intake sẽ mở form chuẩn bị đầu vào trong Chat.',
+      };
 
     case 'init': {
       // Create .anvil structure in current repo

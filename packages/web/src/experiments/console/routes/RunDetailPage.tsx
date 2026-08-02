@@ -7,7 +7,7 @@ import {
   useState,
   type ReactElement,
 } from 'react';
-import { useNavigate, useParams } from 'react-router';
+import { Link, useNavigate, useParams } from 'react-router';
 import { useKeymap, type Binding } from '../lib/keymap';
 import { RunDetailHeader } from '../components/RunDetailHeader';
 import { RunStream } from '../components/RunStream';
@@ -28,10 +28,12 @@ import { foldNodeRuns, type RunEvent } from '../primitives/event';
 import type { Message } from '../primitives/message';
 import type { Project } from '../primitives/project';
 import type { ArtifactFile } from '../skills/runs';
+import type { ChildRunSummary } from '../skills/runs';
 
 interface RunDetailView {
   run: Run;
   events: RunEvent[];
+  children: ChildRunSummary[];
 }
 
 /**
@@ -333,7 +335,7 @@ export function RunDetailPage(): ReactElement {
     );
   }
 
-  const { run, events } = detail;
+  const { run, events, children } = detail;
   const messageList = messages ?? [];
   const inlineToolCount = messageList.reduce((acc, m) => acc + m.toolCalls.length, 0);
   // Mirror RunStream's source-of-truth rule: when no inline tool calls exist
@@ -387,6 +389,38 @@ export function RunDetailPage(): ReactElement {
                 <div className="py-4">
                   <RunStartedLine run={run} />
 
+                  {children.length > 0 ? (
+                    <div className="my-4 rounded-md border border-border bg-surface-inset/40 p-3">
+                      <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-text-tertiary">
+                        Child workflow runs
+                      </div>
+                      <div className="space-y-1">
+                        {children.map(child => (
+                          <button
+                            key={child.runId}
+                            type="button"
+                            onClick={() => {
+                              if (projectId !== undefined) {
+                                navigate(`/console/p/${projectId}/r/${child.runId}`);
+                              }
+                            }}
+                            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-surface"
+                          >
+                            <span className="font-mono text-[11px] text-text-tertiary">
+                              {child.parentNodeId}
+                            </span>
+                            <span className="min-w-0 flex-1 truncate text-xs text-text-primary">
+                              {child.workflowName}
+                            </span>
+                            <span className="font-mono text-[10px] uppercase text-text-secondary">
+                              {child.status}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+
                   <div className="mt-2">
                     <RunStream
                       messages={messageList}
@@ -423,7 +457,15 @@ export function RunDetailPage(): ReactElement {
             </div>
           ) : view === 'graph' ? (
             <>
-              <div className="px-6">{toolbar}</div>
+              <div className="flex items-center justify-between gap-3 px-6">
+                {toolbar}
+                <Link
+                  to={`/console/p/${projectId}/flow?run=${runId}&mode=run`}
+                  className="rounded border border-border-bright px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-text-secondary hover:bg-surface-hover"
+                >
+                  Open full Flow
+                </Link>
+              </div>
               {project !== undefined && project !== null ? (
                 <RunGraphPanel
                   workflowName={run.workflow}

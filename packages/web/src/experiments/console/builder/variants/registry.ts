@@ -17,6 +17,7 @@ import { defaultScriptData, scriptFromDag, scriptToDag } from './script';
 import { commandFromDag, commandToDag, defaultCommandData } from './command';
 import { defaultPromptData, promptFromDag, promptToDag } from './prompt';
 import { bashFromDag, bashToDag, defaultBashData } from './bash';
+import { defaultWorkflowData, workflowFromDag, workflowToDag } from './workflow';
 
 /** Canonical variant order (three existing kinds, then the four new variants). */
 export const VARIANTS: readonly VariantId[] = [
@@ -27,6 +28,7 @@ export const VARIANTS: readonly VariantId[] = [
   'loop',
   'approval',
   'cancel',
+  'workflow',
 ];
 
 const VARIANT_SET: ReadonlySet<string> = new Set(VARIANTS);
@@ -111,6 +113,14 @@ export const VARIANT_REGISTRY: { [K in VariantId]: VariantRegistryEntry<K> } = {
     wireKeys: ['cancel'],
     capabilities: VARIANT_CAPABILITIES.cancel,
   },
+  workflow: {
+    label: 'Workflow',
+    defaultData: defaultWorkflowData,
+    fromDag: workflowFromDag,
+    toDag: workflowToDag,
+    wireKeys: ['workflow'],
+    capabilities: VARIANT_CAPABILITIES.workflow,
+  },
 };
 
 /**
@@ -146,5 +156,7 @@ export function nodeDataToDag(node: BuilderNode): Partial<WireDagNode> {
       return promptToDag(node.data);
     case 'bash':
       return bashToDag(node.data);
+    case 'workflow':
+      return workflowToDag(node.data);
   }
 }

@@ -100,6 +100,41 @@ describe('SqliteAdapter', () => {
     });
   });
 
+  describe('System 3 activity resource schema', () => {
+    test('creates the Understanding Input Snapshot table and artifact presentation columns', async () => {
+      db = createTestDb();
+
+      const snapshotColumns = await db.query<{ name: string }>(
+        "SELECT name FROM pragma_table_info('remote_agent_system3_understanding_input_snapshots')"
+      );
+      expect(snapshotColumns.rows.map(column => column.name)).toEqual(
+        expect.arrayContaining([
+          'operation_id',
+          'source_ids',
+          'source_hashes',
+          'parser_version',
+          'extraction_policy_version',
+          'runtime_profile',
+        ])
+      );
+
+      const artifactColumns = await db.query<{ name: string }>(
+        "SELECT name FROM pragma_table_info('remote_agent_system3_artifact_versions')"
+      );
+      expect(artifactColumns.rows.map(column => column.name)).toEqual(
+        expect.arrayContaining([
+          'activity_id',
+          'display_name',
+          'media_type',
+          'status',
+          'stale_reason',
+          'source_version_ids',
+          'parent_resource_ids',
+        ])
+      );
+    });
+  });
+
   describe('placeholder conversion (#999 regression)', () => {
     test('$N inside SQL comments is treated as a placeholder — avoid $N in comments', async () => {
       db = createTestDb();
@@ -298,6 +333,158 @@ describe('SqliteAdapter', () => {
         'SELECT COUNT(*) AS n FROM remote_agent_conversations WHERE user_id IS NOT NULL'
       );
       expect(probe).toEqual([{ n: 0 }]);
+    });
+  });
+
+  describe('System 3 Source Intake schema upgrade', () => {
+    test('backfills a logical source and provenance for legacy source versions', async () => {
+      currentDbPath = join(
+        import.meta.dir,
+        `.test-source-intake-upgrade-${Date.now()}-${Math.random().toString(36).slice(2)}.db`
+      );
+      const legacy = new Database(currentDbPath);
+      legacy.run(`
+        CREATE TABLE remote_agent_system3_projects (
+          id TEXT PRIMARY KEY,
+          codebase_id TEXT NOT NULL UNIQUE,
+          name TEXT NOT NULL,
+          description TEXT,
+          stage TEXT NOT NULL,
+          attention TEXT NOT NULL,
+          freshness TEXT NOT NULL,
+          version INTEGER NOT NULL DEFAULT 1,
+          template_id TEXT NOT NULL,
+          active_knowledge_snapshot_id TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE remote_agent_system3_source_versions (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL,
+          kind TEXT NOT NULL,
+          filename TEXT NOT NULL,
+          version INTEGER NOT NULL,
+          content_hash TEXT NOT NULL,
+          size_bytes INTEGER NOT NULL,
+          storage_key TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(project_id, kind, version),
+          UNIQUE(project_id, storage_key)
+        );
+        INSERT INTO remote_agent_system3_projects
+          (id, codebase_id, name, stage, attention, freshness, template_id)
+        VALUES ('project-legacy', 'codebase-legacy', 'Legacy', 'draft', 'none', 'current',
+                'customer-churn-reference@1');
+        INSERT INTO remote_agent_system3_source_versions
+          (id, project_id, kind, filename, version, content_hash, size_bytes, storage_key)
+        VALUES ('version-legacy', 'project-legacy', 'blueprint', 'legacy.md', 1,
+                'sha256:legacy', 12, 'sources/blueprint/legacy.md');
+      `);
+      legacy.close();
+
+      db = new SqliteAdapter(currentDbPath);
+      const versions = await db.query<{
+        source_id: string;
+        role: string;
+        original_filename: string;
+        media_type: string;
+        lineage_version: number;
+        storage_status: string;
+        validation_report: string;
+        origin: string;
+      }>('SELECT * FROM remote_agent_system3_source_versions WHERE id = $1', ['version-legacy']);
+      const sources = await db.query<{ id: string; role: string }>(
+        'SELECT id, role FROM remote_agent_system3_sources WHERE project_id = $1',
+        ['project-legacy']
+      );
+      const sourceColumns = await db.query<{ name: string }>(
+        "SELECT name FROM pragma_table_info('remote_agent_system3_source_versions')"
+      );
+      const artifactColumns = await db.query<{ name: string }>(
+        "SELECT name FROM pragma_table_info('remote_agent_system3_artifact_versions')"
+      );
+      const reportTable = await db.query<{ name: string }>(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'remote_agent_system3_source_intake_reports'"
+      );
+
+      expect(sources.rows).toHaveLength(1);
+      expect(sources.rows[0].id).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+      );
+      expect(versions.rows[0]).toMatchObject({
+        source_id: sources.rows[0].id,
+        role: 'primary',
+        original_filename: 'legacy.md',
+        media_type: 'application/octet-stream',
+        lineage_version: 1,
+        storage_status: 'ready',
+        origin: 'legacy',
+      });
+      expect(JSON.parse(versions.rows[0].validation_report)).toMatchObject({
+        schemaVersion: 1,
+        outcome: 'accepted',
+      });
+      expect(sourceColumns.rows.map(column => column.name)).toContain('intake_report_artifact_id');
+      expect(artifactColumns.rows.map(column => column.name)).toEqual(
+        expect.arrayContaining(['source_version_id', 'operation_id'])
+      );
+      expect(reportTable.rows).toHaveLength(1);
+    });
+
+    test('repairs a previously backfilled non-UUID logical source id', async () => {
+      db = createTestDb();
+      await insertCodebase(db, 'codebase-invalid-source');
+      await db.query(
+        `INSERT INTO remote_agent_system3_projects
+           (id, codebase_id, name, stage, attention, freshness, template_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [
+          '00000000-0000-4000-8000-000000000001',
+          'codebase-invalid-source',
+          'Legacy Source ID',
+          'draft',
+          'none',
+          'current',
+          'customer-churn-reference@1',
+        ]
+      );
+      await db.query(
+        `INSERT INTO remote_agent_system3_sources
+           (id, project_id, kind, role, display_name, status)
+         VALUES ($1, $2, 'blueprint', 'primary', 'Blueprint', 'active')`,
+        ['047a19443d7a3c6205f86fa25c6e3d20', '00000000-0000-4000-8000-000000000001']
+      );
+      await db.query(
+        `INSERT INTO remote_agent_system3_source_versions
+           (id, source_id, project_id, kind, role, filename, original_filename, media_type,
+            version, lineage_version, content_hash, size_bytes, storage_key, storage_status,
+            validation_report, origin)
+         VALUES ($1, $2, $3, 'blueprint', 'primary', 'legacy.md', 'legacy.md',
+                 'text/markdown', 1, 1, 'sha256:legacy', 12,
+                 'sources/blueprint/legacy.md', 'ready', '{}', 'legacy')`,
+        [
+          '00000000-0000-4000-8000-000000000002',
+          '047a19443d7a3c6205f86fa25c6e3d20',
+          '00000000-0000-4000-8000-000000000001',
+        ]
+      );
+      await db.close();
+
+      db = new SqliteAdapter(currentDbPath);
+      const sources = await db.query<{ id: string }>(
+        'SELECT id FROM remote_agent_system3_sources WHERE project_id = $1',
+        ['00000000-0000-4000-8000-000000000001']
+      );
+      const versions = await db.query<{ source_id: string }>(
+        'SELECT source_id FROM remote_agent_system3_source_versions WHERE id = $1',
+        ['00000000-0000-4000-8000-000000000002']
+      );
+
+      expect(sources.rows).toHaveLength(1);
+      expect(sources.rows[0].id).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+      );
+      expect(versions.rows[0].source_id).toBe(sources.rows[0].id);
     });
   });
 

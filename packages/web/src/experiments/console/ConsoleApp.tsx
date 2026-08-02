@@ -9,6 +9,7 @@ import { RunsPage } from './routes/RunsPage';
 import { RunDetailPage } from './routes/RunDetailPage';
 import { ChatPage } from './routes/ChatPage';
 import { WorkflowsPage } from './routes/WorkflowsPage';
+import { FlowPage } from './routes/FlowPage';
 import { PreviewPage } from './routes/PreviewPage';
 import { SettingsPage } from './routes/SettingsPage';
 import { invalidate } from './store/cache';
@@ -93,6 +94,7 @@ export function ConsoleApp(): ReactElement {
             <Route path="p/:projectId/chat" element={<ChatPage />} />
             <Route path="p/:projectId/r/:runId" element={<RunDetailPage />} />
             <Route path="p/:projectId/workflows" element={<WorkflowsPage />} />
+            <Route path="p/:projectId/flow" element={<FlowPage />} />
             <Route path="workflows" element={<WorkflowsPage />} />
           </Routes>
         </main>

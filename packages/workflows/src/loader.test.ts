@@ -34,7 +34,7 @@ clearRegistry();
 registerBuiltinProviders();
 
 import { discoverWorkflows, discoverWorkflowsWithConfig } from './workflow-discovery';
-import { isBashNode, isCancelNode, isLoopNode } from './schemas';
+import { isActionNode, isBashNode, isCancelNode, isLoopNode, isWorkflowNode } from './schemas';
 import * as bundledDefaults from './defaults/bundled-defaults';
 
 describe('Workflow Loader', () => {
@@ -72,6 +72,172 @@ describe('Workflow Loader', () => {
   });
 
   describe('parseWorkflow (via discoverWorkflows)', () => {
+    it('parses a generic deterministic action node', async () => {
+      const workflowDir = join(testDir, '.anvil', 'workflows');
+      await mkdir(workflowDir, { recursive: true });
+      await writeFile(
+        join(workflowDir, 'action.yaml'),
+        `name: action-workflow
+description: deterministic action
+nodes:
+  - id: extract
+    action:
+      executor: system3.blueprint-parser
+      input:
+        sourceId: source-v1
+    timeout: 1000
+`
+      );
+
+      const result = await discoverWorkflows(testDir, { loadDefaults: false });
+      expect(result.errors).toHaveLength(0);
+      const action = result.workflows[0]?.workflow.nodes[0];
+      expect(action && isActionNode(action)).toBe(true);
+      if (action && isActionNode(action)) {
+        expect(action.action).toEqual({
+          executor: 'system3.blueprint-parser',
+          input: { sourceId: 'source-v1' },
+        });
+        expect(action.timeout).toBe(1000);
+      }
+    });
+
+    it('rejects action nodes combined with another node mode', async () => {
+      const workflowDir = join(testDir, '.anvil', 'workflows');
+      await mkdir(workflowDir, { recursive: true });
+      await writeFile(
+        join(workflowDir, 'invalid-action.yaml'),
+        `name: invalid-action
+description: invalid action
+nodes:
+  - id: mixed
+    prompt: do work
+    action:
+      executor: system3.blueprint-parser
+`
+      );
+
+      const result = await discoverWorkflows(testDir, { loadDefaults: false });
+      expect(result.workflows).toHaveLength(0);
+      expect(result.errors[0]?.error).toContain('mutually exclusive');
+    });
+
+    it('parses a composed workflow node and workflow I/O contracts', async () => {
+      const workflowDir = join(testDir, '.anvil', 'workflows');
+      await mkdir(workflowDir, { recursive: true });
+      const yaml = `name: parent
+description: parent workflow
+ui:
+  label: System 3
+  phase_label: Blueprint to Verified Project
+progression:
+  mode: manual
+  auto_continue_after: [child]
+input_schema:
+  type: object
+  properties:
+    request_path: { type: string }
+  required: [request_path]
+output_schema:
+  type: object
+  properties:
+    report: { type: string }
+outputs:
+  report: $child.output.report
+nodes:
+  - id: child
+    ui:
+      label: Readiness & Contract
+      phase: B
+      gate: G1
+    workflow:
+      name: child-workflow
+      inputs:
+        request_path: $INPUTS.request_path
+      artifacts:
+        inputs:
+          blueprint: input/system2.md
+        outputs:
+          canonical: canonical/artifacts.json
+`;
+      await writeFile(join(workflowDir, 'parent.yaml'), yaml);
+      const result = await discoverWorkflows(testDir, { loadDefaults: false });
+      expect(result.errors).toHaveLength(0);
+      const workflow = result.workflows[0]?.workflow;
+      expect(workflow?.input_schema?.type).toBe('object');
+      expect(workflow?.outputs).toEqual({ report: '$child.output.report' });
+      expect(workflow?.progression).toEqual({ mode: 'manual', auto_continue_after: ['child'] });
+      expect(workflow?.ui).toEqual({
+        label: 'System 3',
+        phase_label: 'Blueprint to Verified Project',
+      });
+      const node = workflow?.nodes[0];
+      expect(node && isWorkflowNode(node)).toBe(true);
+      if (node && isWorkflowNode(node)) {
+        expect(node.workflow.name).toBe('child-workflow');
+        expect(node.workflow.artifacts?.outputs?.canonical).toBe('canonical/artifacts.json');
+        expect(node.ui).toEqual({ label: 'Readiness & Contract', phase: 'B', gate: 'G1' });
+      }
+    });
+
+    it('parses an optional typed workflow intake contract', async () => {
+      const workflowDir = join(testDir, '.anvil', 'workflows');
+      await mkdir(workflowDir, { recursive: true });
+      await writeFile(
+        join(workflowDir, 'intake.yaml'),
+        `name: intake-workflow
+description: intake workflow
+input_schema:
+  type: object
+  properties:
+    blueprint: { type: object }
+    dataset: { type: object }
+  required: [blueprint, dataset]
+intake:
+  version: 1
+  title: Chuẩn bị đầu vào
+  fields:
+    - input: blueprint
+      control: file
+      prompt: Chọn Blueprint
+      required: true
+    - input: dataset
+      control: dataset
+      prompt: Chọn Dataset
+nodes:
+  - id: prepare
+    bash: echo prepared
+`
+      );
+      const result = await discoverWorkflows(testDir, { loadDefaults: false });
+      expect(result.errors).toHaveLength(0);
+      expect(result.workflows[0]?.workflow.intake).toEqual({
+        version: 1,
+        title: 'Chuẩn bị đầu vào',
+        fields: [
+          { input: 'blueprint', control: 'file', prompt: 'Chọn Blueprint', required: true },
+          { input: 'dataset', control: 'dataset', prompt: 'Chọn Dataset' },
+        ],
+      });
+    });
+
+    it('rejects workflow nodes combined with another node mode', async () => {
+      const workflowDir = join(testDir, '.anvil', 'workflows');
+      await mkdir(workflowDir, { recursive: true });
+      const yaml = `name: invalid
+description: invalid
+nodes:
+  - id: mixed
+    prompt: hello
+    workflow:
+      name: child
+`;
+      await writeFile(join(workflowDir, 'invalid.yaml'), yaml);
+      const result = await discoverWorkflows(testDir, { loadDefaults: false });
+      expect(result.workflows).toHaveLength(0);
+      expect(result.errors[0]?.error).toMatch(/mutually exclusive/i);
+    });
+
     it('should parse interactive: true when present', async () => {
       const workflowDir = join(testDir, '.anvil', 'workflows');
       await mkdir(workflowDir, { recursive: true });

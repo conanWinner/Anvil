@@ -141,9 +141,13 @@ mock.module('@anvil/core/db/workflows', () => ({
   getActiveWorkflowRun: mock(() => Promise.resolve(null)),
   failWorkflowRun: mock(() => Promise.resolve()),
   cancelWorkflowRun: mock(() => Promise.resolve()),
+  cancelWorkflowRunTree: mock(() => Promise.resolve()),
   findResumableRun: mock(() => Promise.resolve(null)),
   resumeWorkflowRun: mock(() => Promise.resolve(null)),
   getWorkflowRun: mock(() => Promise.resolve(null)),
+  getRootWorkflowRun: mock(() => Promise.resolve(null)),
+  findActivePausedDescendant: mock(() => Promise.resolve(null)),
+  markPausedAncestorsResumable: mock(() => Promise.resolve()),
   updateWorkflowRun: mock(() => Promise.resolve()),
   listWorkflowRuns: mock(() => Promise.resolve([])),
   listDashboardRuns: mock(() =>
@@ -1409,6 +1413,10 @@ describe('workflowRunCommand', () => {
     // Dispatch assistant message fires before executeWorkflow
     expect(callOrder[0]).toContain('Dispatching workflow');
     expect(callOrder[1]).toBe('executeWorkflow');
+    const executeOptions = (executeWorkflow as ReturnType<typeof mock>).mock.calls.at(-1)?.[7] as
+      | { compositionDefinitions?: Map<string, { name: string }> }
+      | undefined;
+    expect(executeOptions?.compositionDefinitions?.get('assist')?.name).toBe('assist');
 
     // Correct metadata shape
     expect(messagesDb.addMessage).toHaveBeenCalledWith(
@@ -2877,11 +2885,11 @@ describe('workflowAbandonCommand', () => {
       workflow_name: 'implement',
       status: 'running',
     });
-    (workflowDb.cancelWorkflowRun as ReturnType<typeof mock>).mockResolvedValueOnce(undefined);
+    (workflowDb.cancelWorkflowRunTree as ReturnType<typeof mock>).mockResolvedValueOnce(undefined);
 
     await workflowAbandonCommand('run-1');
 
-    expect(workflowDb.cancelWorkflowRun).toHaveBeenCalledWith('run-1');
+    expect(workflowDb.cancelWorkflowRunTree).toHaveBeenCalledWith('run-1');
     expect(consoleSpy).toHaveBeenCalledWith('Abandoned workflow run: run-1');
   });
 });
@@ -2981,7 +2989,7 @@ describe('workflowRejectCommand', () => {
 
     await workflowRejectCommand('run-plain', 'not good');
 
-    expect(workflowDb.cancelWorkflowRun).toHaveBeenCalledWith('run-plain');
+    expect(workflowDb.cancelWorkflowRunTree).toHaveBeenCalledWith('run-plain');
     expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('Rejected and cancelled'));
   });
 
@@ -3104,7 +3112,7 @@ describe('workflowRejectCommand', () => {
 
     await workflowRejectCommand('run-max', 'still bad');
 
-    expect(workflowDb.cancelWorkflowRun).toHaveBeenCalledWith('run-max');
+    expect(workflowDb.cancelWorkflowRunTree).toHaveBeenCalledWith('run-max');
     expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('max attempts reached'));
   });
 

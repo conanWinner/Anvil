@@ -168,6 +168,10 @@ function kindGlyph(k: WorkflowNodeKind): string {
       return '⧉';
     case 'prompt':
       return '·';
+    case 'workflow':
+      return '◇';
+    case 'action':
+      return '⚙';
   }
 }
 

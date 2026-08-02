@@ -43,6 +43,8 @@ import type {
   ThinkingConfig,
   SandboxSettings,
   WorkflowSource,
+  WorkflowNode,
+  ActionNode,
 } from './schemas';
 import {
   isBashNode,
@@ -50,6 +52,8 @@ import {
   isApprovalNode,
   isCancelNode,
   isScriptNode,
+  isWorkflowNode,
+  isActionNode,
   isApprovalContext,
 } from './schemas';
 import { formatToolCall } from './utils/tool-formatter';
@@ -59,6 +63,7 @@ import { getWorkflowEventEmitter } from './event-emitter';
 import { evaluateCondition } from './condition-evaluator';
 import { declaredFieldsFromSchema, resolveNodeOutputField } from './output-ref';
 import { writeNodeArtifact } from './artifacts-index';
+import { writeNodeIoManifest } from './node-io';
 import {
   logNodeStart,
   logNodeComplete,
@@ -106,6 +111,8 @@ function dagNodeTelemetryType(node: DagNode): WorkflowNodeType {
   if (isLoopNode(node)) return 'loop';
   if (isApprovalNode(node)) return 'approval';
   if (isCancelNode(node)) return 'cancel';
+  if (isWorkflowNode(node)) return 'workflow';
+  if (isActionNode(node)) return 'action';
   if ('command' in node) return 'command';
   return 'prompt';
 }
@@ -412,7 +419,7 @@ export function substituteNodeOutputRefs(
   escapedForBash = false,
   outputFileDir?: string
 ): string {
-  return prompt.replace(
+  const withOutputs = prompt.replace(
     /\$([a-zA-Z_][a-zA-Z0-9_-]*)\.output(?:\.([a-zA-Z_][a-zA-Z0-9_]*))?/g,
     (match, nodeId: string, field: string | undefined) => {
       const nodeOutput = nodeOutputs.get(nodeId);
@@ -447,7 +454,32 @@ export function substituteNodeOutputRefs(
       return escapedForBash ? shellQuoteOrFile(json, nodeId, field, outputFileDir) : json;
     }
   );
+  return withOutputs.replace(
+    /\$([a-zA-Z_][a-zA-Z0-9_-]*)\.artifacts\.([a-zA-Z_][a-zA-Z0-9_]*)/g,
+    (match, nodeId: string, alias: string) => {
+      const nodeOutput = nodeOutputs.get(nodeId);
+      if (!nodeOutput || !('structuredOutput' in nodeOutput)) return '';
+      const value = nodeOutput.structuredOutput;
+      if (value === null || typeof value !== 'object' || Array.isArray(value)) return '';
+      const artifacts = (value as Record<string, unknown>).artifacts;
+      if (artifacts === null || typeof artifacts !== 'object' || Array.isArray(artifacts))
+        return '';
+      const artifactPath = (artifacts as Record<string, unknown>)[alias];
+      if (typeof artifactPath !== 'string') {
+        throw new Error(`'${match}' references an unpublished artifact`);
+      }
+      return escapedForBash
+        ? shellQuoteOrFile(artifactPath, nodeId, alias, outputFileDir)
+        : artifactPath;
+    }
+  );
 }
+
+/** Engine callback used to execute a first-class child workflow node. */
+export type ChildWorkflowRunner = (
+  node: WorkflowNode,
+  nodeOutputs: ReadonlyMap<string, NodeOutput>
+) => Promise<NodeOutput>;
 
 // buildSDKHooksFromYAML moved to @anvil/providers/src/claude/provider.ts
 // loadMcpConfig moved to @anvil/providers/src/mcp/config.ts
@@ -1746,6 +1778,145 @@ async function executeNodeInternal(
 
 /** Default timeout for subprocess nodes (bash, script): 2 minutes */
 const SUBPROCESS_DEFAULT_TIMEOUT = 120_000;
+const ACTION_DEFAULT_TIMEOUT = 60_000;
+
+function resolveActionInputValue(value: unknown, nodeOutputs: Map<string, NodeOutput>): unknown {
+  if (typeof value === 'string') {
+    const exact = /^\$([a-zA-Z_][a-zA-Z0-9_-]*)\.output(?:\.([a-zA-Z_][a-zA-Z0-9_]*))?$/.exec(
+      value
+    );
+    const nodeId = exact?.[1];
+    if (nodeId) {
+      const nodeOutput = nodeOutputs.get(nodeId);
+      if (!nodeOutput) throw new Error(`Action input references unknown node '${nodeId}'`);
+      const field = exact[2];
+      if (field) {
+        const resolution = resolveNodeOutputField(nodeOutput, nodeId, field);
+        return resolution.kind === 'empty' ? '' : resolution.value;
+      }
+      return 'structuredOutput' in nodeOutput && nodeOutput.structuredOutput !== undefined
+        ? nodeOutput.structuredOutput
+        : nodeOutput.output;
+    }
+    return substituteNodeOutputRefs(value, nodeOutputs);
+  }
+  if (Array.isArray(value)) return value.map(item => resolveActionInputValue(item, nodeOutputs));
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+        key,
+        resolveActionInputValue(item, nodeOutputs),
+      ])
+    );
+  }
+  return value;
+}
+
+async function executeActionNode(
+  deps: WorkflowDeps,
+  workflowRun: WorkflowRun,
+  node: ActionNode,
+  cwd: string,
+  artifactsDir: string,
+  logDir: string,
+  nodeOutputs: Map<string, NodeOutput>
+): Promise<NodeOutput> {
+  const registry = deps.actionRegistry;
+  if (!registry?.has(node.action.executor)) {
+    throw new Error(
+      `Action executor '${node.action.executor}' is not registered for node '${node.id}'`
+    );
+  }
+
+  const startedAt = Date.now();
+  const input = resolveActionInputValue(node.action.input ?? {}, nodeOutputs) as Record<
+    string,
+    unknown
+  >;
+  await logNodeStart(logDir, workflowRun.id, node.id, `<action:${node.action.executor}>`);
+  await deps.store.createWorkflowEvent({
+    workflow_run_id: workflowRun.id,
+    event_type: 'node_started',
+    step_name: node.id,
+    data: { type: 'action', executor: node.action.executor },
+  });
+  getWorkflowEventEmitter().emit({
+    type: 'node_started',
+    runId: workflowRun.id,
+    nodeId: node.id,
+    nodeName: node.id,
+  });
+
+  const controller = new AbortController();
+  const timeoutMs = node.timeout ?? ACTION_DEFAULT_TIMEOUT;
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timeoutHandle = setTimeout(() => {
+        controller.abort();
+        reject(new Error(`Action node '${node.id}' timed out after ${String(timeoutMs)}ms`));
+      }, timeoutMs);
+    });
+    const result = await Promise.race([
+      registry.execute(node.action.executor, input, {
+        runId: workflowRun.id,
+        nodeId: node.id,
+        cwd,
+        artifactsDir,
+        signal: controller.signal,
+      }),
+      timeout,
+    ]);
+    const duration = Date.now() - startedAt;
+    await logNodeComplete(logDir, workflowRun.id, node.id, result.output, {
+      durationMs: duration,
+    });
+    await deps.store.createWorkflowEvent({
+      workflow_run_id: workflowRun.id,
+      event_type: 'node_completed',
+      step_name: node.id,
+      data: {
+        type: 'action',
+        executor: node.action.executor,
+        duration_ms: duration,
+        node_output: result.output,
+      },
+    });
+    getWorkflowEventEmitter().emit({
+      type: 'node_completed',
+      runId: workflowRun.id,
+      nodeId: node.id,
+      nodeName: node.id,
+      duration,
+    });
+    return {
+      state: 'completed',
+      output: result.output,
+      ...(result.structuredOutput !== undefined
+        ? { structuredOutput: result.structuredOutput }
+        : {}),
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown action executor error';
+    await logNodeError(logDir, workflowRun.id, node.id, message);
+    await deps.store.createWorkflowEvent({
+      workflow_run_id: workflowRun.id,
+      event_type: 'node_failed',
+      step_name: node.id,
+      data: { type: 'action', executor: node.action.executor, error: message },
+    });
+    getWorkflowEventEmitter().emit({
+      type: 'node_failed',
+      runId: workflowRun.id,
+      nodeId: node.id,
+      nodeName: node.id,
+      error: message,
+    });
+    return { state: 'failed', output: '', error: message };
+  } finally {
+    if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+  }
+}
 
 /** Threshold (bytes) above which $nodeId.output values are written to a temp file
  *  instead of inlined as bash -c arguments, to avoid silent data corruption. */
@@ -3052,6 +3223,10 @@ export async function executeDagWorkflow(
     nodes: readonly DagNode[];
     /** Workflow-level default for per-node `persist_session` (read directly here). */
     persist_sessions?: boolean;
+    progression?: {
+      mode: 'manual';
+      auto_continue_after?: string[];
+    };
     /** Raw workflow-level `model` ref — used only to derive the workflow tier
      *  keyword for node_started attribution (resolution uses `workflowModel`). */
     model?: string;
@@ -3070,7 +3245,8 @@ export async function executeDagWorkflow(
   /** Discovery source — telemetry only (custom-vs-default + name redaction). */
   source?: WorkflowSource,
   aiProfile?: ResolvedAiProfile,
-  workflowPreset?: ModelAliasPreset
+  workflowPreset?: ModelAliasPreset,
+  childWorkflowRunner?: ChildWorkflowRunner
 ): Promise<string | undefined> {
   const dagStartTime = Date.now();
   const workflowTier = workflow.model && isTierName(workflow.model) ? workflow.model : undefined;
@@ -3083,6 +3259,14 @@ export async function executeDagWorkflow(
     workflowTier,
   };
   const layers = buildTopologicalLayers(workflow.nodes);
+  const autoContinueAfter = new Set(workflow.progression?.auto_continue_after ?? []);
+  const continuedPhaseTransitions = new Set(
+    Array.isArray(workflowRun.metadata.continued_phase_transitions)
+      ? workflowRun.metadata.continued_phase_transitions.filter(
+          (nodeId): nodeId is string => typeof nodeId === 'string'
+        )
+      : []
+  );
   const nodeOutputs = new Map<string, NodeOutput>();
 
   // Pre-populate nodeOutputs from prior run so already-completed nodes are
@@ -3094,7 +3278,18 @@ export async function executeDagWorkflow(
     let prepopulatedCount = 0;
     for (const [nodeId, output] of priorCompletedNodes) {
       if (alwaysRunIds.has(nodeId)) continue;
-      nodeOutputs.set(nodeId, { state: 'completed', output });
+      let structuredOutput: unknown;
+      try {
+        structuredOutput = JSON.parse(output) as unknown;
+      } catch {
+        // Prose and shell output are valid node outputs. Only JSON composition
+        // outputs need rehydration so `$node.artifacts.alias` survives resume.
+      }
+      nodeOutputs.set(nodeId, {
+        state: 'completed',
+        output,
+        ...(structuredOutput !== undefined ? { structuredOutput } : {}),
+      });
       prepopulatedCount++;
     }
     getLog().info(
@@ -3462,6 +3657,88 @@ export async function executeDagWorkflow(
             return { nodeId: node.id, output };
           }
 
+          if (isActionNode(node)) {
+            const retryConfig = getEffectiveNodeRetryConfig(node);
+            let output = await executeActionNode(
+              deps,
+              workflowRun,
+              node,
+              cwd,
+              artifactsDir,
+              logDir,
+              nodeOutputs
+            );
+            for (
+              let attempt = 0;
+              output.state === 'failed' && attempt < retryConfig.maxRetries;
+              attempt++
+            ) {
+              const failure = output.error;
+              const retryable =
+                retryConfig.onError === 'all' ||
+                (retryConfig.onError === 'transient' && isTransientNodeError(failure));
+              if (!retryable || classifyError(new Error(failure)) === 'FATAL') break;
+              await new Promise(resolve =>
+                setTimeout(resolve, retryConfig.delayMs * Math.pow(2, attempt))
+              );
+              output = await executeActionNode(
+                deps,
+                workflowRun,
+                node,
+                cwd,
+                artifactsDir,
+                logDir,
+                nodeOutputs
+              );
+            }
+            return { nodeId: node.id, output };
+          }
+
+          // Workflow nodes are dispatched by the composition runner. Keep this
+          // explicit so they can never fall through to the AI-node path.
+          if (isWorkflowNode(node)) {
+            if (!childWorkflowRunner) {
+              throw new Error(
+                `Child workflow execution is not configured for '${node.workflow.name}'`
+              );
+            }
+            await logNodeStart(logDir, workflowRun.id, node.id, `<workflow:${node.workflow.name}>`);
+            await deps.store.createWorkflowEvent({
+              workflow_run_id: workflowRun.id,
+              event_type: 'node_started',
+              step_name: node.id,
+              data: { type: 'workflow', workflowName: node.workflow.name },
+            });
+            const maxAttempts = node.retry?.max_attempts ?? 1;
+            let output: NodeOutput = { state: 'failed', output: '', error: 'not executed' };
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+              output = await childWorkflowRunner(node, nodeOutputs);
+              if (output.state !== 'failed') break;
+              if (attempt < maxAttempts) {
+                const delayMs = (node.retry?.delay_ms ?? 1000) * Math.pow(2, attempt - 1);
+                await new Promise(resolve => setTimeout(resolve, delayMs));
+              }
+            }
+            if (output.state === 'completed') {
+              await logNodeComplete(logDir, workflowRun.id, node.id, output.output);
+              await deps.store.createWorkflowEvent({
+                workflow_run_id: workflowRun.id,
+                event_type: 'node_completed',
+                step_name: node.id,
+                data: { node_output: output.output, child_workflow: node.workflow.name },
+              });
+            } else if (output.state === 'failed') {
+              await logNodeError(logDir, workflowRun.id, node.id, output.error);
+              await deps.store.createWorkflowEvent({
+                workflow_run_id: workflowRun.id,
+                event_type: 'node_failed',
+                step_name: node.id,
+                data: { error: output.error, child_workflow: node.workflow.name },
+              });
+            }
+            return { nodeId: node.id, output };
+          }
+
           // 4. Resolve per-node provider/model/options
           const {
             provider,
@@ -3782,11 +4059,41 @@ export async function executeDagWorkflow(
         }
         if (output.loopIterations !== undefined) totalLoopIterations += output.loopIterations;
         nodeOutputs.set(nodeId, output);
+        const completedNode = nodeById.get(nodeId);
+        if (completedNode !== undefined) {
+          try {
+            const completedAt = new Date().toISOString();
+            const durationMs = 'durationMs' in output ? output.durationMs : undefined;
+            const startedAt =
+              typeof durationMs === 'number'
+                ? new Date(Date.now() - durationMs).toISOString()
+                : completedAt;
+            const ioManifestPath = await writeNodeIoManifest({
+              artifactsDir,
+              runId: workflowRun.id,
+              node: completedNode,
+              output,
+              dependencyOutputs: nodeOutputs,
+              startedAt,
+              completedAt,
+            });
+            await deps.store.createWorkflowEvent({
+              workflow_run_id: workflowRun.id,
+              event_type: 'node_io_recorded',
+              step_name: nodeId,
+              data: { io_manifest_path: ioManifestPath },
+            });
+          } catch (err) {
+            getLog().warn(
+              { err: err as Error, nodeId, workflowRunId: workflowRun.id },
+              'node_io_manifest.write_failed'
+            );
+          }
+        }
         // Typed artifact: when a node declares `output_type`, persist its output
         // as a typed sidecar (nodes/<id>.md + .meta.json) so other nodes and
         // later runs can locate it by type. Best-effort — a metadata write must
         // never fail an otherwise-successful node.
-        const completedNode = nodeById.get(nodeId);
         if (output.state === 'completed' && completedNode?.output_type) {
           try {
             await writeNodeArtifact(
@@ -3829,6 +4136,44 @@ export async function executeDagWorkflow(
 
     if (layerHadFailure) {
       getLog().warn({ layerIdx, nodeCount: layer.length }, 'dag_layer_had_failures');
+    }
+
+    // Manual progression pauses only between composed child workflows, after
+    // the completed node's output and telemetry are durable. Atomic nodes
+    // remain automatic, and the final child never creates a needless gate.
+    if (
+      workflow.progression?.mode === 'manual' &&
+      !layerHadFailure &&
+      layerIdx < layers.length - 1
+    ) {
+      const completedWorkflowNode = layer.find(node => {
+        const output = nodeOutputs.get(node.id);
+        return (
+          isWorkflowNode(node) &&
+          output?.state === 'completed' &&
+          !autoContinueAfter.has(node.id) &&
+          !continuedPhaseTransitions.has(node.id)
+        );
+      });
+      const hasLaterWorkflowNode = layers
+        .slice(layerIdx + 1)
+        .flat()
+        .some(isWorkflowNode);
+      if (completedWorkflowNode !== undefined && hasLaterWorkflowNode) {
+        const nextNodeIds = layers[layerIdx + 1]?.map(node => node.id) ?? [];
+        await deps.store.createWorkflowEvent({
+          workflow_run_id: workflowRun.id,
+          event_type: 'phase_transition_requested',
+          step_name: completedWorkflowNode.id,
+          data: { nextNodeIds },
+        });
+        await deps.store.pauseWorkflowRun(workflowRun.id, {
+          nodeId: completedWorkflowNode.id,
+          message: `Phase '${completedWorkflowNode.id}' completed. Continue to the next phase.`,
+          type: 'phase_transition',
+          nextNodeIds,
+        });
+      }
     }
 
     // Check for non-running status between DAG layers (cancellation, deletion, pause)

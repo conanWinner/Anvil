@@ -64,6 +64,8 @@ export function useDashboardSSE(): void {
       if (ev.type === 'workflow_status' || ev.type === 'dag_node') {
         // Refetch every runs:* key (runs:all, runs:project:<id>).
         invalidate('runs');
+        invalidate('flow');
+        invalidate('flow-runs');
         // Also refresh any open run-detail cache so the detail page picks
         // up status / node-transition changes without its own SSE round-trip.
         if (typeof ev.runId === 'string') {

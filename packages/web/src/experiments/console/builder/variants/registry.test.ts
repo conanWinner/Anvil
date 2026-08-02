@@ -9,7 +9,7 @@ describe('isVariantId', () => {
   });
 
   test('rejects unknown strings (e.g. a foreign drag payload)', () => {
-    for (const bad of ['', 'Prompt', 'workflow', 'node', 'application/json', 'loop ']) {
+    for (const bad of ['', 'Prompt', 'node', 'application/json', 'loop ']) {
       expect(isVariantId(bad)).toBe(false);
     }
   });

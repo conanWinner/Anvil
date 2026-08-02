@@ -9,6 +9,7 @@ import {
   thinkingConfigSchema,
   sandboxSettingsSchema,
   betasSchema,
+  workflowUiSchema,
 } from './dag-node';
 
 // ---------------------------------------------------------------------------
@@ -59,6 +60,48 @@ export const workflowWorktreePolicySchema = z.object({
 
 export type WorkflowWorktreePolicy = z.infer<typeof workflowWorktreePolicySchema>;
 
+/**
+ * Optional human-controlled progression between composed child workflows.
+ * Atomic nodes always remain automatic; this policy is evaluated only after
+ * completed `workflow` nodes in a sequential composition.
+ */
+export const workflowProgressionSchema = z.object({
+  mode: z.literal('manual'),
+  auto_continue_after: z.array(z.string().min(1)).optional(),
+});
+
+export type WorkflowProgression = z.infer<typeof workflowProgressionSchema>;
+
+/**
+ * Optional, declarative pre-run intake. It describes how a workflow collects
+ * its typed runtime inputs; execution still validates against input_schema.
+ */
+export const workflowIntakeControlSchema = z.enum([
+  'file',
+  'dataset',
+  'textarea',
+  'approval_policy',
+]);
+
+export const workflowIntakeFieldSchema = z.object({
+  input: z.string().trim().min(1),
+  control: workflowIntakeControlSchema,
+  prompt: z.string().trim().min(1),
+  required: z.boolean().optional(),
+  options: z.record(z.string(), z.unknown()).optional(),
+  default: z.unknown().optional(),
+});
+
+export const workflowIntakeSchema = z.object({
+  version: z.literal(1),
+  title: z.string().trim().min(1),
+  fields: z.array(workflowIntakeFieldSchema).min(1),
+});
+
+export type WorkflowIntakeControl = z.infer<typeof workflowIntakeControlSchema>;
+export type WorkflowIntakeField = z.infer<typeof workflowIntakeFieldSchema>;
+export type WorkflowIntake = z.infer<typeof workflowIntakeSchema>;
+
 // ---------------------------------------------------------------------------
 // WorkflowBase — common fields shared by all workflow types
 // ---------------------------------------------------------------------------
@@ -66,6 +109,7 @@ export type WorkflowWorktreePolicy = z.infer<typeof workflowWorktreePolicySchema
 export const workflowBaseSchema = z.object({
   name: z.string().min(1),
   description: z.string().min(1),
+  ui: workflowUiSchema.optional(),
   provider: z.string().trim().min(1).optional(),
   model: z.string().optional(),
   modelReasoningEffort: modelReasoningEffortSchema.optional(),
@@ -78,6 +122,8 @@ export const workflowBaseSchema = z.object({
   betas: betasSchema.optional(),
   sandbox: sandboxSettingsSchema.optional(),
   worktree: workflowWorktreePolicySchema.optional(),
+  progression: workflowProgressionSchema.optional(),
+  intake: workflowIntakeSchema.optional(),
   /**
    * When `false`, the engine skips the path-exclusive lock for this workflow,
    * allowing N concurrent runs on the same live checkout. The author asserts
@@ -99,6 +145,11 @@ export const workflowBaseSchema = z.object({
    * when per-user GitHub is enabled; a no-op for solo PAT installs.
    */
   requires: z.array(workflowRequirementSchema).optional(),
+  /** JSON-Schema contracts for workflow composition. */
+  input_schema: z.record(z.string(), z.unknown()).optional(),
+  output_schema: z.record(z.string(), z.unknown()).optional(),
+  /** Maps public workflow output fields to node-output templates. */
+  outputs: z.record(z.string().min(1), z.string().min(1)).optional(),
 });
 
 export type WorkflowBase = z.infer<typeof workflowBaseSchema>;

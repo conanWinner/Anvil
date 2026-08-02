@@ -274,6 +274,7 @@ export interface WorkflowRoutingContext {
    * to the privacy-safe "custom" treatment when not provided.
    */
   readonly source?: WorkflowSource;
+  readonly inputs?: Record<string, unknown>;
 }
 
 /**
@@ -416,6 +417,10 @@ export async function dispatchBackgroundWorkflow(
             preCreatedRun,
             userId: ctx.userId,
             source: ctx.source,
+            inputs: ctx.inputs,
+            compositionDefinitions: new Map(
+              ctx.availableWorkflows.map(definition => [definition.name, definition])
+            ),
           }
         );
         // Surface workflow output to parent conversation as a result card

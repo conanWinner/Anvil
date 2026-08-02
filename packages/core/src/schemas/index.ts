@@ -37,6 +37,23 @@ export type { WorkflowEventRow } from './workflow-event';
 export { codebaseEnvVarSchema } from './env-var';
 export type { CodebaseEnvVar } from './env-var';
 
+export { workflowIntakeDraftStatusSchema, workflowIntakeDraftRowSchema } from './workflow-intake';
+export type { WorkflowIntakeDraftStatus, WorkflowIntakeDraftRow } from './workflow-intake';
+
+export {
+  projectMemoryCategorySchema,
+  projectMemoryOriginSchema,
+  memoryHandoffStatusSchema,
+  projectMemoryEntryRowSchema,
+  conversationMemoryHandoffRowSchema,
+} from './project-memory';
+export type {
+  ProjectMemoryCategory,
+  ProjectMemoryOrigin,
+  ProjectMemoryEntryRow,
+  ConversationMemoryHandoffRow,
+} from './project-memory';
+
 // WorkflowRun (dashboard types)
 export {
   dashboardWorkflowRunSchema,

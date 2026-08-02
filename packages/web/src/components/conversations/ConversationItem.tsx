@@ -5,6 +5,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import type { ConversationResponse } from '@/lib/api';
 import { deleteConversation, updateConversation } from '@/lib/api';
 import { cn } from '@/lib/utils';
+import { formatStarted } from '@/lib/format';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -46,16 +47,7 @@ export function ConversationItem({
     : 'Untitled conversation';
 
   const lastActivity = conversation.last_activity_at
-    ? new Date(
-        conversation.last_activity_at.endsWith('Z')
-          ? conversation.last_activity_at
-          : conversation.last_activity_at + 'Z'
-      ).toLocaleString(undefined, {
-        month: 'short',
-        day: 'numeric',
-        hour: '2-digit',
-        minute: '2-digit',
-      })
+    ? formatStarted(conversation.last_activity_at)
     : 'No activity';
 
   const handleDelete = useCallback((): void => {

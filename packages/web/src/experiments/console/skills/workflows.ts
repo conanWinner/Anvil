@@ -13,11 +13,13 @@ interface RawNode {
   approval?: unknown;
   loop?: unknown;
   script?: unknown;
+  workflow?: unknown;
 }
 
 interface RawWorkflow {
   name: string;
   description?: string;
+  intake?: Workflow['intake'];
   nodes?: RawNode[];
 }
 
@@ -47,6 +49,7 @@ export async function listWorkflows(cwd?: string): Promise<WorkflowListResult> {
 }
 
 function nodeKind(n: RawNode): WorkflowGraphNode['kind'] {
+  if (n.workflow !== undefined) return 'workflow';
   if (n.loop !== undefined) return 'loop';
   if (n.approval !== undefined) return 'approval';
   if (n.cancel !== undefined) return 'cancel';

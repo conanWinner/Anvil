@@ -1,83 +1,162 @@
-/**
- * `/console/builder` route — renders DIFFERENT builders depending on context:
- *
- * 1. **No `?edit=` param** → NEW console BuilderPage (fixture-backed, beta).
- *    This is the visual editor with Inspect/YAML panels, undo/redo, etc.
- *
- * 2. **`?edit=<name>` present** → OLD UI WorkflowBuilder (production).
- *    This is the full-featured builder with NODE LIBRARY (categorized commands),
- *    Visual/Split/YAML toggle, Validate/Save/Run actions, and server I/O.
- */
-import { useState, type ChangeEvent, type ReactElement } from 'react';
+/** Live project-scoped console workflow builder route. */
+import { useEffect, useState, type ReactElement } from 'react';
 import { useSearchParams } from 'react-router';
-import { FIXTURES } from './fixtures';
-import { importWorkflowDefinition } from './model';
+import type { BuilderWorkflow } from './types';
+import { importWorkflowDefinition, toWorkflowDefinition } from './model';
 import { BuilderPage } from './BuilderPage';
-import { WorkflowBuilder } from '@/components/workflows/WorkflowBuilder';
+import { getWorkflow, listWorkflows, saveWorkflow } from '../skills/workflows';
+import { startRun } from '../skills/startRun';
 
-const FIXTURE_KEYS = Object.keys(FIXTURES);
+const EMPTY_WORKFLOW: BuilderWorkflow = {
+  name: 'new-workflow',
+  description: 'Describe when and why to use this workflow.',
+  meta: {},
+  nodes: [],
+};
 
 export function BuilderRoute(): ReactElement {
   const [searchParams] = useSearchParams();
   const editName = searchParams.get('edit');
+  const cwd = searchParams.get('cwd') ?? undefined;
+  const projectId = searchParams.get('projectId') ?? undefined;
+  const [workflow, setWorkflow] = useState<BuilderWorkflow | null>(
+    editName ? null : EMPTY_WORKFLOW
+  );
+  const [workflowName, setWorkflowName] = useState(editName ?? EMPTY_WORKFLOW.name);
+  const [status, setStatus] = useState<string>('');
+  const [runMessage, setRunMessage] = useState('Run workflow');
+  const [runInputs, setRunInputs] = useState('{}');
+  const [availableWorkflows, setAvailableWorkflows] = useState<string[]>([]);
 
-  // If ?edit= is present, use the OLD UI WorkflowBuilder (production builder
-  // with NODE LIBRARY, Visual/Split/YAML, Validate/Save/Run, server I/O).
-  if (editName) {
-    return (
-      <div className="flex h-full min-h-0 flex-col overflow-hidden">
-        <WorkflowBuilder />
-      </div>
-    );
-  }
+  useEffect(() => {
+    let active = true;
+    void listWorkflows(cwd)
+      .then(result => {
+        if (active) setAvailableWorkflows(result.workflows.map(item => item.name));
+      })
+      .catch(() => {
+        if (active) setAvailableWorkflows([]);
+      });
+    return (): void => {
+      active = false;
+    };
+  }, [cwd]);
 
-  // Otherwise, fixture-backed console builder (beta)
-  return <FixtureBuilder />;
-}
+  useEffect(() => {
+    if (!editName) return;
+    let active = true;
+    setStatus('Loading…');
+    void getWorkflow(editName, cwd)
+      .then(result => {
+        if (!active) return;
+        setWorkflow(importWorkflowDefinition(result.workflow, result.filename));
+        setWorkflowName(result.workflow.name);
+        setStatus('');
+      })
+      .catch((error: unknown) => {
+        if (active) setStatus(error instanceof Error ? error.message : String(error));
+      });
+    return (): void => {
+      active = false;
+    };
+  }, [editName, cwd]);
 
-/** Fixture-backed builder (original behavior). */
-function FixtureBuilder(): ReactElement {
-  // Default to the richest fixture (multi-node DAG with when/meta coverage).
-  const [fixtureKey, setFixtureKey] = useState<string>('mixed');
-  const definition = FIXTURES[fixtureKey];
+  const persist = async (): Promise<void> => {
+    if (!workflow || !workflowName.trim()) return;
+    setStatus('Saving…');
+    try {
+      const definition = { ...toWorkflowDefinition(workflow), name: workflowName.trim() };
+      await saveWorkflow(workflowName.trim(), definition, cwd);
+      setStatus('Saved');
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const run = async (): Promise<void> => {
+    if (!projectId || !workflowName.trim()) return;
+    setStatus('Starting…');
+    try {
+      const parsedInputs = JSON.parse(runInputs) as unknown;
+      if (
+        parsedInputs === null ||
+        typeof parsedInputs !== 'object' ||
+        Array.isArray(parsedInputs)
+      ) {
+        throw new Error('Run inputs must be a JSON object');
+      }
+      await persist();
+      await startRun({
+        projectId,
+        workflow: workflowName.trim(),
+        message: runMessage,
+        inputs: parsedInputs as Record<string, unknown>,
+      });
+      setStatus('Run accepted');
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : String(error));
+    }
+  };
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex items-center gap-3 border-b border-border px-4 py-2">
+      <header className="flex items-center gap-2 border-b border-border px-4 py-2">
         <h1 className="text-[14px] font-semibold text-text-primary">Workflow Builder</h1>
-        <span className="rounded-full border border-border px-2 py-0.5 font-mono text-[10px] uppercase tracking-widest text-text-tertiary">
-          beta
-        </span>
-        <span className="text-[11.5px] text-text-tertiary">
-          Editing a local fixture — load/save lands in the next milestone.
-        </span>
-        <div className="flex-1" />
-        <label className="flex items-center gap-2 text-[11.5px] text-text-tertiary">
-          Fixture
-          <select
-            value={fixtureKey}
-            onChange={(e: ChangeEvent<HTMLSelectElement>): void => {
-              setFixtureKey(e.target.value);
-            }}
-            className="rounded-[8px] border border-border bg-surface px-2 py-1 font-mono text-[12px] text-text-primary outline-none focus:border-accent-bright/60"
-          >
-            {FIXTURE_KEYS.map(key => (
-              <option key={key} value={key}>
-                {key}
-              </option>
-            ))}
-          </select>
-        </label>
+        <input
+          value={workflowName}
+          onChange={event => {
+            setWorkflowName(event.target.value);
+          }}
+          className="w-56 rounded-md border border-border bg-surface px-2 py-1 font-mono text-xs"
+        />
+        <input
+          value={runMessage}
+          onChange={event => {
+            setRunMessage(event.target.value);
+          }}
+          className="min-w-0 flex-1 rounded-md border border-border bg-surface px-2 py-1 text-xs"
+        />
+        <input
+          value={runInputs}
+          aria-label="Workflow inputs JSON"
+          title="Workflow inputs JSON"
+          onChange={event => {
+            setRunInputs(event.target.value);
+          }}
+          className="w-48 rounded-md border border-border bg-surface px-2 py-1 font-mono text-xs"
+        />
+        <span className="max-w-64 truncate text-xs text-text-tertiary">{status}</span>
+        <button
+          type="button"
+          onClick={() => {
+            void persist();
+          }}
+          className="rounded-md border border-border px-3 py-1 text-xs"
+        >
+          Save
+        </button>
+        <button
+          type="button"
+          disabled={!projectId}
+          onClick={() => {
+            void run();
+          }}
+          className="rounded-md bg-primary px-3 py-1 text-xs text-white disabled:opacity-40"
+        >
+          Run
+        </button>
       </header>
-
       <div className="min-h-0 flex-1">
-        {definition !== undefined ? (
-          // Key by fixture so switching remounts the editor with fresh state.
+        {workflow ? (
           <BuilderPage
-            key={fixtureKey}
-            initialWorkflow={importWorkflowDefinition(definition, fixtureKey)}
+            key={editName ?? 'new'}
+            initialWorkflow={workflow}
+            onChange={setWorkflow}
+            availableWorkflows={availableWorkflows.filter(name => name !== workflowName.trim())}
           />
-        ) : null}
+        ) : (
+          <div className="p-6 text-sm text-text-tertiary">{status}</div>
+        )}
       </div>
     </div>
   );

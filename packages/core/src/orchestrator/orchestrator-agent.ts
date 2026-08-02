@@ -69,6 +69,7 @@ import { reportUnpushedWorkInSource } from './post-message-reminder';
 import * as messageDb from '../db/messages';
 import * as workflowDb from '../db/workflows';
 import * as workflowEventDb from '../db/workflow-events';
+import { buildProjectMemoryContext } from '../services/project-memory';
 import { getCodebaseEnvVars } from '../db/env-vars';
 import type { ApprovalContext } from '@anvil/workflows/schemas/workflow-run';
 import {
@@ -502,6 +503,8 @@ interface WorkflowDispatchOptions {
   force?: boolean;
   resumeRunId?: string;
   resumeRun?: WorkflowRun;
+  inputs?: Record<string, unknown>;
+  availableWorkflows?: readonly WorkflowDefinition[];
 }
 
 const FAILED_RUN_PROMPT_PREVIEW_MAX = 160;
@@ -592,6 +595,10 @@ async function dispatchOrchestratorWorkflow(
   source?: WorkflowSource,
   options?: WorkflowDispatchOptions
 ): Promise<void> {
+  const availableWorkflows = options?.availableWorkflows ?? [workflow];
+  const compositionDefinitions = new Map(
+    availableWorkflows.map(definition => [definition.name, definition])
+  );
   // Capability gate: hard-fail before any worktree/clone/AI cost if the
   // workflow declares `requires: [github]` and the originating user hasn't
   // connected. No-op when per-user GitHub is disabled (solo PAT installs).
@@ -741,22 +748,58 @@ async function dispatchOrchestratorWorkflow(
       throw err;
     }
     if (prepared) {
-      await executeWorkflow(
-        deps,
-        platform,
-        conversationId,
-        resumableRun.working_path,
-        workflow,
-        userMessage,
-        conversation.id,
-        {
-          codebaseId: codebase.id,
-          parentConversationId: conversation.id,
-          userId,
-          source,
-          ...prepared,
-        }
-      );
+      try {
+        await executeWorkflow(
+          deps,
+          platform,
+          conversationId,
+          resumableRun.working_path,
+          workflow,
+          userMessage,
+          conversation.id,
+          {
+            codebaseId: codebase.id,
+            parentConversationId: conversation.id,
+            userId,
+            source,
+            inputs: options?.inputs,
+            compositionDefinitions,
+            ...prepared,
+          }
+        );
+      } catch (error) {
+        // hydrateResumableRun atomically claims the row by moving it to
+        // `running`. Some executor setup still happens before its own top-level
+        // try/catch (config/snapshot/provider resolution), so a throw there used
+        // to strand the run as a zombie `running` row. Finalize the claimed run
+        // here and persist the real error so Progress can offer Resume again.
+        const err = toError(error);
+        getLog().error(
+          { err, workflowName: workflow.name, runId: resumableRun.id },
+          'orchestrator.resume_execution_setup_failed'
+        );
+        await workflowDb
+          .failWorkflowRun(resumableRun.id, `Resume failed: ${err.message}`)
+          .catch((dbError: unknown) => {
+            getLog().error(
+              { err: toError(dbError), runId: resumableRun.id },
+              'orchestrator.resume_failure_finalize_failed'
+            );
+          });
+        await workflowEventDb
+          .createWorkflowEvent({
+            workflow_run_id: resumableRun.id,
+            event_type: 'workflow_failed',
+            data: { error: `Resume failed: ${err.message}` },
+          })
+          .catch((eventError: unknown) => {
+            getLog().error(
+              { err: toError(eventError), runId: resumableRun.id },
+              'orchestrator.resume_failure_event_failed'
+            );
+          });
+        await platform.sendMessage(conversationId, `❌ **Workflow resume failed**: ${err.message}`);
+      }
     } else {
       await platform.sendMessage(
         conversationId,
@@ -775,6 +818,8 @@ async function dispatchOrchestratorWorkflow(
           parentConversationId: conversation.id,
           userId,
           source,
+          inputs: options?.inputs,
+          compositionDefinitions,
         }
       );
     }
@@ -788,10 +833,11 @@ async function dispatchOrchestratorWorkflow(
         originalMessage: userMessage,
         conversationDbId: conversation.id,
         codebaseId: codebase.id,
-        availableWorkflows: [workflow],
+        availableWorkflows,
         isolationHints,
         userId,
         source,
+        inputs: options?.inputs,
       },
       workflow
     );
@@ -810,6 +856,8 @@ async function dispatchOrchestratorWorkflow(
         parentConversationId: conversation.id,
         userId,
         source,
+        inputs: options?.inputs,
+        compositionDefinitions,
       }
     );
   }
@@ -1127,7 +1175,11 @@ export async function handleMessage(
             isolationHints,
             userId,
             workflowSource,
-            { resumeRunId: pausedRun.id, resumeRun: pausedRun }
+            {
+              resumeRunId: pausedRun.id,
+              resumeRun: pausedRun,
+              availableWorkflows: allWorkflows,
+            }
           );
           getLog().info(
             { conversationId, workflowRunId: pausedRun.id, workflowName: pausedRun.workflow_name },
@@ -1154,6 +1206,11 @@ export async function handleMessage(
       const deterministicCommands = [
         'help',
         'status',
+        'start',
+        'continue',
+        'approve',
+        'reject',
+        'stop',
         'reset',
         'workflow',
         'register-project',
@@ -1211,6 +1268,8 @@ export async function handleMessage(
               force: result.workflow.force,
               resumeRunId: result.workflow.resumeRunId,
               resumeRun: result.workflow.resumeRun,
+              inputs: result.workflow.inputs,
+              availableWorkflows: result.workflow.availableWorkflows,
             }
           );
         }
@@ -1314,6 +1373,15 @@ export async function handleMessage(
         'orchestrator.workflow_context_fetch_failed'
       );
       // Non-critical — continue without context
+    }
+
+    let projectMemoryContext: string | undefined;
+    if (conversation.codebase_id) {
+      try {
+        projectMemoryContext = await buildProjectMemoryContext(conversation.codebase_id);
+      } catch (error: unknown) {
+        getLog().warn({ err: error, conversationId }, 'orchestrator.project_memory_fetch_failed');
+      }
     }
 
     const fullPrompt = buildFullPrompt(
@@ -1472,6 +1540,9 @@ export async function handleMessage(
     // Claude supports the preset object for prompt caching; other providers
     // need a plain string (Pi coerces non-string to undefined, Codex ignores it).
     let systemAppend = buildOrchestratorSystemAppend(conversation, codebases, workflows);
+    if (projectMemoryContext) {
+      systemAppend += `\n\n---\n\n${projectMemoryContext}`;
+    }
     // Capabilities are only consulted for project-scoped chats (both the native tool
     // and the CLI pointer are scoped features), so look them up lazily — this also
     // avoids a registry lookup (and a throw for an unregistered provider) on the
@@ -2207,7 +2278,9 @@ async function handleWorkflowInvocationResult(
       workflow,
       workflowPrompt,
       isolationHints,
-      userId
+      userId,
+      undefined,
+      { availableWorkflows: workflows }
     );
     return;
   }
@@ -2550,7 +2623,10 @@ async function handleWorkflowRunCommand(
       isolationHints,
       userId,
       resolvedEntry?.source,
-      options
+      {
+        ...options,
+        availableWorkflows: discovery.workflows.map(entry => entry.workflow),
+      }
     );
     return;
   }

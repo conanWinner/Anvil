@@ -1,5 +1,7 @@
 /** Formatting helpers for the console. Pure functions, no React. */
 
+import { ensureUtc, formatVietnamClock } from '../../../lib/format';
+
 export function shortRunId(id: string): string {
   return id.replace(/-/g, '').slice(0, 8);
 }
@@ -15,13 +17,13 @@ export function formatElapsed(totalSeconds: number): string {
 }
 
 export function elapsedSince(startIso: string, endIso?: string): number {
-  const start = new Date(startIso).getTime();
-  const end = endIso !== undefined ? new Date(endIso).getTime() : Date.now();
+  const start = new Date(ensureUtc(startIso)).getTime();
+  const end = endIso !== undefined ? new Date(ensureUtc(endIso)).getTime() : Date.now();
   return (end - start) / 1000;
 }
 
 export function relativeTime(iso: string, now: number = Date.now()): string {
-  const t = new Date(iso).getTime();
+  const t = new Date(ensureUtc(iso)).getTime();
   const d = Math.floor((now - t) / 1000);
   if (d < 5) return 'just now';
   if (d < 60) return `${d.toString()}s ago`;
@@ -37,8 +39,8 @@ export function relativeTime(iso: string, now: number = Date.now()): string {
  */
 export function formatRelativeToBaseline(eventIso: string, baselineIso: string | null): string {
   if (baselineIso === null) return formatClock(eventIso);
-  const base = new Date(baselineIso).getTime();
-  const t = new Date(eventIso).getTime();
+  const base = new Date(ensureUtc(baselineIso)).getTime();
+  const t = new Date(ensureUtc(eventIso)).getTime();
   if (Number.isNaN(base) || Number.isNaN(t)) return formatClock(eventIso);
   const delta = Math.max(0, Math.floor((t - base) / 1000));
   const h = Math.floor(delta / 3600);
@@ -49,11 +51,7 @@ export function formatRelativeToBaseline(eventIso: string, baselineIso: string |
 }
 
 export function formatClock(iso: string): string {
-  const d = new Date(iso);
-  const hh = d.getHours().toString().padStart(2, '0');
-  const mm = d.getMinutes().toString().padStart(2, '0');
-  const ss = d.getSeconds().toString().padStart(2, '0');
-  return `${hh}:${mm}:${ss}`;
+  return formatVietnamClock(iso);
 }
 
 /**

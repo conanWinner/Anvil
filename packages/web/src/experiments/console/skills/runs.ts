@@ -8,6 +8,7 @@ export interface ListRunsOptions {
   codebaseId?: string;
   status?: RunStatus;
   limit?: number;
+  rootOnly?: boolean;
 }
 
 export interface RunCounts {
@@ -45,6 +46,7 @@ export async function listRuns(
   if (opts.codebaseId !== undefined) qs.set('codebaseId', opts.codebaseId);
   if (opts.status !== undefined) qs.set('status', opts.status);
   if (opts.limit !== undefined) qs.set('limit', opts.limit.toString());
+  if (opts.rootOnly !== undefined) qs.set('rootOnly', opts.rootOnly ? 'true' : 'false');
   const url = `/api/dashboard/runs${qs.size > 0 ? `?${qs.toString()}` : ''}`;
   const res = await requestJson<DashboardRunsResponse>(url);
   return {
@@ -63,13 +65,24 @@ export async function listGlobalCounts(): Promise<RunCounts> {
 interface RunDetailResponse {
   run: Parameters<typeof toRun>[0];
   events: Parameters<typeof toRunEvent>[0][];
+  children: ChildRunSummary[];
 }
 
-export async function getRun(id: string): Promise<{ run: Run; events: RunEvent[] }> {
+export interface ChildRunSummary {
+  runId: string;
+  parentNodeId: string;
+  workflowName: string;
+  status: RunStatus | 'pending';
+}
+
+export async function getRun(
+  id: string
+): Promise<{ run: Run; events: RunEvent[]; children: ChildRunSummary[] }> {
   const res = await requestJson<RunDetailResponse>(`/api/workflows/runs/${encodeURIComponent(id)}`);
   return {
     run: toRun(res.run),
     events: res.events.map(toRunEvent),
+    children: res.children ?? [],
   };
 }
 
@@ -91,6 +104,13 @@ export async function rejectRun(id: string, reason: string): Promise<void> {
   await requestJson(`/api/workflows/runs/${encodeURIComponent(id)}/reject`, {
     method: 'POST',
     body: JSON.stringify({ reason }),
+  });
+}
+
+export async function continueRun(id: string): Promise<void> {
+  await requestJson(`/api/workflows/runs/${encodeURIComponent(id)}/continue`, {
+    method: 'POST',
+    body: JSON.stringify({}),
   });
 }
 

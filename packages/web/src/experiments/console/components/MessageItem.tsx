@@ -118,7 +118,7 @@ export function MessageItem({ message, variant = 'chat' }: MessageItemProps): Re
           style={{
             background: 'color-mix(in oklch, var(--brand-magenta), transparent 94%)',
             border: '1px solid color-mix(in oklch, var(--brand-magenta), transparent 50%)',
-            color: 'color-mix(in oklch, white, var(--brand-magenta) 12%)',
+            color: 'var(--text-primary)',
             boxShadow: '0 0 0 4px color-mix(in oklch, var(--brand-magenta), transparent 95%)',
           }}
         >

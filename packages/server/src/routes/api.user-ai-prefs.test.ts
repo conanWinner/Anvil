@@ -128,6 +128,7 @@ mock.module('@anvil/paths', () => ({
   getDefaultWorkflowsPath: mock(() => '/tmp/.anvil-test-nonexistent/workflows/defaults'),
   getAnvilWorkspacesPath: () => '/tmp/.anvil/workspaces',
   getAnvilHome: () => '/tmp/.anvil',
+  resolveRegisteredProjectRoot: (name: string): string => `/tmp/.anvil/workspaces/_local/${name}`,
   getRunArtifactsPath: (owner: string, repo: string, runId: string): string =>
     `/tmp/.anvil/workspaces/${owner}/${repo}/artifacts/runs/${runId}`,
 }));

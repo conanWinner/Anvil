@@ -16,6 +16,7 @@ export const conversationRowSchema = z.object({
   id: z.string(),
   platform_type: z.string(),
   platform_conversation_id: z.string(),
+  client_request_id: z.string().nullable().default(null),
   codebase_id: z.string().nullable(),
   cwd: z.string().nullable(),
   isolation_env_id: z.string().nullable(),

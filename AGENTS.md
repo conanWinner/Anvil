@@ -1,6 +1,123 @@
 ## Project Overview
 
-**Remote Agentic Coding Platform**: Control AI coding assistants (Claude Code SDK, Codex SDK) remotely from Slack, Telegram, and GitHub. Built with **Bun + TypeScript + SQLite/PostgreSQL**, single-developer tool for AI-assisted development practitioners. Architecture prioritizes simplicity, flexibility, and user control.
+**Anvil** is the product and platform name. Anvil lets developers control AI coding assistants (Claude Code SDK, Codex SDK, and other registered providers) from Web, CLI, Slack, Telegram, GitHub, and other adapters. It is built with **Bun + TypeScript + SQLite/PostgreSQL** and prioritizes simplicity, flexibility, reproducibility, and user control.
+
+**System 3** is a first-class product domain inside Anvil. It manages a project's lifecycle from source intake through verified delivery. System 3 is not the name of the whole product, and it is not a replacement name for Anvil's generic workflow engine.
+
+Naming rules:
+
+- Use **Anvil** for the complete product, platform, repository, Web UI, CLI, and shared runtime.
+- Use **System 3** only for the project-lifecycle domain and its control-plane behavior.
+- Use **Anvil Workflow Runtime** for the reusable technical workflow engine in `packages/workflows`.
+- Do not call the product “System 3”, “Archon”, or “Remote Agentic Coding Platform” in new user-facing copy. The last phrase may be used only as a descriptive product category.
+
+## Anvil and System 3 Documentation and Terminology
+
+When a task touches System 3 architecture, product flow, UI, API, source handling, lifecycle state, artifacts, evidence, or delivery, read the documentation in this order:
+
+1. `docs/README.md` — documentation map and reading guide.
+2. `docs/1. Tổng quan hệ thống.md` — product overview, system input/output, architecture, and the 6-phase lifecycle map.
+3. `docs/lifecycle_activity/README.md` and the relevant activity file — user-facing behavior for one of the 10 Lifecycle Activities.
+4. `docs/technical/README.md` and the relevant technical document — contracts, API, artifacts, retry, security, LLM policy, implementation, and testing.
+5. `docs/system_2/DESIGN_B_2.md` only when a concrete System 2 blueprint example is needed. The filename is an example, not an input contract.
+
+Treat the overview and technical documents as **target product design**, not proof that every behavior exists in the current implementation. Verify live code before making current-state claims.
+
+### Required Anvil and System 3 names
+
+- **Anvil**: the complete product and platform.
+- **System 3**: Anvil's project-lifecycle product domain.
+- **System 3 Control Plane**: the System 3 domain layer that owns project state, versions, decisions, readiness, invalidation, approval, evidence projection, and delivery semantics.
+- **Anvil Workflow Runtime**: Anvil's reusable workflow engine. After the formal name is introduced, “Workflow Runtime” or “generic runtime” may be used as a short description.
+- **Project Lifecycle**: the complete journey from Intake to Delivery. Do not call the entire journey a workflow.
+- **Lifecycle Phase**: one of the 6 user-visible stages: Intake, Understanding, Readiness, Build, Verify, Delivery.
+- **Lifecycle Activity**: one of the 10 concrete activities inside those phases.
+- **Control-plane Operation (`OP-*`)**: deterministic backend operation; it does not automatically create a Workflow Run.
+- **Technical Workflow (`TW-*`)**: reusable DAG executed by the Anvil Workflow Runtime.
+- **Workflow Run**: one execution of a Technical Workflow.
+- **Workflow Node**: one step inside a Technical Workflow.
+- **Product Workflow Template**: reusable domain process for a project type.
+- **Project Workflow Version**: immutable, project-bound application of a Product Workflow Template.
+- **Workflow Compilation**: deterministic conversion of readiness-eligible project state into an Execution Plan. The Execution Plan is approved afterward; compilation does not imply approval.
+- **Execution Plan**: the exact technical plan that pins inputs, definitions, capabilities, permissions, and execution order.
+- **Source Version**: immutable record of one accepted source payload, including its kind, filename, content hash, storage pointer, and provenance. A later upload creates a new version instead of overwriting it.
+- **Input Snapshot**: persisted, immutable selection of the exact Source Versions and processing/runtime basis used by an activity. Persist it before starting the related Technical Workflow; never resolve an unpinned “latest file” during execution.
+- **Knowledge Snapshot**: versioned project understanding derived from pinned inputs, including requirements, constraints, facts, open issues, and source pointers.
+- **Decision**: an explicit question that requires a user or authorized actor to answer because Anvil must not guess. A Decision is not synonymous with an LLM response.
+- **Readiness Contract**: versioned result of readiness evaluation, including gates, missing inputs, unresolved Decisions, and whether execution may proceed.
+- **Approval Manifest**: immutable record of the exact Execution Plan and versioned basis an actor approved. Approval applies only to that pinned manifest.
+- **Artifact**: a generated file or result. **Evidence**: proof that validates a requirement or result.
+- **DAG execution**: the Anvil Workflow Runtime scheduling Workflow Nodes according to declared dependencies. It is an execution mechanism, not the Project Lifecycle.
+- **Provider Session**: resumable conversation/execution state owned by an AI provider for a node or conversation. It is runtime state, not project truth or approval state.
+- **Worktree / Isolation**: a separate Git working directory used to keep execution changes away from the live checkout and other runs. It is an execution environment, not a Source Version or Project Workflow Version.
+
+The target System 3 product UI uses **6 Lifecycle Phases** at the top level and reveals these **10 Lifecycle Activities** within them. Use these as the canonical activity names:
+
+```text
+Intake:        OP-00 Source Intake, OP-01 Change Detection
+Understanding: TW-02 Understand Project
+Readiness:     TW-03 Readiness, OP-04 Compile, OP-05 Approve
+Build:         TW-06 Execute Project Workflow Version
+Verify:        TW-07 Verify
+Delivery:      OP-08 Delivery Request, TW-09 Deliver
+```
+
+`TW-06A Build` and `TW-06B Data & Experiment` are child Technical Workflows inside TW-06. They are not additional Lifecycle Activities.
+
+Keep the three naming layers separate:
+
+| Canonical Lifecycle Activity           | Vietnamese UI label        | Current workflow implementation                                         |
+| -------------------------------------- | -------------------------- | ----------------------------------------------------------------------- |
+| OP-00 Source Intake                    | Tiếp nhận nguồn đầu vào    | Control-plane operation; no Workflow Run by default                     |
+| OP-01 Change Detection                 | Phát hiện thay đổi         | Control-plane operation; no Workflow Run by default                     |
+| TW-02 Understand Project               | Hiểu dự án                 | `system3-understand-project`                                            |
+| TW-03 Readiness                        | Kiểm tra mức độ sẵn sàng   | `system3-readiness-contract`                                            |
+| OP-04 Compile                          | Chuẩn bị kế hoạch thực thi | Control-plane operation; produces an Execution Plan                     |
+| OP-05 Approve                          | Phê duyệt kế hoạch         | Control-plane operation; records an Approval Manifest                   |
+| TW-06 Execute Project Workflow Version | Thực thi kế hoạch đã duyệt | Orchestrates `system3-baseline-build` and `system3-baseline-experiment` |
+| TW-07 Verify                           | Xác minh kết quả độc lập   | `system3-verify`                                                        |
+| OP-08 Delivery Request                 | Yêu cầu bàn giao           | Control-plane operation; validates the delivery gate                    |
+| TW-09 Deliver                          | Tạo gói bàn giao           | `system3-delivery`                                                      |
+
+The canonical activity name is not the same thing as a UI label, output object, or workflow identifier. Names such as `Readiness Contract`, `Compile Preview`, `Approval Manifest`, and `Independent Verification` may be output names or descriptive implementation labels; they do not replace the canonical Lifecycle Activity names above.
+
+Current implementation caveats:
+
+- `packages/system3/src/project-flow.ts` still exposes internal/legacy sections such as `data`, `features`, `experiments`, and `explainability`. They are not additional Lifecycle Phases. Do not expose them as a 7- or 8-phase product lifecycle; map or migrate them into the canonical 6-phase UI.
+- The canonical product term is **Project Workflow Version**. Existing identifiers such as `productWorkflowVersionId` and `remote_agent_system3_product_workflow_versions` are legacy implementation names awaiting an explicit compatibility migration. Do not copy those names into new user-facing text.
+- Current TW-02 nodes are deterministic System 3 action executors. A workflow-level `provider: 'claude'` field does not prove that an LLM is called. Today, Decision items are derived from parsed System 2 blueprint markers such as `[Manual Review Required]`; describe LLM behavior only when a real provider node exists in the execution path.
+
+### System 3 boundary and documentation rules
+
+- Preserve the architecture boundary: `Anvil Product UI → Anvil Backend API → System 3 Control Plane → Workflow Compiler → Anvil Workflow Runtime → Storage/Artifact/Evidence`.
+- System 3 owns project, source, knowledge, Product Workflow Template and Project Workflow Version semantics, decisions, readiness, invalidation, domain semantics, evidence projection, and delivery semantics.
+- The Anvil Workflow Runtime owns DAG execution, Technical Workflow definitions, Workflow Runs, Workflow Nodes, provider sessions, retry/timeout, events/logs, worktree isolation, and generic artifact storage.
+- Keep Customer Churn, dataset, target, SHAP, readiness, and experiment logic out of `packages/workflows`.
+- Keep `docs/1. Tổng quan hệ thống.md` concise and product-facing. Put activity-specific behavior in `docs/lifecycle_activity/` and implementation detail in `docs/technical/`.
+- Explain Vietnamese-first in user-facing docs. Define unavoidable English terms at first use and keep raw JSON, hashes, IDs, and logs in technical sections.
+- Preserve immutable versions and provenance. Do not describe a mutable “latest file” as a reproducible workflow input.
+- A dataset may be absent during Understanding. In that case, distinguish the System 2 `Dataset Declaration` from a real `Dataset Profile`; Readiness returns `data_required` before an activity that requires actual data.
+- User-facing artifact views are friendly-first. Technical JSON and debugging metadata belong behind a disclosure.
+- When adding, moving, or renaming docs, update `docs/README.md`, relevant folder README files, and inbound links so no page becomes orphaned.
+
+### System 3 lifecycle UI rules
+
+- The top-level System 3 flow must render exactly **6 Lifecycle Phases** and reveal exactly **10 canonical Lifecycle Activities**. Never render internal `data`, `features`, `experiments`, or `explainability` sections as extra product phases.
+- Derive the UI projection in `packages/web/src/features/system3/lifecycle-view.ts`; keep legacy backend phase identifiers behind that boundary until an explicit API migration is approved.
+- Use one primary navigation axis inside the Lifecycle screen. On desktop, group all 10 activities under the 6 phases in one lifecycle rail and show the selected activity in one workspace; on compact screens, make that rail horizontally scrollable instead of stacking a second full navigation page above the activity.
+- Do not stack redundant summaries such as metric cards, a large hero, phase tabs, activity cards, and resource tabs before the user reaches the current task. Keep project context compact, put status plus the next action near the activity title, and remove repeated information that does not change the user's decision.
+- Every Lifecycle Activity surface must explain what Anvil does, its pinned input, its output, the reason it cannot proceed, and the next user action. Show Vietnamese-first labels and keep canonical `OP-*`/`TW-*` codes as supporting context.
+- Never present an `OP-*` activity as a Workflow Run. Technical node/run views apply only to `TW-*` activities.
+- Treat the Sources route as the detail surface for **OP-00 Source Intake**. Always show the Intake Gate and report-history state. For migrated legacy sources, explain that no historical OP-00 report exists and offer explicit revalidation or a new upload; never synthesize provenance.
+- Use the canonical blue–cyan–teal Anvil application tokens in `packages/web/src/index.css`. Do not introduce purple or fork a feature-specific color palette in the System 3 lifecycle UI. Keep gradient usage selective and keep primary content on high-contrast neutral surfaces.
+- Motion must communicate state or hierarchy, remain short and subtle, and include a `prefers-reduced-motion` fallback. Status must never depend on motion or color alone.
+- Every `OP-*` and `TW-*` activity must list its exact input and output resources and let users open each resource in an inline viewer without changing the current route, phase, activity, scroll position, or browser tab. A standalone page, download, or share link may exist only as a secondary action.
+- Show Inputs, Outputs, and Evidence together as directly scannable sections in the selected activity. Use progressive disclosure for History, Workflow Nodes, logs, raw data, and other secondary or technical material; do not require users to switch through nested tabs to understand the activity's basic state.
+- Keep user-facing output friendly-first. Preserve immutable JSON, CSV, logs, hashes, and binary files as machine-readable truth, but render them through a typed Artifact Presentation Layer selected by resource kind and schema version. Default views use domain-aware headings, prose, tables, checklists, timelines, callouts, file trees, and Evidence links; raw JSON, full hashes, logs, storage metadata, and node I/O belong behind an explicit technical disclosure.
+- Never use raw JSON as the primary view or as the automatic fallback when a renderer is missing or fails. Show a friendly unsupported/error state with provenance, metadata, and a safe download action instead. Optional LLM summaries must be labeled, non-authoritative, and must never replace deterministic presentation data.
+- Do not label every activity result as an Artifact. Decisions, snapshots, contracts, plans, manifests, approvals, Evidence, and control-plane records retain their domain names while sharing the same inline resource-viewing experience.
+- When changing the lifecycle UI, update unit/E2E coverage for the canonical phase/activity count, activity navigation, OP-00 report visibility, legacy-source explanation, inline resource viewing without route changes, friendly-first rendering, raw-data disclosure, responsive behavior, focus restoration, and keyboard-accessible controls. See `docs/technical/07-system3-lifecycle-ui.md`.
+- Before considering a lifecycle layout change complete, inspect a rendered project with real activity data at desktop and compact/mobile widths. Type-checks and DOM assertions do not prove that information density, overflow, hierarchy, or above-the-fold usability are acceptable.
 
 ## Core Principles
 
@@ -344,6 +461,17 @@ packages/
 │       ├── utils/            # Shared utilities
 │       ├── workflows/        # Store adapter (createWorkflowStore) bridging core DB → IWorkflowStore
 │       └── index.ts          # Package exports
+├── system3/                  # @anvil/system3 - Project Lifecycle domain and control plane
+│   └── src/
+│       ├── contracts.ts      # System 3 schemas and domain contracts
+│       ├── source-storage.ts # Immutable source content storage
+│       ├── blueprint.ts      # Deterministic blueprint and dataset parsing
+│       ├── capabilities.ts   # System 3 capability descriptors and handlers
+│       ├── templates.ts      # Programmatic Technical Workflow definitions
+│       ├── compiler.ts       # Execution Plan compilation
+│       ├── invalidation.ts   # Change-impact and stale-state rules
+│       ├── project-flow.ts   # Product flow projection
+│       └── store.ts          # Durable System 3 persistence
 ├── workflows/                # @anvil/workflows - Workflow engine (depends on @anvil/git + @anvil/paths)
 │   └── src/
 │       ├── schemas/          # Zod schemas for engine types
@@ -396,18 +524,19 @@ packages/
 │       ├── adapters/         # Web platform adapter (SSE streaming)
 │       ├── routes/           # API routes (REST + SSE)
 │       └── index.ts          # Hono server entry point
-└── web/                      # @anvil/web - React frontend (Web UI)
-    └── src/
-        ├── components/       # React components (chat, layout, projects, ui, workflows)
-        ├── hooks/            # Custom hooks (useSSE, etc.)
-        ├── lib/              # API client, types, utilities
-        ├── stores/           # Zustand stores (workflow-store)
-        ├── routes/           # Route pages (ChatPage, WorkflowsPage, WorkflowBuilderPage, etc.)
-        ├── experiments/      # Isolated in-repo spikes; lint-guarded against
-        │   │                 # importing production web modules. Drop-in or
-        │   │                 # delete cleanly. See experiments/README.md.
-        │   └── console/      # Run-centric console UI mounted at /console
-        └── App.tsx           # Router + layout
+├── web/                      # @anvil/web - React frontend (Web UI)
+│   └── src/
+│       ├── components/       # React components (chat, layout, projects, ui, workflows)
+│       ├── hooks/            # Custom hooks (useSSE, etc.)
+│       ├── lib/              # API client, types, utilities
+│       ├── stores/           # Zustand stores (workflow-store)
+│       ├── routes/           # Route pages (ChatPage, WorkflowsPage, WorkflowBuilderPage, etc.)
+│       ├── experiments/      # Isolated in-repo spikes; lint-guarded against
+│       │   │                 # importing production web modules. Drop-in or
+│       │   │                 # delete cleanly. See experiments/README.md.
+│       │   └── console/      # Run-centric console UI mounted at /console
+│       └── App.tsx           # Router + layout
+└── docs-web/                 # @anvil/docs-web - Public documentation website
 ```
 
 **Import Patterns:**
@@ -444,21 +573,15 @@ import type { DagNode, WorkflowDefinition } from '@/lib/api';
 
 ### Database Schema
 
-**16 Tables (all prefixed with `remote_agent_`):**
+The authoritative PostgreSQL schema is `migrations/000_combined.sql`; the SQLite bundled schema is generated from the supported migrations. Do not rely on a manually maintained table count when changing persistence.
 
-1. **`codebases`** - Repository metadata and commands (JSONB)
-2. **`conversations`** - Track platform conversations with titles and soft-delete support; nullable `user_id` records first creator
-3. **`sessions`** - Track AI SDK sessions with resume capability
-4. **`isolation_environments`** - Git worktree isolation tracking; nullable `created_by_user_id` preserves first creator
-5. **`workflow_runs`** - Workflow execution tracking and state; nullable `user_id` for per-run attribution
-6. **`workflow_events`** - Step-level workflow event log (step transitions, artifacts, errors)
-7. **`messages`** - Conversation message history with tool call metadata (JSONB); nullable `user_id` (NULL for assistant rows)
-8. **`codebase_env_vars`** - Per-project env vars injected into project-scoped execution surfaces (Claude, Codex, bash/script nodes, and direct chat when codebase-scoped), managed via Web UI or `env:` in config
-9. **`users`** - Anvil-internal identity (one row per human/bot); created lazily on first sight by any adapter; `role` (`'admin'`(default)`/'member'`) is the identity seam for future per-resource scoping (visibility stays open today)
-10. **`user_identities`** - Per-platform mapping (Slack U-id, Telegram chat id, Discord snowflake, GitHub login, Better Auth web user id) → `users.id`; `UNIQUE(platform, platform_user_id)`
-11. **`workflow_node_sessions`** - Per-node provider session IDs persisted across workflow re-runs (opt-in via `persist_session`); keyed by `(workflow_name, node_id, scope_key, provider)`; `scope_key` is typically the conversation UUID
-12. **`user_github_tokens`** - Per-user GitHub device-flow tokens encrypted at rest (AES-256-GCM); one row per Anvil user (`UNIQUE(user_id)`), cascades on user deletion; numeric `github_user_id` anchors the commit no-reply email
-    13–16. **`remote_agent_auth_user` / `remote_agent_auth_session` / `remote_agent_auth_account` / `remote_agent_auth_verification`** - Better Auth tables for opt-in web login (**PostgreSQL only**; always created on Postgres via the idempotent schema apply, but populated only when web auth is enabled — `DATABASE_URL` + `BETTER_AUTH_SECRET`). Owned and shaped by Better Auth (text ids, camelCase columns); Anvil never queries them directly — a session maps to the canonical `users` row via `user_identities('web', <betterAuthUserId>)`
+At the current schema revision, the PostgreSQL combined schema declares **48 tables**, all prefixed with `remote_agent_`:
+
+- **18 shared Anvil tables** for codebases, conversations, sessions, messages, users and identities, provider connections/preferences, Workflow Runs/events/node sessions/intake drafts, isolation, environment variables, GitHub tokens, and project memory.
+- **26 System 3 tables** for projects, immutable source versions, knowledge/readiness/decision state, Product Workflow and runtime snapshots, compilation/approval/execution/verification operations, transitions, evidence, artifacts, impact, traceability facts, and delivery manifests.
+- **4 Better Auth tables** for opt-in Web authentication on PostgreSQL.
+
+When a migration adds or removes a table, update the combined schema and generated SQLite schema according to the repository migration process. Prefer linking to the schema over duplicating a long table inventory here.
 
 **Key Patterns:**
 
@@ -481,12 +604,14 @@ import type { DagNode, WorkflowDefinition } from '@/lib/api';
 - **@anvil/git**: Git operations - worktrees, branches, repos, exec wrappers (depends only on @anvil/paths)
 - **@anvil/providers**: AI agent providers (Claude, Codex, Pi community) — owns SDK deps, `IAgentProvider` interface, `sendQuery()` contract, and provider-specific option translation. `@anvil/providers/types` is the contract subpath (zero SDK deps, zero runtime side effects) that `@anvil/workflows` imports from. Providers receive raw `nodeConfig` + `assistantConfig` and translate to SDK-specific options internally. Core providers live under `claude/` and `codex/`; community providers live under `community/` (currently `community/pi/`, registered with `builtIn: false`).
 - **@anvil/isolation**: Worktree isolation types, providers, resolver, error classifiers (depends only on @anvil/git + @anvil/paths)
+- **@anvil/system3**: System 3 Project Lifecycle domain - immutable sources, knowledge, decisions, readiness, invalidation, compilation, approval, execution projection, verification evidence, and delivery semantics (depends only on @anvil/paths + @hono/zod-openapi; it does not import the generic engine)
 - **@anvil/workflows**: Workflow engine - loader, router, executor, DAG, logger, bundled defaults (depends only on @anvil/git + @anvil/paths + @anvil/providers/types + @hono/zod-openapi + zod; DB/AI/config injected via `WorkflowDeps`)
 - **@anvil/cli**: Command-line interface for running workflows and starting the web UI server (depends on @anvil/server + @anvil/adapters for the serve command)
 - **@anvil/core**: Business logic, database, orchestration (depends on @anvil/providers for AI and @hono/zod-openapi for core Zod schemas; provides `createWorkflowStore()` adapter bridging core DB → `IWorkflowStore`)
 - **@anvil/adapters**: Platform adapters for Slack, Telegram, GitHub, Discord (depends on @anvil/core)
 - **@anvil/server**: OpenAPIHono HTTP server (Zod + OpenAPI spec generation via `@hono/zod-openapi`), Web adapter (SSE), API routes, Web UI static serving (depends on @anvil/adapters)
 - **@anvil/web**: React frontend (Vite + Tailwind v4 + shadcn/ui + Zustand), SSE streaming to server. `WorkflowRunStatus`, `WorkflowDefinition`, and `DagNode` are all derived from `src/lib/api.generated.d.ts` (generated from the OpenAPI spec via `bun generate:types`; never import from `@anvil/workflows`)
+- **@anvil/docs-web**: Public Anvil documentation website and brand documentation
 
 **1. Platform Adapters**
 
@@ -877,6 +1002,15 @@ Pattern: Use `classifyIsolationError()` (from `@anvil/isolation`) to map git err
 ### API Endpoints
 
 **Web UI REST API** (`packages/server/src/routes/api.ts`):
+
+**System 3 Project Lifecycle:**
+
+- System 3 routes live under `/api/system3/*`. Their authoritative OpenAPI route definitions are in `packages/server/src/routes/schemas/system3.schemas.ts`; handlers are registered in `packages/server/src/routes/api.ts`.
+- Project surfaces cover project creation/listing, Project Flow, source versions, phase detail, and project history.
+- Understanding and readiness surfaces cover source upload, Knowledge Snapshots, Decisions, readiness contracts, and Compilation previews.
+- Approval and execution surfaces cover Approval Manifests, project executions, verification runs, and delivery requests/packages.
+- Audit surfaces cover durable operations and events, abandon actions, Evidence, and Traceability.
+- Keep System 3 domain semantics in `@anvil/system3`; API handlers adapt HTTP requests to that domain and invoke the Anvil Workflow Runtime only for actual Technical Workflow execution.
 
 **Workflow Management:**
 

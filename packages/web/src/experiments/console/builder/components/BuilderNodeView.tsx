@@ -28,6 +28,8 @@ export function contentPreview(node: BuilderNode): string {
       return node.data.message.split('\n')[0] ?? '';
     case 'cancel':
       return node.data.reason.split('\n')[0] ?? '';
+    case 'workflow':
+      return `${node.data.name} · ${String(Object.keys(node.data.inputs ?? {}).length)} inputs / ${String(Object.keys(node.data.artifacts?.outputs ?? {}).length)} artifacts`;
   }
 }
 

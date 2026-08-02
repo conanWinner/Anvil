@@ -46,6 +46,7 @@ import {
   workflowResumeCommand,
   workflowAbandonCommand,
   workflowApproveCommand,
+  workflowContinueCommand,
   workflowRejectCommand,
   workflowCleanupCommand,
   workflowResetSessionsCommand,
@@ -159,8 +160,10 @@ Options:
   --spawn                    Open setup wizard in a new terminal window (for setup command)
   --quiet, -q                Reduce log verbosity to warnings and errors only
   --verbose, -v              Show debug-level output
-  --json                     Output machine-readable JSON (list/status/get/runs/approve/reject/abandon/resume)
+  --json                     Output machine-readable JSON (list/status/get/runs/approve/reject/continue/abandon/resume)
   --detach                   Run 'workflow run' in a detached background child (returns immediately)
+  --inputs <file>            JSON object passed as typed workflow inputs
+  --tree                     Include direct child runs in 'workflow get'
   --all                      For 'workflow runs': list across all projects (ignore cwd scope)
   --status <status>          For 'workflow runs': filter to one status (running, completed, failed, ...)
   --limit <n>                For 'workflow runs': max rows (default 20)
@@ -299,6 +302,8 @@ async function main(): Promise<number> {
         status: { type: 'string' },
         limit: { type: 'string' },
         effort: { type: 'string' },
+        inputs: { type: 'string' },
+        tree: { type: 'boolean' },
       },
       allowPositionals: true,
       strict: false, // Allow unknown flags to pass through
@@ -500,6 +505,7 @@ async function main(): Promise<number> {
               conversationId: values['conversation-id'] as string | undefined,
               detach: detachFlag,
               json: jsonFlag,
+              inputsFile: values.inputs as string | undefined,
             };
             await workflowRunCommand(effectiveCwd, workflowName, userMessage, options);
             break;
@@ -520,7 +526,8 @@ async function main(): Promise<number> {
             return await workflowGetCommand(
               getRunId,
               jsonFlag,
-              values.verbose as boolean | undefined
+              values.verbose as boolean | undefined,
+              values.tree as boolean | undefined
             );
           }
 
@@ -573,6 +580,16 @@ async function main(): Promise<number> {
             const approveComment =
               (values.comment as string | undefined) || positionals.slice(3).join(' ') || undefined;
             await workflowApproveCommand(approveRunId, approveComment, jsonFlag);
+            break;
+          }
+
+          case 'continue': {
+            const continueRunId = positionals[2];
+            if (!continueRunId) {
+              console.error('Usage: anvil workflow continue <run-id>');
+              return 1;
+            }
+            await workflowContinueCommand(continueRunId, jsonFlag);
             break;
           }
 
@@ -693,7 +710,7 @@ async function main(): Promise<number> {
               console.error(`Unknown workflow subcommand: ${subcommand}`);
             }
             console.error(
-              'Available: list, run, status, get, runs, resume, abandon, approve, reject, cleanup, event, search, install'
+              'Available: list, run, status, get, runs, resume, abandon, approve, reject, continue, cleanup, event, search, install'
             );
             return 1;
         }

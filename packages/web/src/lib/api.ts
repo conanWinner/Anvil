@@ -23,6 +23,10 @@ export { getCodebaseInput } from '@/lib/codebase-input';
 
 export type ConversationResponse = components['schemas']['Conversation'];
 export type CodebaseResponse = components['schemas']['Codebase'];
+export type System3ProjectResponse = components['schemas']['System3Project'];
+export type System3ProjectFlowResponse = components['schemas']['System3ProjectFlow'];
+export type CreateSystem3ProjectBody = components['schemas']['CreateSystem3ProjectBody'];
+export type System3OperationResponse = components['schemas']['System3Operation'];
 
 export interface HealthResponse {
   status: string;
@@ -49,6 +53,25 @@ async function fetchJSON<T>(url: string, options?: RequestInit): Promise<T> {
     });
   }
   return res.json() as Promise<T>;
+}
+
+export async function listSystem3Projects(): Promise<System3ProjectResponse[]> {
+  const response = await fetchJSON<{ projects: System3ProjectResponse[] }>('/api/system3/projects');
+  return response.projects;
+}
+
+export function getSystem3ProjectFlow(projectId: string): Promise<System3ProjectFlowResponse> {
+  return fetchJSON<System3ProjectFlowResponse>(`/api/system3/projects/${projectId}/flow`);
+}
+
+export function createSystem3Project(
+  body: CreateSystem3ProjectBody
+): Promise<System3ProjectResponse> {
+  return fetchJSON<System3ProjectResponse>('/api/system3/projects', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
 }
 
 // Providers

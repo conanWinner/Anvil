@@ -21,6 +21,7 @@ import { K } from '../store/keys';
 import * as skill from '../skills';
 import { startRun } from '../skills/startRun';
 import { partitionWorkflows } from '../lib/partition-workflows';
+import { workflowsForScope } from '../lib/workflow-scope';
 import {
   parseWorkflowDescription,
   getWorkflowDisplayName,
@@ -65,6 +66,7 @@ interface WorkflowCardProps {
   onRun: (name: string) => void;
   /** Optional cwd for builder link */
   projectCwd?: string;
+  projectId?: string;
 }
 
 function WorkflowCard({
@@ -72,7 +74,8 @@ function WorkflowCard({
   isSelected,
   onToggle,
   onRun,
-  projectCwd: _projectCwd,
+  projectCwd,
+  projectId,
 }: WorkflowCardProps): ReactElement {
   const parsed = parseWorkflowDescription(workflow.description ?? '');
   const displayName = getWorkflowDisplayName(workflow.name);
@@ -200,7 +203,7 @@ function WorkflowCard({
         <div className="flex items-center gap-1">
           {/* Edit button — points to console builder */}
           <Link
-            to={`/console/builder?edit=${encodeURIComponent(workflow.name)}`}
+            to={`/console/builder?edit=${encodeURIComponent(workflow.name)}${projectCwd !== undefined ? `&cwd=${encodeURIComponent(projectCwd)}` : ''}${projectId !== undefined ? `&projectId=${encodeURIComponent(projectId)}` : ''}`}
             onClick={(e): void => {
               e.stopPropagation();
             }}
@@ -283,29 +286,47 @@ export function WorkflowsPage(): ReactElement {
     setRunError(null);
   }, [searchQuery, activeCategory]);
 
-  const { filteredWorkflows, recommendedWorkflows, restWorkflows } = useMemo(() => {
-    if (!workflows) {
-      return { filteredWorkflows: [], recommendedWorkflows: [], restWorkflows: [] };
-    }
-    const filtered = workflows.filter(wf => {
-      if (searchQuery) {
-        const q = searchQuery.toLowerCase();
-        const matchesName = wf.name.toLowerCase().includes(q);
-        const matchesDesc = (wf.description ?? '').toLowerCase().includes(q);
-        if (!matchesName && !matchesDesc) return false;
+  const { scopedWorkflows, filteredWorkflows, recommendedWorkflows, restWorkflows } =
+    useMemo(() => {
+      if (!workflows) {
+        return {
+          scopedWorkflows: [],
+          filteredWorkflows: [],
+          recommendedWorkflows: [],
+          restWorkflows: [],
+        };
       }
-      if (activeCategory !== 'All') {
-        const cat = getWorkflowCategory(wf.name, wf.description ?? '');
-        if (cat !== activeCategory) return false;
-      }
-      return true;
-    });
-    const { recommended, rest } = partitionWorkflows(filtered, recommendedNames);
-    return { filteredWorkflows: filtered, recommendedWorkflows: recommended, restWorkflows: rest };
-  }, [workflows, searchQuery, activeCategory, recommendedNames]);
+      const scoped = workflowsForScope(workflows, projectId !== undefined);
+      const filtered = scoped.filter(wf => {
+        if (searchQuery) {
+          const q = searchQuery.toLowerCase();
+          const matchesName = wf.name.toLowerCase().includes(q);
+          const matchesDesc = (wf.description ?? '').toLowerCase().includes(q);
+          if (!matchesName && !matchesDesc) return false;
+        }
+        if (activeCategory !== 'All') {
+          const cat = getWorkflowCategory(wf.name, wf.description ?? '');
+          if (cat !== activeCategory) return false;
+        }
+        return true;
+      });
+      const { recommended, rest } = partitionWorkflows(filtered, recommendedNames);
+      return {
+        scopedWorkflows: scoped,
+        filteredWorkflows: filtered,
+        recommendedWorkflows: recommended,
+        restWorkflows: rest,
+      };
+    }, [workflows, projectId, searchQuery, activeCategory, recommendedNames]);
 
   const handleRun = async (workflowName: string): Promise<void> => {
-    if (!runMessage.trim() || running || projectId === undefined) return;
+    if (running || projectId === undefined) return;
+    const workflow = workflows?.find(item => item.name === workflowName);
+    if (workflow?.hasIntake) {
+      navigate(`/console/p/${projectId}/chat?intake=${encodeURIComponent(workflowName)}`);
+      return;
+    }
+    if (!runMessage.trim()) return;
     setRunning(true);
     setRunError(null);
     try {
@@ -322,7 +343,10 @@ export function WorkflowsPage(): ReactElement {
   };
 
   const displayName = selectedWorkflow !== null ? getWorkflowDisplayName(selectedWorkflow) : '';
-  const hasWorkflows = workflows != null && workflows.length > 0;
+  const selectedHasIntake =
+    selectedWorkflow !== null &&
+    workflows?.some(item => item.name === selectedWorkflow && item.hasIntake);
+  const hasWorkflows = scopedWorkflows.length > 0;
 
   return (
     <section className="flex h-full flex-col">
@@ -335,7 +359,7 @@ export function WorkflowsPage(): ReactElement {
             <p className="text-xs text-text-tertiary">{project?.path ?? 'Loading…'}</p>
           </div>
           <Link
-            to="/console/builder"
+            to={`/console/builder${cwd !== undefined ? `?cwd=${encodeURIComponent(cwd)}&projectId=${encodeURIComponent(projectId ?? '')}` : ''}`}
             className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white hover:bg-primary/90 transition-colors"
           >
             <Plus className="size-4" />
@@ -387,6 +411,7 @@ export function WorkflowsPage(): ReactElement {
                         setRunError(null);
                       }}
                       projectCwd={cwd}
+                      projectId={projectId}
                     />
                   ))}
                 </div>
@@ -411,6 +436,7 @@ export function WorkflowsPage(): ReactElement {
                       setRunError(null);
                     }}
                     projectCwd={cwd}
+                    projectId={projectId}
                   />
                 ))}
               </div>
@@ -481,7 +507,11 @@ export function WorkflowsPage(): ReactElement {
               onChange={(e): void => {
                 setRunMessage(e.target.value);
               }}
-              placeholder="Enter a message for this workflow…"
+              placeholder={
+                selectedHasIntake
+                  ? 'Intake sẽ được mở trong Chat…'
+                  : 'Enter a message for this workflow…'
+              }
               className="flex-1 min-w-0 px-3 py-1.5 rounded-md border border-border bg-surface font-mono text-[12.5px] text-text-primary placeholder:text-text-secondary focus:outline-none focus:ring-1 focus:ring-accent disabled:opacity-50"
               style={{ borderColor: 'var(--border)' }}
               onKeyDown={(e): void => {
@@ -490,16 +520,18 @@ export function WorkflowsPage(): ReactElement {
                   void handleRun(selectedWorkflow);
                 }
               }}
-              disabled={running}
+              disabled={running || selectedHasIntake}
             />
             <button
               onClick={(): void => {
                 void handleRun(selectedWorkflow);
               }}
-              disabled={running || !runMessage.trim() || projectId === undefined}
+              disabled={
+                running || (!selectedHasIntake && !runMessage.trim()) || projectId === undefined
+              }
               className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-white hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {running ? 'Starting…' : 'Run'}
+              {running ? 'Starting…' : selectedHasIntake ? 'Prepare in Chat' : 'Run'}
             </button>
           </div>
           {projectId === undefined && (

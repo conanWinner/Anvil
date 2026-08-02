@@ -35,6 +35,7 @@ export const listDashboardRunsOptionsSchema = z.object({
   before: z.string().optional(),
   limit: z.number().optional(),
   offset: z.number().optional(),
+  rootOnly: z.boolean().optional(),
 });
 
 export type ListDashboardRunsOptions = z.infer<typeof listDashboardRunsOptionsSchema>;

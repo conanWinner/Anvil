@@ -50,6 +50,9 @@ mock.module('@anvil/paths', () => ({
   expandTilde: mock((p: string) => p.replace(/^~/, '/home/test')),
   getCommandFolderSearchPaths: mock(() => ['.anvil/commands']),
   ensureProjectStructure: mock(() => Promise.resolve()),
+  getProjectRoot: mock(
+    (owner: string, repo: string) => `/home/test/.anvil/workspaces/${owner}/${repo}`
+  ),
   getProjectSourcePath: mock(
     (owner: string, repo: string) => `/home/test/.anvil/workspaces/${owner}/${repo}/source`
   ),
@@ -73,7 +76,7 @@ mock.module('../utils/commands', () => ({
 }));
 
 // ── Import module under test AFTER mocks are registered ────────────────────
-import { cloneRepository, registerRepository } from './clone';
+import { cloneRepository, createRepository, registerRepository } from './clone';
 
 // ── Spies for fs/promises and @anvil/git ──────────────────────────────────
 let spyFsAccess: ReturnType<typeof spyOn>;
@@ -833,6 +836,66 @@ describe('cloneRepository', () => {
       const createCall = mockCreateCodebase.mock.calls[0] as [{ ai_assistant_type: string }];
       expect(createCall[0].ai_assistant_type).toBe('claude');
     });
+  });
+});
+
+describe('createRepository', () => {
+  beforeEach(() => {
+    clearMocks();
+    restoreSpies();
+    setupSpies();
+  });
+
+  test('creates an Anvil-managed Git repository and registers it', async () => {
+    mockCreateCodebase.mockResolvedValueOnce(
+      makeCodebase({
+        name: 'new-project',
+        repository_url: null,
+        default_cwd: '/home/test/.anvil/workspaces/_local/new-project/source',
+        default_branch: 'main',
+      }) as ReturnType<typeof makeCodebase>
+    );
+
+    const result = await createRepository('new-project');
+
+    expect(result.name).toBe('new-project');
+    expect(result.defaultCwd).toBe('/home/test/.anvil/workspaces/_local/new-project/source');
+    expect(spyExecFileAsync).toHaveBeenCalledWith(
+      'git',
+      ['init', '-b', 'main', '/home/test/.anvil/workspaces/_local/new-project/source'],
+      { timeout: 10_000 }
+    );
+    expect(spyExecFileAsync).toHaveBeenCalledWith(
+      'git',
+      expect.arrayContaining(['commit', '--allow-empty', '-m', 'Initialize project']),
+      { timeout: 10_000 }
+    );
+    expect(mockCreateCodebase).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'new-project',
+        default_cwd: '/home/test/.anvil/workspaces/_local/new-project/source',
+      })
+    );
+  });
+
+  test('rejects names that could escape the managed workspace', async () => {
+    await expect(createRepository('../outside')).rejects.toThrow('Project name must be');
+    expect(spyExecFileAsync).not.toHaveBeenCalled();
+  });
+
+  test('returns an existing project without modifying the filesystem', async () => {
+    mockFindCodebaseByName.mockResolvedValueOnce(
+      makeCodebase({
+        name: 'existing-project',
+        repository_url: null,
+        default_cwd: '/home/test/.anvil/workspaces/_local/existing-project/source',
+      }) as ReturnType<typeof makeCodebase>
+    );
+
+    const result = await createRepository('existing-project');
+
+    expect(result.alreadyExisted).toBe(true);
+    expect(spyExecFileAsync).not.toHaveBeenCalled();
   });
 });
 

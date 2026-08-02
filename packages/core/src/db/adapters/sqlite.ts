@@ -2,6 +2,7 @@
  * SQLite adapter using bun:sqlite
  */
 import { Database, type SQLQueryBindings } from 'bun:sqlite';
+import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
 import type { IDatabase, QueryResult, SqlDialect } from './types';
@@ -9,6 +10,8 @@ import { createLogger } from '@anvil/paths';
 
 /** Lazy-initialized logger (deferred so test mocks can intercept createLogger) */
 let cachedLog: ReturnType<typeof createLogger> | undefined;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 function getLog(): ReturnType<typeof createLogger> {
   if (!cachedLog) cachedLog = createLogger('db.sqlite');
   return cachedLog;
@@ -162,6 +165,139 @@ export class SqliteAdapter implements IDatabase {
    * the columns were added to createSchema().
    */
   private migrateColumns(): void {
+    // Source Intake lineage and provenance. Keep its index here because an
+    // existing source_versions table does not have source_id until these ALTERs run.
+    try {
+      const sourceVersionCols = this.db
+        .prepare("PRAGMA table_info('remote_agent_system3_source_versions')")
+        .all() as { name: string }[];
+      const sourceVersionColNames = new Set(sourceVersionCols.map(column => column.name));
+      const additions: readonly [string, string][] = [
+        ['source_id', 'TEXT'],
+        ['role', 'TEXT'],
+        ['original_filename', 'TEXT'],
+        ['media_type', 'TEXT'],
+        ['lineage_version', 'INTEGER'],
+        ['storage_status', 'TEXT'],
+        ['validation_report', 'TEXT'],
+        ['created_by_user_id', 'TEXT REFERENCES remote_agent_users(id) ON DELETE SET NULL'],
+        ['origin', 'TEXT'],
+        ['operation_id', 'TEXT'],
+        ['intake_report_artifact_id', 'TEXT'],
+      ];
+      for (const [name, definition] of additions) {
+        if (!sourceVersionColNames.has(name)) {
+          this.db.run(
+            `ALTER TABLE remote_agent_system3_source_versions ADD COLUMN ${name} ${definition}`
+          );
+        }
+      }
+      const legacySourceGroups = this.db
+        .prepare(
+          `SELECT DISTINCT version.project_id, version.kind
+           FROM remote_agent_system3_source_versions version
+           WHERE version.source_id IS NULL
+             AND NOT EXISTS (
+               SELECT 1 FROM remote_agent_system3_sources source
+               WHERE source.project_id = version.project_id AND source.kind = version.kind
+             )`
+        )
+        .all() as { project_id: string; kind: string }[];
+      const insertLegacySource = this.db.prepare(
+        `INSERT INTO remote_agent_system3_sources
+           (id, project_id, kind, role, display_name, status)
+         VALUES (?, ?, ?, 'primary', ?, 'active')`
+      );
+      for (const group of legacySourceGroups) {
+        insertLegacySource.run(randomUUID(), group.project_id, group.kind, group.kind);
+      }
+      this.db.run(`
+        UPDATE remote_agent_system3_source_versions
+        SET source_id = (
+              SELECT source.id FROM remote_agent_system3_sources source
+              WHERE source.project_id = remote_agent_system3_source_versions.project_id
+                AND source.kind = remote_agent_system3_source_versions.kind
+              ORDER BY source.created_at ASC, source.id ASC LIMIT 1
+            ),
+            role = COALESCE(role, 'primary'),
+            original_filename = COALESCE(original_filename, filename),
+            media_type = COALESCE(media_type, 'application/octet-stream'),
+            lineage_version = COALESCE(lineage_version, version),
+            storage_status = COALESCE(storage_status, 'ready'),
+            validation_report = COALESCE(
+              validation_report,
+              '{"schemaVersion":1,"outcome":"accepted","checks":[],"warnings":["Migrated legacy source"]}'
+            ),
+            origin = COALESCE(origin, 'legacy')
+        WHERE source_id IS NULL OR role IS NULL OR lineage_version IS NULL
+      `);
+
+      // Early SQLite Source Intake builds generated logical Source ids with
+      // lower(hex(randomblob(16))). Those 32-character values are not UUIDs and
+      // are rejected by the OP-01 v2 manifest contract. Re-key the parent first,
+      // then its Source Versions, so both legacy databases and current FK-enabled
+      // schemas converge safely on the same UUID contract.
+      const invalidSources = (
+        this.db.prepare('SELECT id FROM remote_agent_system3_sources').all() as { id: string }[]
+      ).filter(source => !UUID_PATTERN.test(source.id));
+      const rekeySource = this.db.transaction((oldSourceId: string, newSourceId: string) => {
+        this.db
+          .prepare(
+            `INSERT INTO remote_agent_system3_sources
+               (id, project_id, kind, role, display_name, status,
+                created_by_user_id, created_at, updated_at)
+             SELECT ?, project_id, kind, role, display_name, status,
+                    created_by_user_id, created_at, updated_at
+             FROM remote_agent_system3_sources WHERE id = ?`
+          )
+          .run(newSourceId, oldSourceId);
+        this.db
+          .prepare(
+            'UPDATE remote_agent_system3_source_versions SET source_id = ? WHERE source_id = ?'
+          )
+          .run(newSourceId, oldSourceId);
+        this.db.prepare('DELETE FROM remote_agent_system3_sources WHERE id = ?').run(oldSourceId);
+      });
+      for (const source of invalidSources) {
+        rekeySource(source.id, randomUUID());
+      }
+      this.db.run(
+        'CREATE INDEX IF NOT EXISTS idx_system3_source_lineage_versions ON remote_agent_system3_source_versions(source_id, lineage_version DESC)'
+      );
+      this.db.run(
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_system3_source_lineage_version_unique ON remote_agent_system3_source_versions(source_id, lineage_version)'
+      );
+      const artifactVersionCols = this.db
+        .prepare("PRAGMA table_info('remote_agent_system3_artifact_versions')")
+        .all() as { name: string }[];
+      const artifactVersionColNames = new Set(artifactVersionCols.map(column => column.name));
+      for (const [name, definition] of [
+        ['source_version_id', 'TEXT'],
+        ['operation_id', 'TEXT'],
+        ['activity_id', 'TEXT'],
+        ['workflow_run_id', 'TEXT'],
+        ['workflow_node_id', 'TEXT'],
+        ['display_name', 'TEXT'],
+        ['summary', 'TEXT'],
+        ['media_type', 'TEXT'],
+        ['schema_id', 'TEXT'],
+        ['schema_version', 'TEXT'],
+        ['visibility', 'TEXT'],
+        ['status', 'TEXT'],
+        ['stale_reason', 'TEXT'],
+        ['source_version_ids', 'TEXT'],
+        ['parent_resource_ids', 'TEXT'],
+      ] as const) {
+        if (!artifactVersionColNames.has(name)) {
+          this.db.run(
+            `ALTER TABLE remote_agent_system3_artifact_versions ADD COLUMN ${name} ${definition}`
+          );
+        }
+      }
+    } catch (e: unknown) {
+      getLog().warn({ err: e as Error }, 'db.sqlite_migration_system3_source_intake_failed');
+    }
+
     // Users columns. `role` is the web-auth identity seam (default 'admin').
     // Better Auth's own tables are PostgreSQL-only — web auth is never enabled
     // on SQLite — so only the role column is backfilled here.
@@ -212,12 +348,18 @@ export class SqliteAdapter implements IDatabase {
           'ALTER TABLE remote_agent_conversations ADD COLUMN user_id TEXT REFERENCES remote_agent_users(id) ON DELETE SET NULL'
         );
       }
+      if (!colNames.has('client_request_id')) {
+        this.db.run('ALTER TABLE remote_agent_conversations ADD COLUMN client_request_id TEXT');
+      }
       // Index must be created here, not in createSchema(): the column doesn't
       // exist on pre-0.4.0 databases until the ALTER TABLE above runs, and
       // CREATE INDEX on a missing column aborts the entire createSchema()
       // exec block. Idempotent so it's safe to run unconditionally.
       this.db.run(
         'CREATE INDEX IF NOT EXISTS idx_conversations_user_id ON remote_agent_conversations(user_id) WHERE user_id IS NOT NULL'
+      );
+      this.db.run(
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_conversations_client_request_id ON remote_agent_conversations(client_request_id) WHERE client_request_id IS NOT NULL'
       );
     } catch (e: unknown) {
       getLog().warn({ err: e as Error }, 'db.sqlite_migration_conversations_columns_failed');
@@ -245,9 +387,20 @@ export class SqliteAdapter implements IDatabase {
           'ALTER TABLE remote_agent_workflow_runs ADD COLUMN user_id TEXT REFERENCES remote_agent_users(id) ON DELETE SET NULL'
         );
       }
+      if (!wfColNames.has('parent_workflow_run_id')) {
+        this.db.run(
+          'ALTER TABLE remote_agent_workflow_runs ADD COLUMN parent_workflow_run_id TEXT REFERENCES remote_agent_workflow_runs(id) ON DELETE CASCADE'
+        );
+      }
+      if (!wfColNames.has('parent_node_id')) {
+        this.db.run('ALTER TABLE remote_agent_workflow_runs ADD COLUMN parent_node_id TEXT');
+      }
       // Same rationale as idx_conversations_user_id above.
       this.db.run(
         'CREATE INDEX IF NOT EXISTS idx_workflow_runs_user_id ON remote_agent_workflow_runs(user_id) WHERE user_id IS NOT NULL'
+      );
+      this.db.run(
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_parent_node_unique ON remote_agent_workflow_runs(parent_workflow_run_id, parent_node_id) WHERE parent_workflow_run_id IS NOT NULL'
       );
     } catch (e: unknown) {
       getLog().warn({ err: e as Error }, 'db.sqlite_migration_workflow_runs_columns_failed');
@@ -280,6 +433,222 @@ export class SqliteAdapter implements IDatabase {
       }
     } catch (e: unknown) {
       getLog().warn({ err: e as Error }, 'db.sqlite_migration_messages_columns_failed');
+    }
+
+    try {
+      const cols = this.db
+        .prepare("PRAGMA table_info('remote_agent_workflow_intake_drafts')")
+        .all() as { name: string }[];
+      const colNames = new Set(cols.map(c => c.name));
+      if (!colNames.has('conversation_id')) {
+        this.db.run(
+          'ALTER TABLE remote_agent_workflow_intake_drafts ADD COLUMN conversation_id TEXT REFERENCES remote_agent_conversations(id) ON DELETE SET NULL'
+        );
+      }
+      this.db.run(
+        'CREATE INDEX IF NOT EXISTS idx_workflow_intakes_conversation ON remote_agent_workflow_intake_drafts(conversation_id) WHERE conversation_id IS NOT NULL'
+      );
+    } catch (e: unknown) {
+      getLog().warn({ err: e as Error }, 'db.sqlite_migration_workflow_intake_columns_failed');
+    }
+
+    try {
+      const cols = this.db
+        .prepare("PRAGMA table_info('remote_agent_system3_knowledge_snapshots')")
+        .all() as { name: string }[];
+      if (!cols.some(column => column.name === 'workflow_run_id')) {
+        this.db.run(
+          'ALTER TABLE remote_agent_system3_knowledge_snapshots ADD COLUMN workflow_run_id TEXT REFERENCES remote_agent_workflow_runs(id) ON DELETE SET NULL'
+        );
+      }
+    } catch (e: unknown) {
+      getLog().warn({ err: e as Error }, 'db.sqlite_migration_system3_snapshot_columns_failed');
+    }
+
+    try {
+      const inputCols = this.db
+        .prepare("PRAGMA table_info('remote_agent_system3_input_snapshots')")
+        .all() as { name: string }[];
+      if (!inputCols.some(column => column.name === 'runtime_profile_version_id')) {
+        this.db.run(
+          'ALTER TABLE remote_agent_system3_input_snapshots ADD COLUMN runtime_profile_version_id TEXT REFERENCES remote_agent_system3_runtime_profile_versions(id) ON DELETE RESTRICT'
+        );
+      }
+      const inputs = this.db
+        .prepare(
+          `SELECT input.id, input.project_id, input.runtime_profile_hash, compilation.plan
+           FROM remote_agent_system3_input_snapshots input
+           LEFT JOIN remote_agent_system3_compilations compilation
+             ON json_extract(compilation.plan, '$.inputSnapshotId') = input.id
+           WHERE input.runtime_profile_version_id IS NULL`
+        )
+        .all() as {
+        id: string;
+        project_id: string;
+        runtime_profile_hash: string;
+        plan: string | null;
+      }[];
+      for (const input of inputs) {
+        let profile: unknown = { cpuOnly: true, ramGb: null };
+        if (input.plan !== null) {
+          const plan = JSON.parse(input.plan) as {
+            runtimeProfile?: unknown;
+            phases?: { resourceProfile?: unknown }[];
+          };
+          profile = plan.runtimeProfile ?? plan.phases?.[0]?.resourceProfile ?? profile;
+        }
+        const profileId = randomUUID();
+        this.db.run(
+          `INSERT OR IGNORE INTO remote_agent_system3_runtime_profile_versions
+            (id, project_id, profile_hash, profile) VALUES (?, ?, ?, ?)`,
+          [profileId, input.project_id, input.runtime_profile_hash, JSON.stringify(profile)]
+        );
+        const stored = this.db
+          .prepare(
+            `SELECT id FROM remote_agent_system3_runtime_profile_versions
+             WHERE project_id = ? AND profile_hash = ?`
+          )
+          .get(input.project_id, input.runtime_profile_hash) as { id: string } | null;
+        if (stored) {
+          this.db.run(
+            `UPDATE remote_agent_system3_input_snapshots
+             SET runtime_profile_version_id = ? WHERE id = ?`,
+            [stored.id, input.id]
+          );
+        }
+      }
+    } catch (e: unknown) {
+      getLog().warn({ err: e as Error }, 'db.sqlite_migration_system3_runtime_profiles_failed');
+    }
+
+    try {
+      const transitionCols = this.db
+        .prepare("PRAGMA table_info('remote_agent_system3_project_transitions')")
+        .all() as { name: string }[];
+      const names = new Set(transitionCols.map(column => column.name));
+      const additions: readonly [string, string][] = [
+        ['actor_id', 'TEXT REFERENCES remote_agent_users(id) ON DELETE SET NULL'],
+        ['operation_id', 'TEXT'],
+        ['workflow_run_id', 'TEXT REFERENCES remote_agent_workflow_runs(id) ON DELETE SET NULL'],
+        ['entity_type', 'TEXT'],
+        ['entity_id', 'TEXT'],
+        ['from_attention', 'TEXT'],
+        ['to_attention', 'TEXT'],
+        ['from_freshness', 'TEXT'],
+        ['to_freshness', 'TEXT'],
+        ['project_version', 'INTEGER'],
+        ['metadata', "TEXT NOT NULL DEFAULT '{}'"],
+      ];
+      for (const [name, definition] of additions) {
+        if (!names.has(name)) {
+          this.db.run(
+            `ALTER TABLE remote_agent_system3_project_transitions ADD COLUMN ${name} ${definition}`
+          );
+        }
+      }
+    } catch (e: unknown) {
+      getLog().warn({ err: e as Error }, 'db.sqlite_migration_system3_transition_audit_failed');
+    }
+
+    // System 3 project operations supersede the legacy execution-only table.
+    // SQLite cannot add a NOT NULL column without a default, so existing rows
+    // are initialized to zero and immediately converged to the project version.
+    try {
+      const cols = this.db
+        .prepare("PRAGMA table_info('remote_agent_system3_project_operations')")
+        .all() as { name: string }[];
+      const colNames = new Set(cols.map(column => column.name));
+      if (!colNames.has('project_version')) {
+        this.db.run(
+          'ALTER TABLE remote_agent_system3_project_operations ADD COLUMN project_version INTEGER NOT NULL DEFAULT 0'
+        );
+      }
+      if (!colNames.has('owner_instance_id')) {
+        this.db.run(
+          'ALTER TABLE remote_agent_system3_project_operations ADD COLUMN owner_instance_id TEXT'
+        );
+      }
+      if (!colNames.has('heartbeat_at')) {
+        this.db.run(
+          'ALTER TABLE remote_agent_system3_project_operations ADD COLUMN heartbeat_at TEXT'
+        );
+      }
+      if (!colNames.has('started_at')) {
+        this.db.run(
+          'ALTER TABLE remote_agent_system3_project_operations ADD COLUMN started_at TEXT'
+        );
+      }
+      if (!colNames.has('finished_at')) {
+        this.db.run(
+          'ALTER TABLE remote_agent_system3_project_operations ADD COLUMN finished_at TEXT'
+        );
+      }
+      this.db.run(
+        `UPDATE remote_agent_system3_project_operations
+         SET project_version = COALESCE(
+           (SELECT project.version FROM remote_agent_system3_projects project
+            WHERE project.id = remote_agent_system3_project_operations.project_id),
+           project_version
+         )
+         WHERE project_version = 0`
+      );
+      this.db.run(
+        `INSERT OR IGNORE INTO remote_agent_system3_project_operations
+          (id, project_id, operation_type, execution_id, workflow_run_id, status,
+           idempotency_key, request_fingerprint, project_version, result, error,
+           started_at, finished_at, created_at, updated_at)
+         SELECT legacy.id, legacy.project_id, legacy.operation_type, legacy.execution_id,
+                execution.workflow_run_id, legacy.status, legacy.idempotency_key,
+                'legacy:' || legacy.id, project.version, NULL, legacy.error,
+                legacy.created_at,
+                CASE WHEN legacy.status IN ('succeeded', 'failed', 'abandoned')
+                     THEN legacy.updated_at ELSE NULL END,
+                legacy.created_at, legacy.updated_at
+         FROM remote_agent_system3_operations legacy
+         JOIN remote_agent_system3_project_executions execution ON execution.id = legacy.execution_id
+         JOIN remote_agent_system3_projects project ON project.id = legacy.project_id`
+      );
+    } catch (e: unknown) {
+      getLog().warn({ err: e as Error }, 'db.sqlite_migration_system3_operations_failed');
+    }
+
+    try {
+      const evidenceColumns = new Set(
+        (
+          this.db.prepare("PRAGMA table_info('remote_agent_system3_evidence_records')").all() as {
+            name: string;
+          }[]
+        ).map(column => column.name)
+      );
+      if (!evidenceColumns.has('verification_id')) {
+        this.db.run(
+          'ALTER TABLE remote_agent_system3_evidence_records ADD COLUMN verification_id TEXT REFERENCES remote_agent_system3_verifications(id) ON DELETE RESTRICT'
+        );
+      }
+      if (!evidenceColumns.has('validator_version')) {
+        this.db.run(
+          "ALTER TABLE remote_agent_system3_evidence_records ADD COLUMN validator_version TEXT NOT NULL DEFAULT 'system3-validator@1'"
+        );
+      }
+      if (!evidenceColumns.has('basis_hash')) {
+        this.db.run(
+          "ALTER TABLE remote_agent_system3_evidence_records ADD COLUMN basis_hash TEXT NOT NULL DEFAULT 'legacy'"
+        );
+      }
+      const deliveryColumns = new Set(
+        (
+          this.db.prepare("PRAGMA table_info('remote_agent_system3_delivery_manifests')").all() as {
+            name: string;
+          }[]
+        ).map(column => column.name)
+      );
+      if (!deliveryColumns.has('verification_id')) {
+        this.db.run(
+          'ALTER TABLE remote_agent_system3_delivery_manifests ADD COLUMN verification_id TEXT REFERENCES remote_agent_system3_verifications(id) ON DELETE RESTRICT'
+        );
+      }
+    } catch (e: unknown) {
+      getLog().warn({ err: e as Error }, 'db.sqlite_migration_system3_verification_failed');
     }
 
     // Isolation environments columns
@@ -481,6 +850,7 @@ export class SqliteAdapter implements IDatabase {
         id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
         platform_type TEXT NOT NULL,
         platform_conversation_id TEXT NOT NULL,
+        client_request_id TEXT,
         ai_assistant_type TEXT DEFAULT 'claude',
         codebase_id TEXT REFERENCES remote_agent_codebases(id) ON DELETE SET NULL,
         cwd TEXT,
@@ -545,6 +915,8 @@ export class SqliteAdapter implements IDatabase {
         current_step_index INTEGER,
         metadata TEXT DEFAULT '{}',
         parent_conversation_id TEXT REFERENCES remote_agent_conversations(id) ON DELETE SET NULL,
+        parent_workflow_run_id TEXT REFERENCES remote_agent_workflow_runs(id) ON DELETE CASCADE,
+        parent_node_id TEXT,
         user_id TEXT REFERENCES remote_agent_users(id) ON DELETE SET NULL,
         started_at TEXT DEFAULT (datetime('now')),
         completed_at TEXT,
@@ -587,6 +959,24 @@ export class SqliteAdapter implements IDatabase {
         PRIMARY KEY (workflow_name, node_id, scope_key, provider)
       );
 
+      -- Durable pre-run workflow intake drafts.
+      CREATE TABLE IF NOT EXISTS remote_agent_workflow_intake_drafts (
+        id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+        codebase_id TEXT NOT NULL REFERENCES remote_agent_codebases(id) ON DELETE CASCADE,
+        workflow_name TEXT NOT NULL,
+        definition_hash TEXT NOT NULL,
+        conversation_id TEXT REFERENCES remote_agent_conversations(id) ON DELETE SET NULL,
+        status TEXT NOT NULL DEFAULT 'draft',
+        "values" TEXT NOT NULL DEFAULT '{}',
+        current_field TEXT,
+        validation_errors TEXT NOT NULL DEFAULT '[]',
+        started_run_id TEXT REFERENCES remote_agent_workflow_runs(id) ON DELETE SET NULL,
+        created_by_user_id TEXT REFERENCES remote_agent_users(id) ON DELETE SET NULL,
+        updated_by_user_id TEXT REFERENCES remote_agent_users(id) ON DELETE SET NULL,
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now'))
+      );
+
       -- Indexes
       CREATE INDEX IF NOT EXISTS idx_codebase_env_vars_codebase_id ON remote_agent_codebase_env_vars(codebase_id);
       CREATE INDEX IF NOT EXISTS idx_conversations_platform ON remote_agent_conversations(platform_type, platform_conversation_id);
@@ -602,6 +992,393 @@ export class SqliteAdapter implements IDatabase {
       CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON remote_agent_messages(conversation_id, created_at ASC);
       CREATE INDEX IF NOT EXISTS idx_workflow_node_sessions_scope ON remote_agent_workflow_node_sessions(scope_key);
       CREATE INDEX IF NOT EXISTS idx_workflow_node_sessions_workflow ON remote_agent_workflow_node_sessions(workflow_name);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_intakes_active_unique
+        ON remote_agent_workflow_intake_drafts(codebase_id, workflow_name)
+        WHERE status IN ('draft', 'ready', 'starting');
+      CREATE INDEX IF NOT EXISTS idx_workflow_intakes_codebase
+        ON remote_agent_workflow_intake_drafts(codebase_id, updated_at DESC);
+
+      CREATE TABLE IF NOT EXISTS remote_agent_conversation_memory_handoffs (
+        id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+        codebase_id TEXT NOT NULL REFERENCES remote_agent_codebases(id) ON DELETE CASCADE,
+        conversation_id TEXT NOT NULL UNIQUE REFERENCES remote_agent_conversations(id) ON DELETE CASCADE,
+        status TEXT NOT NULL DEFAULT 'processing',
+        source_last_message_id TEXT REFERENCES remote_agent_messages(id) ON DELETE SET NULL,
+        error TEXT,
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now')),
+        completed_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS remote_agent_project_memory_entries (
+        id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+        codebase_id TEXT NOT NULL REFERENCES remote_agent_codebases(id) ON DELETE CASCADE,
+        source_conversation_id TEXT REFERENCES remote_agent_conversations(id) ON DELETE SET NULL,
+        handoff_id TEXT REFERENCES remote_agent_conversation_memory_handoffs(id) ON DELETE SET NULL,
+        category TEXT NOT NULL,
+        content TEXT NOT NULL,
+        origin TEXT NOT NULL DEFAULT 'extracted',
+        user_edited INTEGER NOT NULL DEFAULT 0,
+        pinned INTEGER NOT NULL DEFAULT 0,
+        active INTEGER NOT NULL DEFAULT 1,
+        created_by_user_id TEXT REFERENCES remote_agent_users(id) ON DELETE SET NULL,
+        updated_by_user_id TEXT REFERENCES remote_agent_users(id) ON DELETE SET NULL,
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_project_memory_active
+        ON remote_agent_project_memory_entries(codebase_id, pinned DESC, updated_at DESC)
+        WHERE active = 1;
+      CREATE INDEX IF NOT EXISTS idx_project_memory_source
+        ON remote_agent_project_memory_entries(source_conversation_id)
+        WHERE source_conversation_id IS NOT NULL;
+
+      -- System 3 Project control plane. Domain state stays separate from the
+      -- generic workflow-run tables so it can evolve independently.
+      CREATE TABLE IF NOT EXISTS remote_agent_system3_projects (
+        id TEXT PRIMARY KEY,
+        codebase_id TEXT NOT NULL UNIQUE REFERENCES remote_agent_codebases(id) ON DELETE RESTRICT,
+        name TEXT NOT NULL,
+        description TEXT,
+        stage TEXT NOT NULL,
+        attention TEXT NOT NULL,
+        freshness TEXT NOT NULL,
+        version INTEGER NOT NULL DEFAULT 1,
+        template_id TEXT NOT NULL,
+        active_knowledge_snapshot_id TEXT REFERENCES remote_agent_system3_knowledge_snapshots(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS remote_agent_system3_sources (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL,
+        role TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_by_user_id TEXT REFERENCES remote_agent_users(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS remote_agent_system3_source_versions (
+        id TEXT PRIMARY KEY,
+        source_id TEXT NOT NULL REFERENCES remote_agent_system3_sources(id) ON DELETE CASCADE,
+        project_id TEXT NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL,
+        role TEXT NOT NULL,
+        filename TEXT NOT NULL,
+        original_filename TEXT NOT NULL,
+        media_type TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        lineage_version INTEGER NOT NULL,
+        content_hash TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL,
+        storage_key TEXT NOT NULL,
+        storage_status TEXT NOT NULL DEFAULT 'ready',
+        validation_report TEXT NOT NULL,
+        created_by_user_id TEXT REFERENCES remote_agent_users(id) ON DELETE SET NULL,
+        origin TEXT NOT NULL DEFAULT 'web',
+        operation_id TEXT,
+        intake_report_artifact_id TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(project_id, kind, version),
+        UNIQUE(source_id, lineage_version)
+      );
+      CREATE TABLE IF NOT EXISTS remote_agent_system3_knowledge_snapshots (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+        analysis TEXT NOT NULL,
+        artifact_key TEXT NOT NULL,
+        workflow_run_id TEXT REFERENCES remote_agent_workflow_runs(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS remote_agent_system3_readiness_contracts (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+        knowledge_snapshot_id TEXT NOT NULL REFERENCES remote_agent_system3_knowledge_snapshots(id) ON DELETE RESTRICT,
+        workflow_run_id TEXT NOT NULL REFERENCES remote_agent_workflow_runs(id) ON DELETE RESTRICT,
+        contract TEXT NOT NULL,
+        contract_hash TEXT NOT NULL,
+        artifact_key TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS remote_agent_system3_decisions (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+        knowledge_snapshot_id TEXT NOT NULL REFERENCES remote_agent_system3_knowledge_snapshots(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        question TEXT NOT NULL,
+        why TEXT NOT NULL,
+        recommendation TEXT NOT NULL,
+        options TEXT NOT NULL,
+        affected_phases TEXT NOT NULL,
+        status TEXT NOT NULL,
+        answer TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_system3_sources_project_kind
+        ON remote_agent_system3_source_versions(project_id, kind, version DESC);
+      CREATE INDEX IF NOT EXISTS idx_system3_snapshots_project
+        ON remote_agent_system3_knowledge_snapshots(project_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_system3_readiness_project
+        ON remote_agent_system3_readiness_contracts(project_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_system3_decisions_project_status
+        ON remote_agent_system3_decisions(project_id, status, created_at ASC);
+      CREATE TABLE IF NOT EXISTS remote_agent_system3_compilations (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+        knowledge_snapshot_id TEXT NOT NULL REFERENCES remote_agent_system3_knowledge_snapshots(id) ON DELETE RESTRICT,
+        plan TEXT NOT NULL,
+        definition_hash TEXT NOT NULL,
+        capability_registry_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_system3_compilations_project
+        ON remote_agent_system3_compilations(project_id, created_at DESC);
+      CREATE TABLE IF NOT EXISTS remote_agent_system3_product_workflow_versions (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+        template_id TEXT NOT NULL, definition_hash TEXT NOT NULL, definition TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_system3_workflow_versions_project
+        ON remote_agent_system3_product_workflow_versions(project_id, created_at DESC);
+      CREATE TABLE IF NOT EXISTS remote_agent_system3_runtime_profile_versions (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+        profile_hash TEXT NOT NULL,
+        profile TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(project_id, profile_hash)
+      );
+      CREATE TABLE IF NOT EXISTS remote_agent_system3_input_snapshots (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+        knowledge_snapshot_id TEXT NOT NULL REFERENCES remote_agent_system3_knowledge_snapshots(id) ON DELETE RESTRICT,
+        source_ids TEXT NOT NULL, source_hashes TEXT NOT NULL,
+        runtime_profile_version_id TEXT NOT NULL REFERENCES remote_agent_system3_runtime_profile_versions(id) ON DELETE RESTRICT,
+        runtime_profile_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS remote_agent_system3_capability_registry_snapshots (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+        registry_hash TEXT NOT NULL, registry TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS remote_agent_system3_compilation_bases (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+        compilation_id TEXT NOT NULL UNIQUE REFERENCES remote_agent_system3_compilations(id) ON DELETE CASCADE,
+        product_workflow_version_id TEXT NOT NULL REFERENCES remote_agent_system3_product_workflow_versions(id) ON DELETE RESTRICT,
+        input_snapshot_id TEXT NOT NULL REFERENCES remote_agent_system3_input_snapshots(id) ON DELETE RESTRICT,
+        capability_registry_snapshot_id TEXT NOT NULL REFERENCES remote_agent_system3_capability_registry_snapshots(id) ON DELETE RESTRICT,
+        compiler_version TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS remote_agent_system3_execution_plan_snapshots (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+        compilation_id TEXT NOT NULL UNIQUE REFERENCES remote_agent_system3_compilations(id) ON DELETE CASCADE,
+        definition_hash TEXT NOT NULL, plan TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS remote_agent_system3_project_transitions (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+        from_stage TEXT, to_stage TEXT NOT NULL,
+        actor_id TEXT REFERENCES remote_agent_users(id) ON DELETE SET NULL,
+        operation_id TEXT,
+        workflow_run_id TEXT REFERENCES remote_agent_workflow_runs(id) ON DELETE SET NULL,
+        entity_type TEXT, entity_id TEXT,
+        from_attention TEXT, to_attention TEXT,
+        from_freshness TEXT, to_freshness TEXT,
+        project_version INTEGER,
+        metadata TEXT NOT NULL DEFAULT '{}',
+        reason TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_system3_transitions_project
+        ON remote_agent_system3_project_transitions(project_id, created_at DESC);
+      CREATE TABLE IF NOT EXISTS remote_agent_system3_approval_manifests (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+        compilation_id TEXT NOT NULL REFERENCES remote_agent_system3_compilations(id) ON DELETE RESTRICT,
+        idempotency_key TEXT NOT NULL,
+        manifest TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(project_id, idempotency_key)
+      );
+      CREATE TABLE IF NOT EXISTS remote_agent_system3_project_executions (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+        approval_id TEXT NOT NULL REFERENCES remote_agent_system3_approval_manifests(id) ON DELETE RESTRICT,
+        workflow_run_id TEXT NOT NULL UNIQUE REFERENCES remote_agent_workflow_runs(id) ON DELETE RESTRICT,
+        definition_hash TEXT NOT NULL,
+        status TEXT NOT NULL,
+        error TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_system3_executions_project
+        ON remote_agent_system3_project_executions(project_id, created_at DESC);
+      CREATE TABLE IF NOT EXISTS remote_agent_system3_operations (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+        execution_id TEXT NOT NULL REFERENCES remote_agent_system3_project_executions(id) ON DELETE CASCADE,
+        operation_type TEXT NOT NULL,
+        status TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        error TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(project_id, operation_type, idempotency_key)
+      );
+      CREATE INDEX IF NOT EXISTS idx_system3_operations_project
+        ON remote_agent_system3_operations(project_id, created_at DESC);
+      CREATE TABLE IF NOT EXISTS remote_agent_system3_project_operations (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+        operation_type TEXT NOT NULL,
+        execution_id TEXT REFERENCES remote_agent_system3_project_executions(id) ON DELETE SET NULL,
+        workflow_run_id TEXT REFERENCES remote_agent_workflow_runs(id) ON DELETE SET NULL,
+        status TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        request_fingerprint TEXT NOT NULL,
+        project_version INTEGER NOT NULL,
+        result TEXT,
+        error TEXT,
+        owner_instance_id TEXT,
+        heartbeat_at TEXT,
+        started_at TEXT,
+        finished_at TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(project_id, operation_type, idempotency_key)
+      );
+      CREATE TABLE IF NOT EXISTS remote_agent_system3_understanding_input_snapshots (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+        operation_id TEXT NOT NULL UNIQUE REFERENCES remote_agent_system3_project_operations(id) ON DELETE CASCADE,
+        knowledge_snapshot_id TEXT REFERENCES remote_agent_system3_knowledge_snapshots(id) ON DELETE SET NULL,
+        workflow_run_id TEXT REFERENCES remote_agent_workflow_runs(id) ON DELETE SET NULL,
+        source_ids TEXT NOT NULL,
+        source_hashes TEXT NOT NULL,
+        parser_version TEXT NOT NULL,
+        extraction_policy_version TEXT NOT NULL,
+        capability_registry_hash TEXT NOT NULL,
+        runtime_profile TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_system3_understanding_inputs_project
+        ON remote_agent_system3_understanding_input_snapshots(project_id, created_at DESC);
+      CREATE TABLE IF NOT EXISTS remote_agent_system3_source_intake_reports (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+        operation_id TEXT NOT NULL UNIQUE REFERENCES remote_agent_system3_project_operations(id) ON DELETE CASCADE,
+        source_version_id TEXT REFERENCES remote_agent_system3_source_versions(id) ON DELETE SET NULL,
+        artifact_key TEXT NOT NULL,
+        report TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_system3_source_intake_reports_project
+        ON remote_agent_system3_source_intake_reports(project_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_system3_project_operations_project
+        ON remote_agent_system3_project_operations(project_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_system3_project_operations_status
+        ON remote_agent_system3_project_operations(status, updated_at ASC);
+      CREATE TABLE IF NOT EXISTS remote_agent_system3_verifications (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+        execution_id TEXT NOT NULL REFERENCES remote_agent_system3_project_executions(id) ON DELETE RESTRICT,
+        workflow_run_id TEXT NOT NULL UNIQUE REFERENCES remote_agent_workflow_runs(id) ON DELETE RESTRICT,
+        input_artifact_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        validator_version TEXT NOT NULL,
+        basis_hash TEXT NOT NULL,
+        evidence_map TEXT,
+        gate TEXT,
+        error TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS remote_agent_system3_evidence_records (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+        execution_id TEXT NOT NULL REFERENCES remote_agent_system3_project_executions(id) ON DELETE CASCADE,
+        verification_id TEXT REFERENCES remote_agent_system3_verifications(id) ON DELETE RESTRICT,
+        requirement_id TEXT,
+        status TEXT NOT NULL,
+        validator_version TEXT NOT NULL DEFAULT 'system3-validator@1',
+        basis_hash TEXT NOT NULL DEFAULT 'legacy',
+        evidence TEXT NOT NULL,
+        reason TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_system3_evidence_execution
+        ON remote_agent_system3_evidence_records(execution_id, created_at ASC);
+      CREATE TABLE IF NOT EXISTS remote_agent_system3_delivery_manifests (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+        execution_id TEXT NOT NULL UNIQUE REFERENCES remote_agent_system3_project_executions(id) ON DELETE CASCADE,
+        verification_id TEXT REFERENCES remote_agent_system3_verifications(id) ON DELETE RESTRICT,
+        package_storage_key TEXT NOT NULL,
+        package_filename TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        size_bytes INTEGER NOT NULL,
+        manifest TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS remote_agent_system3_impact_manifests (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+        source_version_id TEXT NOT NULL REFERENCES remote_agent_system3_source_versions(id) ON DELETE CASCADE,
+        affected_phases TEXT NOT NULL,
+        reason TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_system3_impacts_project
+        ON remote_agent_system3_impact_manifests(project_id, created_at DESC);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_system3_impacts_source_version
+        ON remote_agent_system3_impact_manifests(source_version_id);
+      CREATE TABLE IF NOT EXISTS remote_agent_system3_requirements (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+        knowledge_snapshot_id TEXT NOT NULL REFERENCES remote_agent_system3_knowledge_snapshots(id) ON DELETE CASCADE,
+        requirement_key TEXT NOT NULL, kind TEXT NOT NULL, priority TEXT, source TEXT,
+        statement TEXT NOT NULL, acceptance_criterion TEXT NOT NULL, source_pointer TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(knowledge_snapshot_id, requirement_key)
+      );
+      CREATE INDEX IF NOT EXISTS idx_system3_requirements_project
+        ON remote_agent_system3_requirements(project_id, knowledge_snapshot_id);
+      CREATE TABLE IF NOT EXISTS remote_agent_system3_knowledge_facts (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+        knowledge_snapshot_id TEXT NOT NULL REFERENCES remote_agent_system3_knowledge_snapshots(id) ON DELETE CASCADE,
+        fact_key TEXT NOT NULL, value TEXT NOT NULL, source_pointer TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, UNIQUE(knowledge_snapshot_id, fact_key)
+      );
+      CREATE TABLE IF NOT EXISTS remote_agent_system3_open_issues (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+        knowledge_snapshot_id TEXT NOT NULL REFERENCES remote_agent_system3_knowledge_snapshots(id) ON DELETE CASCADE,
+        issue_key TEXT NOT NULL, title TEXT NOT NULL, source_pointer TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'open', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(knowledge_snapshot_id, issue_key)
+      );
+      CREATE TABLE IF NOT EXISTS remote_agent_system3_dependency_edges (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+        from_kind TEXT NOT NULL, from_id TEXT NOT NULL, to_kind TEXT NOT NULL, to_id TEXT NOT NULL,
+        reason TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(project_id, from_kind, from_id, to_kind, to_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_system3_dependency_edges_project
+        ON remote_agent_system3_dependency_edges(project_id, from_kind, from_id);
+      CREATE TABLE IF NOT EXISTS remote_agent_system3_artifact_versions (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+        execution_id TEXT REFERENCES remote_agent_system3_project_executions(id) ON DELETE CASCADE,
+        knowledge_snapshot_id TEXT REFERENCES remote_agent_system3_knowledge_snapshots(id) ON DELETE CASCADE,
+        source_version_id TEXT REFERENCES remote_agent_system3_source_versions(id) ON DELETE SET NULL,
+        operation_id TEXT REFERENCES remote_agent_system3_project_operations(id) ON DELETE SET NULL,
+        artifact_key TEXT NOT NULL, artifact_kind TEXT NOT NULL, version INTEGER NOT NULL,
+        content_hash TEXT NOT NULL, size_bytes INTEGER NOT NULL,
+        activity_id TEXT, workflow_run_id TEXT, workflow_node_id TEXT,
+        display_name TEXT, summary TEXT, media_type TEXT, schema_id TEXT, schema_version TEXT,
+        visibility TEXT, status TEXT, stale_reason TEXT,
+        source_version_ids TEXT, parent_resource_ids TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(project_id, artifact_key, version)
+      );
+      CREATE INDEX IF NOT EXISTS idx_system3_artifacts_project
+        ON remote_agent_system3_artifact_versions(project_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_workflow_runs_parent_conv ON remote_agent_workflow_runs(parent_conversation_id);
       CREATE INDEX IF NOT EXISTS idx_conversations_hidden ON remote_agent_conversations(hidden);
       DROP INDEX IF EXISTS idx_conversations_codebase;

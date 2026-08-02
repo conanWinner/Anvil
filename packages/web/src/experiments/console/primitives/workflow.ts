@@ -4,12 +4,22 @@ export interface Workflow {
   name: string;
   description: string | null;
   source: WorkflowSource;
+  hasIntake?: boolean;
+  intake?: {
+    title: string;
+    fields: {
+      input: string;
+      control: 'file' | 'dataset' | 'textarea' | 'approval_policy';
+      prompt: string;
+    }[];
+  };
 }
 
 interface RawWorkflowEntry {
   workflow: {
     name: string;
     description?: string | null;
+    intake?: Workflow['intake'];
   };
   source: string;
 }
@@ -25,5 +35,7 @@ export function toWorkflow(raw: RawWorkflowEntry): Workflow {
     name: raw.workflow.name,
     description: raw.workflow.description ?? null,
     source: src,
+    hasIntake: raw.workflow.intake !== undefined,
+    ...(raw.workflow.intake !== undefined ? { intake: raw.workflow.intake } : {}),
   };
 }

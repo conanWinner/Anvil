@@ -29,6 +29,8 @@ function variantHint(variant: VariantId): string {
       return 'Human gate (interactive)';
     case 'cancel':
       return 'Stop the run';
+    case 'workflow':
+      return 'Invoke a child workflow';
   }
 }
 

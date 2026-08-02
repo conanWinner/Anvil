@@ -41,6 +41,8 @@ function textBodies(node: BuilderNode): string[] {
       return [node.data.prompt];
     case 'cancel':
       return [];
+    case 'workflow':
+      return [JSON.stringify(node.data.inputs ?? {}), JSON.stringify(node.data.artifacts ?? {})];
   }
 }
 

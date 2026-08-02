@@ -21,6 +21,7 @@ export interface StartRunArgs {
   projectId: string;
   workflow: string;
   message: string;
+  inputs?: Record<string, unknown>;
   files?: File[];
 }
 
@@ -32,6 +33,7 @@ export async function startRun({
   projectId,
   workflow,
   message,
+  inputs,
   files,
 }: StartRunArgs): Promise<void> {
   const conv = await requestJson<CreateConversationResponse>('/api/conversations', {
@@ -44,7 +46,7 @@ export async function startRun({
   if (files === undefined || files.length === 0) {
     await requestJson<{ accepted: boolean; status: string }>(url, {
       method: 'POST',
-      body: JSON.stringify({ conversationId: conv.conversationId, message }),
+      body: JSON.stringify({ conversationId: conv.conversationId, message, inputs }),
     });
     return;
   }
@@ -53,6 +55,7 @@ export async function startRun({
   const form = new FormData();
   form.append('conversationId', conv.conversationId);
   form.append('message', message);
+  if (inputs !== undefined) form.append('inputs', JSON.stringify(inputs));
   for (const file of files) {
     form.append('files', file, file.name);
   }

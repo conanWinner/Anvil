@@ -102,6 +102,7 @@ export function WorkflowList(): React.ReactElement {
       return { filteredWorkflows: [], recommendedWorkflows: [], restWorkflows: [] };
     }
     const filtered = workflows
+      .filter(entry => entry.source === 'bundled')
       .map(entry => entry.workflow)
       .filter(wf => {
         if (searchQuery) {

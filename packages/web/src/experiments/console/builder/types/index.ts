@@ -12,6 +12,7 @@ export type {
   CommandNodeData,
   PromptNodeData,
   BashNodeData,
+  WorkflowNodeData,
   VariantDataMap,
   VariantData,
   BuilderNode,

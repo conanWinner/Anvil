@@ -116,6 +116,19 @@ mock.module('@anvil/core/db/conversations', () => ({
   getConversationById: mock(async () => null),
 }));
 
+mock.module('@anvil/core/db/users', () => ({
+  findOrCreateUserByPlatformIdentity: mock(async () => ({
+    id: 'local-web-user',
+    platform_type: 'web',
+    platform_user_id: 'local-web',
+    display_name: 'local-web',
+    email: null,
+    role: 'admin' as const,
+    created_at: new Date(),
+    updated_at: new Date(),
+  })),
+}));
+
 mock.module('@anvil/core/db/codebases', () => ({
   listCodebases: mock(async () => [{ default_cwd: '/tmp/project' }]),
   getCodebase: mock(async () => null),

@@ -7,6 +7,8 @@ import type { Run } from '../primitives/run';
 
 interface RunActionBarProps {
   run: Run;
+  allowResume?: boolean;
+  blockedReason?: string | null;
 }
 
 /**
@@ -19,7 +21,11 @@ interface RunActionBarProps {
  *
  * Demo runs short-circuit the backend calls.
  */
-export function RunActionBar({ run }: RunActionBarProps): ReactElement | null {
+export function RunActionBar({
+  run,
+  allowResume = true,
+  blockedReason = null,
+}: RunActionBarProps): ReactElement | null {
   const navigate = useNavigate();
   const [busy, setBusy] = useState<'cancel' | 'resume' | 'abandon' | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -48,6 +54,8 @@ export function RunActionBar({ run }: RunActionBarProps): ReactElement | null {
         if (action === 'abandon') await skill.abandonRun(run.id);
       }
       invalidate('runs');
+      invalidate('flow');
+      if (run.projectId !== null) invalidate(K.flowRuns(run.projectId));
       invalidate(K.run(run.id));
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Action failed.');
@@ -72,7 +80,7 @@ export function RunActionBar({ run }: RunActionBarProps): ReactElement | null {
           </button>
         ) : null}
 
-        {run.status === 'failed' ? (
+        {run.status === 'failed' && allowResume ? (
           <>
             <button
               type="button"
@@ -89,6 +97,38 @@ export function RunActionBar({ run }: RunActionBarProps): ReactElement | null {
               className="rounded-[9px] border bg-surface-elevated px-[18px] py-2.5 text-[13px] font-semibold text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary disabled:opacity-50"
               // Inline because the console scope's wildcard border-color rule
               // repaints Tailwind border utilities (see theme.css).
+              style={{ borderColor: 'var(--border-bright)' }}
+            >
+              {busy === 'abandon' ? 'Abandoning…' : 'Abandon'}
+            </button>
+          </>
+        ) : null}
+
+        {run.status === 'failed' && !allowResume ? (
+          <>
+            <div className="max-w-2xl text-xs text-text-secondary">
+              <div className="font-semibold text-warning">Run đã dừng theo điều kiện workflow.</div>
+              <div className="mt-0.5">
+                {blockedReason ??
+                  'Resume sẽ lặp lại cùng kết quả. Hãy bổ sung đầu vào rồi tạo run mới.'}
+              </div>
+            </div>
+            {run.projectId !== null ? (
+              <button
+                type="button"
+                onClick={() => {
+                  navigate(`/console/p/${run.projectId}/chat`);
+                }}
+                className="brand-bar rounded-[9px] px-5 py-2.5 text-[13px] font-bold text-white"
+              >
+                Chuẩn bị run mới trong Chat
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => void call('abandon')}
+              disabled={busy !== null}
+              className="rounded-[9px] border bg-surface-elevated px-[18px] py-2.5 text-[13px] font-semibold text-text-secondary hover:bg-surface-hover disabled:opacity-50"
               style={{ borderColor: 'var(--border-bright)' }}
             >
               {busy === 'abandon' ? 'Abandoning…' : 'Abandon'}

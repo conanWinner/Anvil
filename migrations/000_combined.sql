@@ -114,6 +114,7 @@ CREATE TABLE IF NOT EXISTS remote_agent_conversations (
   ai_assistant_type VARCHAR(20) DEFAULT 'claude',
   isolation_env_id UUID,  -- FK added after isolation_environments table exists
   title VARCHAR(255),
+  client_request_id VARCHAR(128),
   deleted_at TIMESTAMP WITH TIME ZONE,
   hidden BOOLEAN DEFAULT FALSE,
   created_at TIMESTAMP DEFAULT NOW(),
@@ -128,6 +129,10 @@ CREATE INDEX IF NOT EXISTS idx_conversations_hidden
   ON remote_agent_conversations(hidden);
 CREATE INDEX IF NOT EXISTS idx_conversations_codebase
   ON remote_agent_conversations(codebase_id) WHERE deleted_at IS NULL;
+ALTER TABLE remote_agent_conversations
+  ADD COLUMN IF NOT EXISTS client_request_id VARCHAR(128);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_conversations_client_request_id
+  ON remote_agent_conversations(client_request_id) WHERE client_request_id IS NOT NULL;
 
 COMMENT ON COLUMN remote_agent_conversations.isolation_env_id IS
   'UUID reference to isolation_environments table (the only isolation reference)';
@@ -235,6 +240,8 @@ CREATE TABLE IF NOT EXISTS remote_agent_workflow_runs (
   user_message TEXT NOT NULL,
   metadata JSONB DEFAULT '{}',
   parent_conversation_id UUID REFERENCES remote_agent_conversations(id) ON DELETE SET NULL,
+  parent_workflow_run_id UUID REFERENCES remote_agent_workflow_runs(id) ON DELETE CASCADE,
+  parent_node_id VARCHAR(255),
   started_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   completed_at TIMESTAMP WITH TIME ZONE,
   last_activity_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -247,6 +254,9 @@ CREATE INDEX IF NOT EXISTS idx_workflow_runs_status
   ON remote_agent_workflow_runs(status);
 CREATE INDEX IF NOT EXISTS idx_workflow_runs_parent_conv
   ON remote_agent_workflow_runs(parent_conversation_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_parent_node_unique
+  ON remote_agent_workflow_runs(parent_workflow_run_id, parent_node_id)
+  WHERE parent_workflow_run_id IS NOT NULL;
 
 -- Partial index for efficient staleness queries on running workflows
 CREATE INDEX IF NOT EXISTS idx_workflow_runs_last_activity
@@ -372,6 +382,14 @@ ALTER TABLE remote_agent_conversations
 ALTER TABLE remote_agent_workflow_runs
   ADD COLUMN IF NOT EXISTS parent_conversation_id UUID
     REFERENCES remote_agent_conversations(id) ON DELETE SET NULL;
+ALTER TABLE remote_agent_workflow_runs
+  ADD COLUMN IF NOT EXISTS parent_workflow_run_id UUID
+    REFERENCES remote_agent_workflow_runs(id) ON DELETE CASCADE;
+ALTER TABLE remote_agent_workflow_runs
+  ADD COLUMN IF NOT EXISTS parent_node_id VARCHAR(255);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_parent_node_unique
+  ON remote_agent_workflow_runs(parent_workflow_run_id, parent_node_id)
+  WHERE parent_workflow_run_id IS NOT NULL;
 ALTER TABLE remote_agent_conversations
   ADD COLUMN IF NOT EXISTS hidden BOOLEAN DEFAULT FALSE;
 
@@ -512,6 +530,670 @@ CREATE TABLE IF NOT EXISTS remote_agent_user_ai_prefs (
   UNIQUE(user_id)
 );
 
+-- Durable pre-run workflow intake drafts. This is additive: completed and
+-- active workflow runs continue to use their existing records unchanged.
+CREATE TABLE IF NOT EXISTS remote_agent_workflow_intake_drafts (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  codebase_id UUID NOT NULL REFERENCES remote_agent_codebases(id) ON DELETE CASCADE,
+  workflow_name VARCHAR(255) NOT NULL,
+  definition_hash VARCHAR(128) NOT NULL,
+  status VARCHAR(16) NOT NULL DEFAULT 'draft',
+  "values" JSONB NOT NULL DEFAULT '{}'::jsonb,
+  current_field VARCHAR(255),
+  validation_errors JSONB NOT NULL DEFAULT '[]'::jsonb,
+  started_run_id UUID REFERENCES remote_agent_workflow_runs(id) ON DELETE SET NULL,
+  created_by_user_id UUID REFERENCES remote_agent_users(id) ON DELETE SET NULL,
+  updated_by_user_id UUID REFERENCES remote_agent_users(id) ON DELETE SET NULL,
+  conversation_id UUID REFERENCES remote_agent_conversations(id) ON DELETE SET NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_intakes_active_unique
+  ON remote_agent_workflow_intake_drafts(codebase_id, workflow_name)
+  WHERE status IN ('draft', 'ready', 'starting');
+
+CREATE INDEX IF NOT EXISTS idx_workflow_intakes_codebase
+  ON remote_agent_workflow_intake_drafts(codebase_id, updated_at DESC);
+ALTER TABLE remote_agent_workflow_intake_drafts
+  ADD COLUMN IF NOT EXISTS conversation_id UUID
+    REFERENCES remote_agent_conversations(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_workflow_intakes_conversation
+  ON remote_agent_workflow_intake_drafts(conversation_id)
+  WHERE conversation_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS remote_agent_conversation_memory_handoffs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  codebase_id UUID NOT NULL REFERENCES remote_agent_codebases(id) ON DELETE CASCADE,
+  conversation_id UUID NOT NULL REFERENCES remote_agent_conversations(id) ON DELETE CASCADE,
+  status VARCHAR(16) NOT NULL DEFAULT 'pending',
+  source_last_message_id UUID REFERENCES remote_agent_messages(id) ON DELETE SET NULL,
+  error TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  completed_at TIMESTAMP WITH TIME ZONE,
+  UNIQUE(conversation_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_handoffs_codebase
+  ON remote_agent_conversation_memory_handoffs(codebase_id, updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS remote_agent_project_memory_entries (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  codebase_id UUID NOT NULL REFERENCES remote_agent_codebases(id) ON DELETE CASCADE,
+  source_conversation_id UUID REFERENCES remote_agent_conversations(id) ON DELETE SET NULL,
+  handoff_id UUID REFERENCES remote_agent_conversation_memory_handoffs(id) ON DELETE SET NULL,
+  category VARCHAR(16) NOT NULL,
+  content TEXT NOT NULL,
+  origin VARCHAR(16) NOT NULL DEFAULT 'extracted',
+  user_edited BOOLEAN NOT NULL DEFAULT FALSE,
+  pinned BOOLEAN NOT NULL DEFAULT FALSE,
+  active BOOLEAN NOT NULL DEFAULT TRUE,
+  created_by_user_id UUID REFERENCES remote_agent_users(id) ON DELETE SET NULL,
+  updated_by_user_id UUID REFERENCES remote_agent_users(id) ON DELETE SET NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_project_memory_active
+  ON remote_agent_project_memory_entries(codebase_id, pinned DESC, updated_at DESC)
+  WHERE active = TRUE;
+CREATE INDEX IF NOT EXISTS idx_project_memory_source
+  ON remote_agent_project_memory_entries(source_conversation_id)
+  WHERE source_conversation_id IS NOT NULL;
+
+-- System 3 Project control plane. Generic workflow runs remain untouched: a
+-- System 3 project links to a codebase and keeps its immutable source and
+-- understanding records in domain-owned tables.
+CREATE TABLE IF NOT EXISTS remote_agent_system3_projects (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  codebase_id UUID NOT NULL UNIQUE REFERENCES remote_agent_codebases(id) ON DELETE RESTRICT,
+  name VARCHAR(255) NOT NULL,
+  description TEXT,
+  stage VARCHAR(32) NOT NULL,
+  attention VARCHAR(32) NOT NULL,
+  freshness VARCHAR(32) NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  template_id VARCHAR(255) NOT NULL,
+  active_knowledge_snapshot_id UUID,
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS remote_agent_system3_sources (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+  kind VARCHAR(32) NOT NULL,
+  role VARCHAR(16) NOT NULL,
+  display_name TEXT NOT NULL,
+  status VARCHAR(16) NOT NULL DEFAULT 'active',
+  created_by_user_id UUID REFERENCES remote_agent_users(id) ON DELETE SET NULL,
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS remote_agent_system3_source_versions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  source_id UUID NOT NULL REFERENCES remote_agent_system3_sources(id) ON DELETE CASCADE,
+  project_id UUID NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+  kind VARCHAR(32) NOT NULL,
+  role VARCHAR(16) NOT NULL,
+  filename TEXT NOT NULL,
+  original_filename TEXT NOT NULL,
+  media_type TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  lineage_version INTEGER NOT NULL,
+  content_hash VARCHAR(80) NOT NULL,
+  size_bytes BIGINT NOT NULL,
+  storage_key TEXT NOT NULL,
+  storage_status VARCHAR(16) NOT NULL DEFAULT 'ready',
+  validation_report JSONB NOT NULL,
+  created_by_user_id UUID REFERENCES remote_agent_users(id) ON DELETE SET NULL,
+  origin TEXT NOT NULL DEFAULT 'web',
+  operation_id UUID,
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+  UNIQUE(project_id, kind, version),
+  UNIQUE(source_id, lineage_version)
+);
+
+-- Upgrade installations whose System 3 source table predates logical source
+-- lineages. The combined schema is applied idempotently on every PG startup.
+ALTER TABLE remote_agent_system3_source_versions ADD COLUMN IF NOT EXISTS source_id UUID;
+ALTER TABLE remote_agent_system3_source_versions ADD COLUMN IF NOT EXISTS role VARCHAR(16);
+ALTER TABLE remote_agent_system3_source_versions ADD COLUMN IF NOT EXISTS original_filename TEXT;
+ALTER TABLE remote_agent_system3_source_versions ADD COLUMN IF NOT EXISTS media_type TEXT;
+ALTER TABLE remote_agent_system3_source_versions ADD COLUMN IF NOT EXISTS lineage_version INTEGER;
+ALTER TABLE remote_agent_system3_source_versions ADD COLUMN IF NOT EXISTS storage_status VARCHAR(16);
+ALTER TABLE remote_agent_system3_source_versions ADD COLUMN IF NOT EXISTS validation_report JSONB;
+ALTER TABLE remote_agent_system3_source_versions
+  ADD COLUMN IF NOT EXISTS created_by_user_id UUID REFERENCES remote_agent_users(id) ON DELETE SET NULL;
+ALTER TABLE remote_agent_system3_source_versions ADD COLUMN IF NOT EXISTS origin TEXT;
+ALTER TABLE remote_agent_system3_source_versions ADD COLUMN IF NOT EXISTS operation_id UUID;
+ALTER TABLE remote_agent_system3_source_versions ADD COLUMN IF NOT EXISTS intake_report_artifact_id UUID;
+
+INSERT INTO remote_agent_system3_sources (id, project_id, kind, role, display_name, status)
+SELECT gen_random_uuid(), legacy.project_id, legacy.kind, 'primary', legacy.kind, 'active'
+FROM (
+  SELECT DISTINCT project_id, kind
+  FROM remote_agent_system3_source_versions
+  WHERE source_id IS NULL
+) legacy
+WHERE NOT EXISTS (
+  SELECT 1 FROM remote_agent_system3_sources source
+  WHERE source.project_id = legacy.project_id AND source.kind = legacy.kind
+);
+
+UPDATE remote_agent_system3_source_versions version
+SET source_id = source.id
+FROM remote_agent_system3_sources source
+WHERE version.source_id IS NULL
+  AND source.id = (
+    SELECT candidate.id
+    FROM remote_agent_system3_sources candidate
+    WHERE candidate.project_id = version.project_id AND candidate.kind = version.kind
+    ORDER BY candidate.created_at ASC, candidate.id ASC LIMIT 1
+  );
+
+UPDATE remote_agent_system3_source_versions
+SET role = COALESCE(role, 'primary'),
+    original_filename = COALESCE(original_filename, filename),
+    media_type = COALESCE(media_type, 'application/octet-stream'),
+    lineage_version = COALESCE(lineage_version, version),
+    storage_status = COALESCE(storage_status, 'ready'),
+    validation_report = COALESCE(
+      validation_report,
+      '{"schemaVersion":1,"outcome":"accepted","checks":[],"warnings":["Migrated legacy source"]}'::jsonb
+    ),
+    origin = COALESCE(origin, 'legacy');
+
+ALTER TABLE remote_agent_system3_source_versions ALTER COLUMN source_id SET NOT NULL;
+ALTER TABLE remote_agent_system3_source_versions ALTER COLUMN role SET NOT NULL;
+ALTER TABLE remote_agent_system3_source_versions ALTER COLUMN original_filename SET NOT NULL;
+ALTER TABLE remote_agent_system3_source_versions ALTER COLUMN media_type SET NOT NULL;
+ALTER TABLE remote_agent_system3_source_versions ALTER COLUMN lineage_version SET NOT NULL;
+ALTER TABLE remote_agent_system3_source_versions ALTER COLUMN storage_status SET NOT NULL;
+ALTER TABLE remote_agent_system3_source_versions ALTER COLUMN validation_report SET NOT NULL;
+ALTER TABLE remote_agent_system3_source_versions ALTER COLUMN origin SET NOT NULL;
+ALTER TABLE remote_agent_system3_source_versions
+  DROP CONSTRAINT IF EXISTS remote_agent_system3_source_versions_project_id_storage_key_key;
+
+CREATE TABLE IF NOT EXISTS remote_agent_system3_knowledge_snapshots (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+  analysis JSONB NOT NULL,
+  artifact_key TEXT NOT NULL,
+  workflow_run_id UUID REFERENCES remote_agent_workflow_runs(id) ON DELETE SET NULL,
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS remote_agent_system3_readiness_contracts (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+  knowledge_snapshot_id UUID NOT NULL REFERENCES remote_agent_system3_knowledge_snapshots(id) ON DELETE RESTRICT,
+  workflow_run_id UUID NOT NULL REFERENCES remote_agent_workflow_runs(id) ON DELETE RESTRICT,
+  contract JSONB NOT NULL,
+  contract_hash TEXT NOT NULL,
+  artifact_key TEXT NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_system3_readiness_project
+  ON remote_agent_system3_readiness_contracts(project_id, created_at DESC);
+ALTER TABLE remote_agent_system3_knowledge_snapshots
+  ADD COLUMN IF NOT EXISTS workflow_run_id UUID
+    REFERENCES remote_agent_workflow_runs(id) ON DELETE SET NULL;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'remote_agent_system3_projects_active_snapshot_fkey'
+  ) THEN
+    ALTER TABLE remote_agent_system3_projects
+      ADD CONSTRAINT remote_agent_system3_projects_active_snapshot_fkey
+      FOREIGN KEY (active_knowledge_snapshot_id)
+      REFERENCES remote_agent_system3_knowledge_snapshots(id) ON DELETE SET NULL;
+  END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS remote_agent_system3_decisions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+  knowledge_snapshot_id UUID NOT NULL REFERENCES remote_agent_system3_knowledge_snapshots(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  question TEXT NOT NULL,
+  why TEXT NOT NULL,
+  recommendation TEXT NOT NULL,
+  options JSONB NOT NULL,
+  affected_phases JSONB NOT NULL,
+  status VARCHAR(16) NOT NULL,
+  answer TEXT,
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_system3_sources_project_kind
+  ON remote_agent_system3_source_versions(project_id, kind, version DESC);
+CREATE INDEX IF NOT EXISTS idx_system3_source_lineage_versions
+  ON remote_agent_system3_source_versions(source_id, lineage_version DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_system3_source_lineage_version_unique
+  ON remote_agent_system3_source_versions(source_id, lineage_version);
+
+CREATE INDEX IF NOT EXISTS idx_system3_snapshots_project
+  ON remote_agent_system3_knowledge_snapshots(project_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_system3_decisions_project_status
+  ON remote_agent_system3_decisions(project_id, status, created_at ASC);
+
+CREATE TABLE IF NOT EXISTS remote_agent_system3_compilations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+  knowledge_snapshot_id UUID NOT NULL REFERENCES remote_agent_system3_knowledge_snapshots(id) ON DELETE RESTRICT,
+  plan JSONB NOT NULL,
+  definition_hash VARCHAR(80) NOT NULL,
+  capability_registry_hash VARCHAR(80) NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_system3_compilations_project
+  ON remote_agent_system3_compilations(project_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS remote_agent_system3_product_workflow_versions (
+  id UUID PRIMARY KEY,
+  project_id UUID NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+  template_id VARCHAR(255) NOT NULL,
+  definition_hash VARCHAR(80) NOT NULL,
+  definition JSONB NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_system3_workflow_versions_project
+  ON remote_agent_system3_product_workflow_versions(project_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS remote_agent_system3_runtime_profile_versions (
+  id UUID PRIMARY KEY,
+  project_id UUID NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+  profile_hash VARCHAR(80) NOT NULL,
+  profile JSONB NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+  UNIQUE(project_id, profile_hash)
+);
+
+CREATE TABLE IF NOT EXISTS remote_agent_system3_input_snapshots (
+  id UUID PRIMARY KEY,
+  project_id UUID NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+  knowledge_snapshot_id UUID NOT NULL REFERENCES remote_agent_system3_knowledge_snapshots(id) ON DELETE RESTRICT,
+  source_ids JSONB NOT NULL,
+  source_hashes JSONB NOT NULL,
+  runtime_profile_version_id UUID NOT NULL REFERENCES remote_agent_system3_runtime_profile_versions(id) ON DELETE RESTRICT,
+  runtime_profile_hash VARCHAR(80) NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+ALTER TABLE remote_agent_system3_input_snapshots
+  ADD COLUMN IF NOT EXISTS runtime_profile_version_id UUID
+    REFERENCES remote_agent_system3_runtime_profile_versions(id) ON DELETE RESTRICT;
+INSERT INTO remote_agent_system3_runtime_profile_versions (id, project_id, profile_hash, profile)
+SELECT gen_random_uuid(), input.project_id, input.runtime_profile_hash,
+       COALESCE(compilation.plan->'runtimeProfile', compilation.plan->'phases'->0->'resourceProfile',
+                '{"cpuOnly":true,"ramGb":null}'::jsonb)
+FROM remote_agent_system3_input_snapshots input
+LEFT JOIN remote_agent_system3_compilations compilation
+  ON compilation.plan->>'inputSnapshotId' = input.id::text
+WHERE input.runtime_profile_version_id IS NULL
+ON CONFLICT (project_id, profile_hash) DO NOTHING;
+UPDATE remote_agent_system3_input_snapshots input
+SET runtime_profile_version_id = profile.id
+FROM remote_agent_system3_runtime_profile_versions profile
+WHERE input.runtime_profile_version_id IS NULL
+  AND profile.project_id = input.project_id
+  AND profile.profile_hash = input.runtime_profile_hash;
+ALTER TABLE remote_agent_system3_input_snapshots
+  ALTER COLUMN runtime_profile_version_id SET NOT NULL;
+CREATE TABLE IF NOT EXISTS remote_agent_system3_capability_registry_snapshots (
+  id UUID PRIMARY KEY,
+  project_id UUID NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+  registry_hash VARCHAR(80) NOT NULL,
+  registry JSONB NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS remote_agent_system3_compilation_bases (
+  id UUID PRIMARY KEY,
+  project_id UUID NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+  compilation_id UUID NOT NULL UNIQUE REFERENCES remote_agent_system3_compilations(id) ON DELETE CASCADE,
+  product_workflow_version_id UUID NOT NULL REFERENCES remote_agent_system3_product_workflow_versions(id) ON DELETE RESTRICT,
+  input_snapshot_id UUID NOT NULL REFERENCES remote_agent_system3_input_snapshots(id) ON DELETE RESTRICT,
+  capability_registry_snapshot_id UUID NOT NULL REFERENCES remote_agent_system3_capability_registry_snapshots(id) ON DELETE RESTRICT,
+  compiler_version VARCHAR(80) NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS remote_agent_system3_execution_plan_snapshots (
+  id UUID PRIMARY KEY,
+  project_id UUID NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+  compilation_id UUID NOT NULL UNIQUE REFERENCES remote_agent_system3_compilations(id) ON DELETE CASCADE,
+  definition_hash VARCHAR(80) NOT NULL,
+  plan JSONB NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS remote_agent_system3_project_transitions (
+  id UUID PRIMARY KEY,
+  project_id UUID NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+  from_stage VARCHAR(32),
+  to_stage VARCHAR(32) NOT NULL,
+  actor_id UUID REFERENCES remote_agent_users(id) ON DELETE SET NULL,
+  operation_id UUID,
+  workflow_run_id UUID REFERENCES remote_agent_workflow_runs(id) ON DELETE SET NULL,
+  entity_type VARCHAR(64),
+  entity_id TEXT,
+  from_attention VARCHAR(32),
+  to_attention VARCHAR(32),
+  from_freshness VARCHAR(32),
+  to_freshness VARCHAR(32),
+  project_version INTEGER,
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  reason TEXT NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_system3_transitions_project
+  ON remote_agent_system3_project_transitions(project_id, created_at DESC);
+ALTER TABLE remote_agent_system3_project_transitions ADD COLUMN IF NOT EXISTS actor_id UUID REFERENCES remote_agent_users(id) ON DELETE SET NULL;
+ALTER TABLE remote_agent_system3_project_transitions ADD COLUMN IF NOT EXISTS operation_id UUID;
+ALTER TABLE remote_agent_system3_project_transitions ADD COLUMN IF NOT EXISTS workflow_run_id UUID REFERENCES remote_agent_workflow_runs(id) ON DELETE SET NULL;
+ALTER TABLE remote_agent_system3_project_transitions ADD COLUMN IF NOT EXISTS entity_type VARCHAR(64);
+ALTER TABLE remote_agent_system3_project_transitions ADD COLUMN IF NOT EXISTS entity_id TEXT;
+ALTER TABLE remote_agent_system3_project_transitions ADD COLUMN IF NOT EXISTS from_attention VARCHAR(32);
+ALTER TABLE remote_agent_system3_project_transitions ADD COLUMN IF NOT EXISTS to_attention VARCHAR(32);
+ALTER TABLE remote_agent_system3_project_transitions ADD COLUMN IF NOT EXISTS from_freshness VARCHAR(32);
+ALTER TABLE remote_agent_system3_project_transitions ADD COLUMN IF NOT EXISTS to_freshness VARCHAR(32);
+ALTER TABLE remote_agent_system3_project_transitions ADD COLUMN IF NOT EXISTS project_version INTEGER;
+ALTER TABLE remote_agent_system3_project_transitions ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+CREATE TABLE IF NOT EXISTS remote_agent_system3_approval_manifests (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+  compilation_id UUID NOT NULL REFERENCES remote_agent_system3_compilations(id) ON DELETE RESTRICT,
+  idempotency_key VARCHAR(255) NOT NULL,
+  manifest JSONB NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+  UNIQUE(project_id, idempotency_key)
+);
+
+CREATE TABLE IF NOT EXISTS remote_agent_system3_project_executions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+  approval_id UUID NOT NULL REFERENCES remote_agent_system3_approval_manifests(id) ON DELETE RESTRICT,
+  workflow_run_id UUID NOT NULL UNIQUE REFERENCES remote_agent_workflow_runs(id) ON DELETE RESTRICT,
+  definition_hash VARCHAR(80) NOT NULL,
+  status VARCHAR(20) NOT NULL,
+  error TEXT,
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_system3_executions_project
+  ON remote_agent_system3_project_executions(project_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS remote_agent_system3_operations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+  execution_id UUID NOT NULL REFERENCES remote_agent_system3_project_executions(id) ON DELETE CASCADE,
+  operation_type VARCHAR(32) NOT NULL,
+  status VARCHAR(20) NOT NULL,
+  idempotency_key VARCHAR(255) NOT NULL,
+  error TEXT,
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+  UNIQUE(project_id, operation_type, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_system3_operations_project
+  ON remote_agent_system3_operations(project_id, created_at DESC);
+
+-- A project operation is independent from a workflow execution: analysis,
+-- readiness and compilation can be durable, retryable operations too.
+CREATE TABLE IF NOT EXISTS remote_agent_system3_project_operations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+  operation_type TEXT NOT NULL,
+  execution_id UUID REFERENCES remote_agent_system3_project_executions(id) ON DELETE SET NULL,
+  workflow_run_id UUID REFERENCES remote_agent_workflow_runs(id) ON DELETE SET NULL,
+  status TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  request_fingerprint TEXT NOT NULL,
+  project_version INTEGER NOT NULL,
+  result JSONB,
+  error TEXT,
+  owner_instance_id TEXT,
+  heartbeat_at TIMESTAMPTZ,
+  started_at TIMESTAMPTZ,
+  finished_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(project_id, operation_type, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_system3_project_operations_project
+  ON remote_agent_system3_project_operations(project_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_system3_project_operations_status
+  ON remote_agent_system3_project_operations(status, updated_at ASC);
+
+ALTER TABLE remote_agent_system3_project_operations
+  ADD COLUMN IF NOT EXISTS project_version INTEGER;
+ALTER TABLE remote_agent_system3_project_operations
+  ADD COLUMN IF NOT EXISTS owner_instance_id TEXT;
+ALTER TABLE remote_agent_system3_project_operations
+  ADD COLUMN IF NOT EXISTS heartbeat_at TIMESTAMPTZ;
+ALTER TABLE remote_agent_system3_project_operations
+  ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ;
+ALTER TABLE remote_agent_system3_project_operations
+  ADD COLUMN IF NOT EXISTS finished_at TIMESTAMPTZ;
+
+UPDATE remote_agent_system3_project_operations operation
+SET project_version = project.version
+FROM remote_agent_system3_projects project
+WHERE operation.project_id = project.id
+  AND operation.project_version IS NULL;
+
+ALTER TABLE remote_agent_system3_project_operations
+  ALTER COLUMN project_version SET NOT NULL;
+
+INSERT INTO remote_agent_system3_project_operations
+  (id, project_id, operation_type, execution_id, workflow_run_id, status,
+   idempotency_key, request_fingerprint, project_version, result, error,
+   started_at, finished_at, created_at, updated_at)
+SELECT legacy.id, legacy.project_id, legacy.operation_type, legacy.execution_id,
+       execution.workflow_run_id, legacy.status, legacy.idempotency_key,
+       'legacy:' || legacy.id, project.version, NULL, legacy.error,
+       legacy.created_at,
+       CASE WHEN legacy.status IN ('succeeded', 'failed', 'abandoned')
+            THEN legacy.updated_at ELSE NULL END,
+       legacy.created_at, legacy.updated_at
+FROM remote_agent_system3_operations legacy
+JOIN remote_agent_system3_project_executions execution ON execution.id = legacy.execution_id
+JOIN remote_agent_system3_projects project ON project.id = legacy.project_id
+ON CONFLICT (project_id, operation_type, idempotency_key) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS remote_agent_system3_verifications (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+  execution_id UUID NOT NULL REFERENCES remote_agent_system3_project_executions(id) ON DELETE RESTRICT,
+  workflow_run_id UUID NOT NULL UNIQUE REFERENCES remote_agent_workflow_runs(id) ON DELETE RESTRICT,
+  input_artifact_id UUID NOT NULL,
+  status VARCHAR(20) NOT NULL,
+  validator_version VARCHAR(64) NOT NULL,
+  basis_hash VARCHAR(80) NOT NULL,
+  evidence_map JSONB,
+  gate JSONB,
+  error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS remote_agent_system3_evidence_records (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+  execution_id UUID NOT NULL REFERENCES remote_agent_system3_project_executions(id) ON DELETE CASCADE,
+  verification_id UUID REFERENCES remote_agent_system3_verifications(id) ON DELETE RESTRICT,
+  requirement_id VARCHAR(255),
+  status VARCHAR(20) NOT NULL,
+  validator_version VARCHAR(64) NOT NULL DEFAULT 'system3-validator@1',
+  basis_hash VARCHAR(80) NOT NULL DEFAULT 'legacy',
+  evidence JSONB NOT NULL,
+  reason TEXT,
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_system3_evidence_execution
+  ON remote_agent_system3_evidence_records(execution_id, created_at ASC);
+
+CREATE TABLE IF NOT EXISTS remote_agent_system3_delivery_manifests (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+  execution_id UUID NOT NULL UNIQUE REFERENCES remote_agent_system3_project_executions(id) ON DELETE CASCADE,
+  verification_id UUID REFERENCES remote_agent_system3_verifications(id) ON DELETE RESTRICT,
+  package_storage_key TEXT NOT NULL,
+  package_filename TEXT NOT NULL,
+  content_hash VARCHAR(80) NOT NULL,
+  size_bytes BIGINT NOT NULL,
+  manifest JSONB NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS remote_agent_system3_impact_manifests (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+  source_version_id UUID NOT NULL REFERENCES remote_agent_system3_source_versions(id) ON DELETE CASCADE,
+  operation_id UUID REFERENCES remote_agent_system3_project_operations(id) ON DELETE SET NULL,
+  previous_source_version_id UUID REFERENCES remote_agent_system3_source_versions(id) ON DELETE SET NULL,
+  schema_version INTEGER NOT NULL DEFAULT 1,
+  detector_version VARCHAR(80) NOT NULL DEFAULT 'system3-change-detector@1',
+  basis_hash VARCHAR(80),
+  manifest_hash VARCHAR(80),
+  manifest JSONB,
+  affected_phases JSONB NOT NULL,
+  reason TEXT NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_system3_impacts_project
+  ON remote_agent_system3_impact_manifests(project_id, created_at DESC);
+DROP INDEX IF EXISTS idx_system3_impacts_source_version;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_system3_impacts_source_basis_detector
+  ON remote_agent_system3_impact_manifests(source_version_id, basis_hash, detector_version);
+CREATE INDEX IF NOT EXISTS idx_system3_impacts_operation
+  ON remote_agent_system3_impact_manifests(operation_id);
+
+CREATE TABLE IF NOT EXISTS remote_agent_system3_requirements (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+  knowledge_snapshot_id UUID NOT NULL REFERENCES remote_agent_system3_knowledge_snapshots(id) ON DELETE CASCADE,
+  requirement_key VARCHAR(255) NOT NULL,
+  kind VARCHAR(64) NOT NULL,
+  priority VARCHAR(32),
+  source TEXT,
+  statement TEXT NOT NULL,
+  acceptance_criterion TEXT NOT NULL,
+  source_pointer TEXT NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+  UNIQUE(knowledge_snapshot_id, requirement_key)
+);
+CREATE INDEX IF NOT EXISTS idx_system3_requirements_project
+  ON remote_agent_system3_requirements(project_id, knowledge_snapshot_id);
+
+CREATE TABLE IF NOT EXISTS remote_agent_system3_knowledge_facts (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+  knowledge_snapshot_id UUID NOT NULL REFERENCES remote_agent_system3_knowledge_snapshots(id) ON DELETE CASCADE,
+  fact_key VARCHAR(255) NOT NULL,
+  value JSONB NOT NULL,
+  source_pointer TEXT,
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+  UNIQUE(knowledge_snapshot_id, fact_key)
+);
+
+CREATE TABLE IF NOT EXISTS remote_agent_system3_open_issues (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+  knowledge_snapshot_id UUID NOT NULL REFERENCES remote_agent_system3_knowledge_snapshots(id) ON DELETE CASCADE,
+  issue_key VARCHAR(255) NOT NULL,
+  title TEXT NOT NULL,
+  source_pointer TEXT NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'open',
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+  UNIQUE(knowledge_snapshot_id, issue_key)
+);
+
+CREATE TABLE IF NOT EXISTS remote_agent_system3_dependency_edges (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+  from_kind VARCHAR(32) NOT NULL,
+  from_id VARCHAR(255) NOT NULL,
+  to_kind VARCHAR(32) NOT NULL,
+  to_id VARCHAR(255) NOT NULL,
+  reason TEXT NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+  UNIQUE(project_id, from_kind, from_id, to_kind, to_id)
+);
+CREATE INDEX IF NOT EXISTS idx_system3_dependency_edges_project
+  ON remote_agent_system3_dependency_edges(project_id, from_kind, from_id);
+
+CREATE TABLE IF NOT EXISTS remote_agent_system3_artifact_versions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+  execution_id UUID REFERENCES remote_agent_system3_project_executions(id) ON DELETE CASCADE,
+  knowledge_snapshot_id UUID REFERENCES remote_agent_system3_knowledge_snapshots(id) ON DELETE CASCADE,
+  source_version_id UUID REFERENCES remote_agent_system3_source_versions(id) ON DELETE SET NULL,
+  operation_id UUID REFERENCES remote_agent_system3_project_operations(id) ON DELETE SET NULL,
+  artifact_key TEXT NOT NULL,
+  artifact_kind VARCHAR(64) NOT NULL,
+  version INTEGER NOT NULL,
+  content_hash VARCHAR(80) NOT NULL,
+  size_bytes BIGINT NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+  UNIQUE(project_id, artifact_key, version)
+);
+ALTER TABLE remote_agent_system3_artifact_versions
+  ADD COLUMN IF NOT EXISTS source_version_id UUID
+  REFERENCES remote_agent_system3_source_versions(id) ON DELETE SET NULL;
+ALTER TABLE remote_agent_system3_artifact_versions
+  ADD COLUMN IF NOT EXISTS operation_id UUID
+  REFERENCES remote_agent_system3_project_operations(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_system3_artifacts_project
+  ON remote_agent_system3_artifact_versions(project_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS remote_agent_system3_understanding_input_snapshots (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+  operation_id UUID NOT NULL UNIQUE REFERENCES remote_agent_system3_project_operations(id) ON DELETE CASCADE,
+  knowledge_snapshot_id UUID REFERENCES remote_agent_system3_knowledge_snapshots(id) ON DELETE SET NULL,
+  workflow_run_id UUID REFERENCES remote_agent_workflow_runs(id) ON DELETE SET NULL,
+  source_ids JSONB NOT NULL,
+  source_hashes JSONB NOT NULL,
+  parser_version VARCHAR(80) NOT NULL,
+  extraction_policy_version VARCHAR(80) NOT NULL,
+  capability_registry_hash VARCHAR(80) NOT NULL,
+  runtime_profile JSONB NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_system3_understanding_inputs_project
+  ON remote_agent_system3_understanding_input_snapshots(project_id, created_at DESC);
+
+ALTER TABLE remote_agent_system3_artifact_versions ADD COLUMN IF NOT EXISTS activity_id VARCHAR(8);
+ALTER TABLE remote_agent_system3_artifact_versions ADD COLUMN IF NOT EXISTS workflow_run_id UUID;
+ALTER TABLE remote_agent_system3_artifact_versions ADD COLUMN IF NOT EXISTS workflow_node_id TEXT;
+ALTER TABLE remote_agent_system3_artifact_versions ADD COLUMN IF NOT EXISTS display_name TEXT;
+ALTER TABLE remote_agent_system3_artifact_versions ADD COLUMN IF NOT EXISTS summary TEXT;
+ALTER TABLE remote_agent_system3_artifact_versions ADD COLUMN IF NOT EXISTS media_type TEXT;
+ALTER TABLE remote_agent_system3_artifact_versions ADD COLUMN IF NOT EXISTS schema_id TEXT;
+ALTER TABLE remote_agent_system3_artifact_versions ADD COLUMN IF NOT EXISTS schema_version TEXT;
+ALTER TABLE remote_agent_system3_artifact_versions ADD COLUMN IF NOT EXISTS visibility VARCHAR(16);
+ALTER TABLE remote_agent_system3_artifact_versions ADD COLUMN IF NOT EXISTS status VARCHAR(16);
+ALTER TABLE remote_agent_system3_artifact_versions ADD COLUMN IF NOT EXISTS stale_reason TEXT;
+ALTER TABLE remote_agent_system3_artifact_versions ADD COLUMN IF NOT EXISTS source_version_ids JSONB;
+ALTER TABLE remote_agent_system3_artifact_versions ADD COLUMN IF NOT EXISTS parent_resource_ids JSONB;
+
+CREATE TABLE IF NOT EXISTS remote_agent_system3_source_intake_reports (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+  operation_id UUID NOT NULL UNIQUE
+    REFERENCES remote_agent_system3_project_operations(id) ON DELETE CASCADE,
+  source_version_id UUID REFERENCES remote_agent_system3_source_versions(id) ON DELETE SET NULL,
+  artifact_key TEXT NOT NULL,
+  report JSONB NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_system3_source_intake_reports_project
+  ON remote_agent_system3_source_intake_reports(project_id, created_at DESC);
+
 -- ============================================================================
 -- Web auth (opt-in): role on the canonical user + Better Auth tables
 -- ============================================================================
@@ -575,3 +1257,6 @@ CREATE TABLE IF NOT EXISTS remote_agent_auth_verification (
   "createdAt" timestamptz DEFAULT CURRENT_TIMESTAMP NOT NULL,
   "updatedAt" timestamptz DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
+-- OP-01 V3 artifact metadata/provenance repair is also kept as the standalone
+-- idempotent migration migrations/031_system3_op01_v3_provenance.sql. New
+-- databases already receive complete metadata from current write paths.

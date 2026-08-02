@@ -116,6 +116,7 @@ export async function validateWorkflowsCommand(
         assistant: mergedConfig.assistant,
         aliases: mergedConfig.aliases,
         tiers: mergedConfig.tiers,
+        availableWorkflows: workflowEntries.map(entry => entry.workflow),
       },
       defaultProvider
     );

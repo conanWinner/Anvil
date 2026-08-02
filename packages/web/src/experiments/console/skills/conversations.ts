@@ -28,14 +28,40 @@ interface CreateConversationResponse {
 
 export async function createConversation(
   projectId: string,
-  message?: string
+  message?: string,
+  clientRequestId?: string,
+  files?: File[]
 ): Promise<CreateConversationResponse> {
+  if (files !== undefined && files.length > 0) {
+    const form = new FormData();
+    form.append('codebaseId', projectId);
+    if (message !== undefined) form.append('message', message);
+    if (clientRequestId !== undefined) form.append('clientRequestId', clientRequestId);
+    for (const file of files) form.append('files', file, file.name);
+    return requestJson<CreateConversationResponse>('/api/conversations', {
+      method: 'POST',
+      body: form,
+    });
+  }
   return requestJson<CreateConversationResponse>('/api/conversations', {
     method: 'POST',
-    body: JSON.stringify(
-      message !== undefined ? { codebaseId: projectId, message } : { codebaseId: projectId }
-    ),
+    body: JSON.stringify({
+      codebaseId: projectId,
+      ...(message !== undefined ? { message } : {}),
+      ...(clientRequestId !== undefined ? { clientRequestId } : {}),
+    }),
   });
+}
+
+export async function renameConversation(id: string, title: string): Promise<void> {
+  await requestJson(`/api/conversations/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ title }),
+  });
+}
+
+export async function deleteConversation(id: string): Promise<void> {
+  await requestJson(`/api/conversations/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
 export async function listConversations(projectId: string): Promise<ConversationSummary[]> {

@@ -1,5 +1,12 @@
 import { describe, test, expect } from 'bun:test';
-import { ensureUtc, formatDuration, formatDurationMs, formatStarted } from './format';
+import {
+  ensureUtc,
+  formatDuration,
+  formatDurationMs,
+  formatStarted,
+  formatVietnamClock,
+  formatVietnamDateTime,
+} from './format';
 
 describe('ensureUtc', () => {
   test('returns timestamp unchanged when it already ends with Z', () => {
@@ -21,6 +28,28 @@ describe('ensureUtc', () => {
 
   test('appends Z to timestamp with milliseconds but no Z', () => {
     expect(ensureUtc('2024-03-10T14:30:00.123')).toBe('2024-03-10T14:30:00.123Z');
+  });
+
+  test('preserves an explicit timezone offset', () => {
+    expect(ensureUtc('2024-03-10T14:30:00+07:00')).toBe('2024-03-10T14:30:00+07:00');
+  });
+});
+
+describe('Vietnam time formatting', () => {
+  test('converts a timezone-less UTC database timestamp to Vietnam time', () => {
+    expect(formatVietnamClock('2026-07-15 09:19:57')).toBe('16:19:57');
+  });
+
+  test('uses Vietnamese date order and a 24-hour clock', () => {
+    expect(
+      formatVietnamDateTime('2026-07-15T09:19:57Z', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+      })
+    ).toBe('16:19 15/07/2026');
   });
 });
 

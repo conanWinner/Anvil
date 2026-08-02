@@ -17,7 +17,7 @@ import type { WireDagNode, WireWorkflowDefinition } from './wire';
  * `WorkflowNodeKind` primitive so the builder and the graph renderer share one
  * union (the builder does not redefine the kinds).
  */
-export type VariantId = WorkflowNodeKind;
+export type VariantId = Exclude<WorkflowNodeKind, 'action'>;
 
 // ---------------------------------------------------------------------------
 // Base fields — shared across every variant (the wire base keys minus `id`)
@@ -121,6 +121,16 @@ export interface BashNodeData {
   timeout?: number;
 }
 
+/** First-class child workflow invocation and its typed/artifact mappings. */
+export interface WorkflowNodeData {
+  name: string;
+  inputs?: Record<string, unknown>;
+  artifacts?: {
+    inputs?: Record<string, string>;
+    outputs?: Record<string, string>;
+  };
+}
+
 /** Maps each variant id to its concrete data shape. */
 export interface VariantDataMap {
   loop: LoopNodeData;
@@ -130,6 +140,7 @@ export interface VariantDataMap {
   command: CommandNodeData;
   prompt: PromptNodeData;
   bash: BashNodeData;
+  workflow: WorkflowNodeData;
 }
 
 /** Union of all variant data shapes. */

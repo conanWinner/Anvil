@@ -14,6 +14,7 @@ import {
   getAnvilWorktreesPath,
   getAnvilConfigPath,
   getCredentialKeyPath,
+  getWorkflowIntakesPath,
   getHomeWorkflowsPath,
   getHomeCommandsPath,
   getHomeScriptsPath,
@@ -35,6 +36,7 @@ import {
   getRunArtifactsPath,
   getRunLogPath,
   resolveProjectRootFromCwd,
+  resolveRegisteredProjectRoot,
   ensureProjectStructure,
   createProjectSourceSymlink,
   findMarkdownFilesRecursive,
@@ -234,6 +236,13 @@ describe('anvil-paths', () => {
     test('returns credential-key inside ANVIL_HOME', () => {
       process.env.ANVIL_HOME = '/custom/anvil';
       expect(getCredentialKeyPath()).toBe(join('/custom/anvil', 'credential-key'));
+    });
+  });
+
+  describe('getWorkflowIntakesPath', () => {
+    test('returns the managed intake directory inside ANVIL_HOME', () => {
+      process.env.ANVIL_HOME = '/custom/anvil';
+      expect(getWorkflowIntakesPath()).toBe(join('/custom/anvil', 'intakes'));
     });
   });
 
@@ -559,6 +568,35 @@ describe('anvil-paths', () => {
       expect(resolveProjectRootFromCwd(cwd)).toBe(
         join('/', 'custom', 'anvil', 'workspaces', 'acme', 'widget')
       );
+    });
+  });
+
+  describe('resolveRegisteredProjectRoot', () => {
+    test('keeps a managed local project at its existing workspace root', () => {
+      process.env.ANVIL_HOME = '/custom/anvil';
+      const cwd = join('/custom/anvil', 'workspaces', '_local', 'customer-churn-mvp', 'source');
+      expect(resolveRegisteredProjectRoot('customer-churn-mvp', cwd)).toBe(
+        join('/custom/anvil', 'workspaces', '_local', 'customer-churn-mvp')
+      );
+    });
+
+    test('maps a registered external local repository into _local', () => {
+      process.env.ANVIL_HOME = '/custom/anvil';
+      expect(resolveRegisteredProjectRoot('customer-churn-mvp', '/code/customer-churn-mvp')).toBe(
+        join('/custom/anvil', 'workspaces', '_local', 'customer-churn-mvp')
+      );
+    });
+
+    test('maps an owner/repo registration into its project workspace', () => {
+      process.env.ANVIL_HOME = '/custom/anvil';
+      expect(resolveRegisteredProjectRoot('acme/churn', '/code/churn')).toBe(
+        join('/custom/anvil', 'workspaces', 'acme', 'churn')
+      );
+    });
+
+    test('rejects malformed registration names outside managed workspaces', () => {
+      process.env.ANVIL_HOME = '/custom/anvil';
+      expect(resolveRegisteredProjectRoot('../escape', '/code/project')).toBeNull();
     });
   });
 });

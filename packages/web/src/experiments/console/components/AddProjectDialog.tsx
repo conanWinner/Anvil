@@ -8,7 +8,7 @@ interface AddProjectDialogProps {
   onAdded: (project: Project) => void;
 }
 
-type Mode = 'url' | 'path';
+type Mode = 'create' | 'url' | 'path';
 
 function GitHubIcon({ size = 15 }: { size?: number }): ReactElement {
   return (
@@ -73,7 +73,7 @@ export function AddProjectDialog({
   onClose,
   onAdded,
 }: AddProjectDialogProps): ReactElement | null {
-  const [mode, setMode] = useState<Mode>('url');
+  const [mode, setMode] = useState<Mode>('create');
   const [value, setValue] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -91,6 +91,7 @@ export function AddProjectDialog({
 
   if (!open) return null;
 
+  const isCreate = mode === 'create';
   const isGit = mode === 'url';
   const { owner, repo } = parseGitHubUrl(value);
 
@@ -99,9 +100,11 @@ export function AddProjectDialog({
     setError(null);
     setSubmitting(true);
     try {
-      const project = isGit
-        ? await skill.addProjectByUrl(value.trim())
-        : await skill.addProjectByPath(value.trim());
+      const project = isCreate
+        ? await skill.createProject(value.trim())
+        : isGit
+          ? await skill.addProjectByUrl(value.trim())
+          : await skill.addProjectByPath(value.trim());
       onAdded(project);
       setValue('');
       onClose();
@@ -141,7 +144,7 @@ export function AddProjectDialog({
               Add project
             </h2>
             <p className="mt-1 text-[13px] text-text-tertiary">
-              Connect a repository or a local folder as a workspace.
+              Create a workspace, clone a repository, or connect a local folder.
             </p>
           </div>
           <button
@@ -159,23 +162,30 @@ export function AddProjectDialog({
 
         {/* Segmented control with sliding indicator */}
         <div
-          className="relative mb-5 grid grid-cols-2 rounded-[11px] border bg-surface p-1"
+          className="relative mb-5 grid grid-cols-3 rounded-[11px] border bg-surface p-1"
           style={{ borderColor: 'var(--border)' }}
         >
           <span
             aria-hidden
-            className="absolute bottom-1 left-1 top-1 w-[calc(50%-4px)] rounded-lg border bg-surface-hover transition-transform duration-200 ease-out"
+            className="absolute bottom-1 left-1 top-1 w-[calc(33.333%-2.667px)] rounded-lg border bg-surface-hover transition-transform duration-200 ease-out"
             style={{
               borderColor: 'var(--border-bright)',
-              transform: isGit ? 'translateX(0)' : 'translateX(100%)',
+              transform:
+                mode === 'create'
+                  ? 'translateX(0)'
+                  : mode === 'url'
+                    ? 'translateX(100%)'
+                    : 'translateX(200%)',
             }}
           />
-          {(['url', 'path'] as const).map(m => (
+          {(['create', 'url', 'path'] as const).map(m => (
             <button
               key={m}
               type="button"
               onClick={() => {
                 setMode(m);
+                setValue('');
+                setError(null);
               }}
               aria-pressed={mode === m}
               className={`relative z-[1] flex items-center justify-center gap-2 rounded-lg px-3 py-[9px] text-[13px] font-semibold transition-colors ${
@@ -185,14 +195,14 @@ export function AddProjectDialog({
               <span aria-hidden className="flex">
                 {m === 'url' ? <GitHubIcon /> : <FolderIcon />}
               </span>
-              {m === 'url' ? 'GitHub URL' : 'Local path'}
+              {m === 'create' ? 'Create new' : m === 'url' ? 'GitHub URL' : 'Local path'}
             </button>
           ))}
         </div>
 
         {/* Field */}
         <label className="mb-[9px] block font-mono text-[11px] font-semibold uppercase tracking-[0.09em] text-text-tertiary">
-          {isGit ? 'Repository URL' : 'Local folder path'}
+          {isCreate ? 'Project name' : isGit ? 'Repository URL' : 'Local folder path'}
         </label>
         <div
           className="flex h-[46px] items-center gap-2.5 rounded-[11px] border bg-surface px-3.5 transition-all focus-within:shadow-[0_0_0_4px_color-mix(in_oklch,var(--brand-magenta),transparent_91%)]"
@@ -210,14 +220,29 @@ export function AddProjectDialog({
             autoFocus
             spellCheck={false}
             placeholder={
-              isGit ? 'https://github.com/owner/repo' : 'C:\\Users\\you\\projects\\my-repo'
+              isCreate
+                ? 'my-new-project'
+                : isGit
+                  ? 'https://github.com/owner/repo'
+                  : 'C:\\Users\\you\\projects\\my-repo'
             }
             className="min-w-0 flex-1 bg-transparent font-mono text-[14px] text-text-primary outline-none placeholder:text-text-tertiary"
             disabled={submitting}
           />
         </div>
         <p className="mt-[11px] text-[12.5px] leading-relaxed text-text-tertiary">
-          {isGit ? (
+          {isCreate ? (
+            <>
+              Anvil will create and initialize a Git repository at{' '}
+              <code
+                className="rounded border bg-surface px-1.5 py-0.5 font-mono text-[0.92em] text-text-secondary"
+                style={{ borderColor: 'var(--border)' }}
+              >
+                ~/.anvil/workspaces/_local/{value.trim() || 'project-name'}/source
+              </code>
+              .
+            </>
+          ) : isGit ? (
             <>
               Anvil will clone this repo to{' '}
               <code
@@ -261,7 +286,13 @@ export function AddProjectDialog({
             <span aria-hidden className="text-[14px] leading-none">
               +
             </span>
-            {submitting ? 'Adding…' : 'Add project'}
+            {submitting
+              ? isCreate
+                ? 'Creating…'
+                : 'Adding…'
+              : isCreate
+                ? 'Create project'
+                : 'Add project'}
           </button>
         </div>
       </form>

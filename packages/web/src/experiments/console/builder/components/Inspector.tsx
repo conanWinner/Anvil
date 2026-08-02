@@ -17,6 +17,7 @@ import { ScriptFields } from './inspector/ScriptFields';
 import { LoopFields } from './inspector/LoopFields';
 import { ApprovalFields } from './inspector/ApprovalFields';
 import { CancelFields } from './inspector/CancelFields';
+import { WorkflowFields } from './inspector/WorkflowFields';
 import { WhenBuilder } from './WhenBuilder';
 
 interface InspectorProps {
@@ -25,6 +26,7 @@ interface InspectorProps {
   selectionCount: number;
   /** Ids the `when:` builder may reference (every other node). */
   otherIds: readonly string[];
+  availableWorkflows?: readonly string[];
   onPatch: (node: BuilderNode) => void;
   onRename: (id: string, nextId: string) => void;
 }
@@ -39,9 +41,11 @@ const TRIGGER_RULES = [
 function VariantFields({
   node,
   onPatch,
+  availableWorkflows,
 }: {
   node: BuilderNode;
   onPatch: (node: BuilderNode) => void;
+  availableWorkflows?: readonly string[];
 }): ReactElement {
   switch (node.variant) {
     case 'prompt':
@@ -107,6 +111,16 @@ function VariantFields({
           }}
         />
       );
+    case 'workflow':
+      return (
+        <WorkflowFields
+          data={node.data}
+          availableWorkflows={availableWorkflows}
+          onChange={(data): void => {
+            onPatch({ ...node, data });
+          }}
+        />
+      );
   }
 }
 
@@ -114,6 +128,7 @@ export function Inspector({
   node,
   selectionCount,
   otherIds,
+  availableWorkflows,
   onPatch,
   onRename,
 }: InspectorProps): ReactElement {
@@ -195,7 +210,7 @@ export function Inspector({
         {renameError !== null ? <p className="text-[11px] text-error">{renameError}</p> : null}
       </Field>
 
-      <VariantFields node={node} onPatch={onPatch} />
+      <VariantFields node={node} onPatch={onPatch} availableWorkflows={availableWorkflows} />
 
       <hr className="border-border" />
 

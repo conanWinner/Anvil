@@ -67,6 +67,8 @@ export interface CommandResult {
     force?: boolean;
     resumeRunId?: string;
     resumeRun?: WorkflowRun;
+    inputs?: Record<string, unknown>;
+    availableWorkflows?: readonly WorkflowDefinition[];
   };
 }
 

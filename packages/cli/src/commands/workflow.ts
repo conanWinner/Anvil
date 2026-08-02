@@ -28,6 +28,7 @@ import {
 } from '@anvil/paths';
 import { join } from 'node:path';
 import { mkdirSync, openSync, closeSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { createWorkflowDeps } from '@anvil/core/workflows/store-adapter';
 import { discoverWorkflowsWithConfig } from '@anvil/workflows/workflow-discovery';
 import { resolveWorkflowName } from '@anvil/workflows/router';
@@ -43,6 +44,7 @@ import { workflowRunStatusSchema } from '@anvil/workflows/schemas/workflow-run';
 import type { WorkflowRun, WorkflowRunStatus } from '@anvil/workflows/schemas/workflow-run';
 import {
   approveWorkflow,
+  continueWorkflow,
   rejectWorkflow,
   resumeWorkflow as resumeWorkflowOp,
   abandonWorkflow,
@@ -108,6 +110,8 @@ export interface WorkflowRunOptions {
    * `--json` alone still suppresses CLI logs but does not change the output).
    */
   json?: boolean;
+  /** JSON file containing the root workflow typed input object. */
+  inputsFile?: string;
 }
 
 /**
@@ -1108,9 +1112,38 @@ export async function workflowRunCommand(
   // Execute workflow with workingCwd (may be worktree path)
   let result: Awaited<ReturnType<typeof executeWorkflow>>;
   try {
+    let inputs: Record<string, unknown> | undefined;
+    if (options.inputsFile) {
+      const raw = await readFile(options.inputsFile, 'utf8');
+      const parsed = JSON.parse(raw) as unknown;
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error(`--inputs must contain a JSON object: ${options.inputsFile}`);
+      }
+      inputs = parsed as Record<string, unknown>;
+    }
+    // Keep the exact definitions discovered in the source checkout. A newly
+    // created git worktree does not contain uncommitted workflow-builder saves;
+    // passing this map lets the engine snapshot the same root + child graph the
+    // user selected while still executing commands inside the isolated worktree.
+    const compositionDefinitions = new Map(
+      workflowEntries.map(entry => [entry.workflow.name, entry.workflow])
+    );
     const opts = prepared
-      ? { codebaseId: codebase?.id, source: workflowSource, userId: cliUserId, ...prepared }
-      : { codebaseId: codebase?.id, source: workflowSource, userId: cliUserId };
+      ? {
+          codebaseId: codebase?.id,
+          source: workflowSource,
+          userId: cliUserId,
+          inputs,
+          compositionDefinitions,
+          ...prepared,
+        }
+      : {
+          codebaseId: codebase?.id,
+          source: workflowSource,
+          userId: cliUserId,
+          inputs,
+          compositionDefinitions,
+        };
     result = await executeWorkflow(
       deps,
       adapter,
@@ -1362,7 +1395,8 @@ export async function workflowStatusCommand(json?: boolean, verbose?: boolean): 
 export async function workflowGetCommand(
   runId: string,
   json?: boolean,
-  verbose?: boolean
+  verbose?: boolean,
+  tree?: boolean
 ): Promise<number> {
   let run: WorkflowRun | null;
   try {
@@ -1400,8 +1434,14 @@ export async function workflowGetCommand(
     eventsFailed = fetched.failed;
   }
 
+  const children = tree ? await workflowDb.listChildWorkflowRuns(run.id) : undefined;
+
   if (json) {
-    const output = verbose ? { ...run, events: events ?? [] } : run;
+    const output = {
+      ...run,
+      ...(verbose ? { events: events ?? [] } : {}),
+      ...(tree ? { children: children ?? [] } : {}),
+    };
     console.log(JSON.stringify(output, null, 2));
     return 0;
   }
@@ -1414,6 +1454,13 @@ export async function workflowGetCommand(
   const runError = typeof run.metadata.error === 'string' ? run.metadata.error : undefined;
   if (runError) {
     console.log(`  Error:  ${runError}`);
+  }
+  if (tree) {
+    for (const child of children ?? []) {
+      console.log(
+        `  └─ ${child.parent_node_id ?? '?'}: ${child.workflow_name} (${child.status}, ${child.id})`
+      );
+    }
   }
   if (events) {
     if (eventsFailed) {
@@ -1519,7 +1566,7 @@ export async function workflowRunsCommand(
 
 /**
  * Emit the standard `{ ok: false }` error line for a `--json` write command
- * (approve/reject/abandon/resume). Centralizes the envelope so all four stay in
+ * (approve/reject/abandon/resume/continue). Centralizes the envelope so all stay in
  * lockstep; never throws — in --json mode the JSON line IS the error surface.
  */
 function printJsonWriteError(runId: string, action: string, error: unknown): void {
@@ -1531,7 +1578,7 @@ function printJsonWriteError(runId: string, action: string, error: unknown): voi
 async function resolveDiscoveryCwdForCodebase(
   runId: string,
   codebaseId: string,
-  action: 'resume' | 'approve' | 'reject'
+  action: 'resume' | 'approve' | 'reject' | 'continue'
 ): Promise<string> {
   try {
     const codebase = await codebaseDb.getCodebase(codebaseId);
@@ -1767,6 +1814,45 @@ export async function workflowApproveCommand(
         `The approval was recorded. Run 'bun run cli workflow resume ${runId}' to retry.`
     );
   }
+}
+
+/** Continue a workflow that is paused at a manual phase-transition gate. */
+export async function workflowContinueCommand(runId: string, json?: boolean): Promise<void> {
+  if (json) {
+    try {
+      const result = await continueWorkflow(runId);
+      console.log(
+        JSON.stringify(
+          {
+            ok: true,
+            runId,
+            action: 'continue',
+            type: result.type,
+            workflowName: result.workflowName,
+            resumable: true,
+          },
+          null,
+          2
+        )
+      );
+    } catch (error) {
+      printJsonWriteError(runId, 'continue', error);
+    }
+    return;
+  }
+
+  const result = await continueWorkflow(runId);
+  if (!result.workingPath) {
+    throw new Error(`Workflow run '${runId}' has no working path recorded. Cannot continue.`);
+  }
+  console.log(`Continuing workflow: ${result.workflowName}`);
+  await workflowRunCommand(result.workingPath, result.workflowName, result.userMessage ?? '', {
+    resume: true,
+    codebaseId: result.codebaseId ?? undefined,
+    discoveryCwd: result.codebaseId
+      ? await resolveDiscoveryCwdForCodebase(runId, result.codebaseId, 'continue')
+      : undefined,
+  });
 }
 
 /**

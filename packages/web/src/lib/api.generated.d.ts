@@ -492,6 +492,80 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/auth/provider-connections/{connectionId}/usage': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Read Codex account rate limits for one provider connection */
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          connectionId: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Current account rate limits and cumulative token usage */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['ProviderConnectionUsageResponse'];
+          };
+        };
+        /** @description Connection does not support account usage */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Web auth required */
+        401: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Connection not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Codex telemetry unavailable */
+        503: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/auth/providers/{provider}/oauth/start': {
     parameters: {
       query?: never;
@@ -937,11 +1011,7 @@ export interface paths {
         path?: never;
         cookie?: never;
       };
-      requestBody?: {
-        content: {
-          'application/json': components['schemas']['CreateConversationBody'];
-        };
-      };
+      requestBody?: never;
       responses: {
         /** @description Created conversation */
         200: {
@@ -1127,6 +1197,359 @@ export interface paths {
     };
     trace?: never;
   };
+  '/api/codebases/{codebaseId}/project-memory': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          codebaseId: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Project memory */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': {
+              entries: {
+                id: string;
+                codebase_id: string;
+                source_conversation_id: string | null;
+                source_conversation_title: string | null;
+                /** @enum {string} */
+                category: 'decision' | 'requirement' | 'constraint' | 'preference' | 'fact';
+                content: string;
+                /** @enum {string} */
+                origin: 'extracted' | 'manual';
+                user_edited: boolean;
+                pinned: boolean;
+                active: boolean;
+                created_at: string;
+                updated_at: string;
+              }[];
+            };
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/codebases/{codebaseId}/project-memory/handoff': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          codebaseId: string;
+        };
+        cookie?: never;
+      };
+      requestBody: {
+        content: {
+          'application/json': {
+            conversationId: string;
+          };
+        };
+      };
+      responses: {
+        /** @description Handoff result */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': {
+              updated: boolean;
+              entries: number;
+            };
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/codebases/{codebaseId}/project-memory/entries': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          codebaseId: string;
+        };
+        cookie?: never;
+      };
+      requestBody: {
+        content: {
+          'application/json': {
+            /** @enum {string} */
+            category: 'decision' | 'requirement' | 'constraint' | 'preference' | 'fact';
+            content: string;
+            pinned?: boolean;
+          };
+        };
+      };
+      responses: {
+        /** @description Created entry */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': {
+              id: string;
+              codebase_id: string;
+              source_conversation_id: string | null;
+              source_conversation_title: string | null;
+              /** @enum {string} */
+              category: 'decision' | 'requirement' | 'constraint' | 'preference' | 'fact';
+              content: string;
+              /** @enum {string} */
+              origin: 'extracted' | 'manual';
+              user_edited: boolean;
+              pinned: boolean;
+              active: boolean;
+              created_at: string;
+              updated_at: string;
+            };
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/codebases/{codebaseId}/project-memory/entries/{entryId}': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    delete: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          codebaseId: string;
+          entryId: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Deleted entry */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['SuccessResponse'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    options?: never;
+    head?: never;
+    patch: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          codebaseId: string;
+          entryId: string;
+        };
+        cookie?: never;
+      };
+      requestBody: {
+        content: {
+          'application/json': {
+            /** @enum {string} */
+            category?: 'decision' | 'requirement' | 'constraint' | 'preference' | 'fact';
+            content?: string;
+            pinned?: boolean;
+          };
+        };
+      };
+      responses: {
+        /** @description Updated entry */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': {
+              id: string;
+              codebase_id: string;
+              source_conversation_id: string | null;
+              source_conversation_title: string | null;
+              /** @enum {string} */
+              category: 'decision' | 'requirement' | 'constraint' | 'preference' | 'fact';
+              content: string;
+              /** @enum {string} */
+              origin: 'extracted' | 'manual';
+              user_edited: boolean;
+              pinned: boolean;
+              active: boolean;
+              created_at: string;
+              updated_at: string;
+            };
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    trace?: never;
+  };
   '/api/conversations/{id}/messages': {
     parameters: {
       query?: never;
@@ -1282,7 +1705,7 @@ export interface paths {
       };
     };
     put?: never;
-    /** Register a codebase (clone from URL or register local path) */
+    /** Create or register a codebase */
     post: {
       parameters: {
         query?: never;
@@ -1436,6 +1859,337 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/codebases/{id}/workflow-intakes/{workflowName}': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get the active pre-run workflow intake draft */
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+          workflowName: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Draft or null */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['WorkflowIntakeDraft'];
+          };
+        };
+        /** @description Codebase or workflow not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    /** Discard the active workflow intake draft */
+    delete: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+          workflowName: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Discarded */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['SuccessResponse'];
+          };
+        };
+      };
+    };
+    options?: never;
+    head?: never;
+    /** Create or update a workflow intake draft */
+    patch: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+          workflowName: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: {
+        content: {
+          'application/json': components['schemas']['PatchWorkflowIntakeBody'];
+        };
+      };
+      responses: {
+        /** @description Draft */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['WorkflowIntakeDraft'];
+          };
+        };
+        /** @description Invalid intake */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Codebase or workflow not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    trace?: never;
+  };
+  '/api/codebases/{id}/workflow-intakes/{workflowName}/attachments': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Store an external file as a managed workflow intake attachment */
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+          workflowName: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Attachment stored and intake advanced */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['WorkflowIntakeAttachmentResponse'];
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/codebases/{id}/workflow-intakes/{workflowName}/chat': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Advance a workflow intake through deterministic chat */
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+          workflowName: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: {
+        content: {
+          'application/json': components['schemas']['WorkflowIntakeChatBody'];
+        };
+      };
+      responses: {
+        /** @description Chat intake advanced */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['WorkflowIntakeChatResponse'];
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/codebases/{id}/workflow-intakes/{workflowName}/start': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Start a workflow from a validated intake draft */
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+          workflowName: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: {
+        content: {
+          'application/json': components['schemas']['StartWorkflowIntakeBody'];
+        };
+      };
+      responses: {
+        /** @description Accepted */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['WorkflowIntakeStartResponse'];
+          };
+        };
+        /** @description Draft is incomplete or stale */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Codebase or workflow not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Workflow or intake start is already active */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Workflow could not be associated with the intake */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/codebases/{id}/env': {
     parameters: {
       query?: never;
@@ -1561,6 +2315,4236 @@ export interface paths {
         };
       };
     };
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/projects': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List Anvil System 3 projects */
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path?: never;
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Projects */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': {
+              projects: components['schemas']['System3Project'][];
+            };
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    put?: never;
+    /** Create an Anvil System 3 project */
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path?: never;
+        cookie?: never;
+      };
+      requestBody?: {
+        content: {
+          'application/json': components['schemas']['CreateSystem3ProjectBody'];
+        };
+      };
+      responses: {
+        /** @description Created project */
+        201: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['System3Project'];
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/projects/{id}/flow': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get lifecycle-oriented Project Flow */
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Project flow */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['System3ProjectFlow'];
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/projects/{id}/sources': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List immutable System 3 source versions */
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Sources */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': {
+              sources: components['schemas']['System3Source'][];
+            };
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    put?: never;
+    /** Upload an immutable System 3 source version */
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Source content was unchanged; existing immutable version returned */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['System3SourceIntakeResult'];
+          };
+        };
+        /** @description Stored a new source lineage or immutable source version */
+        201: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['System3SourceIntakeResult'];
+          };
+        };
+        /** @description Invalid source request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['System3SourceIntakeError'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Project state or Source Registry rejected the request */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['System3SourceIntakeError'];
+          };
+        };
+        /** @description Source exceeds its size policy */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['System3SourceIntakeError'];
+          };
+        };
+        /** @description Source format is not supported for the selected kind */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['System3SourceIntakeError'];
+          };
+        };
+        /** @description Source content failed validation */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['System3SourceIntakeError'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/projects/{id}/source-intake-reports': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List persisted Source Intake reports, including rejected attempts */
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Source Intake reports */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': {
+              reports: components['schemas']['System3SourceIntakeReportView'][];
+            };
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/projects/{id}/source-intake-reports/{reportId}': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get one persisted Source Intake report */
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+          reportId: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Source Intake report */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['System3SourceIntakeReportView'];
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/projects/{id}/source-intake-reports/{reportId}/content': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Download one immutable Source Intake report as JSON */
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+          reportId: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Immutable Source Intake report JSON */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': string;
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/projects/{id}/intake-gate': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get the explicit Intake to Understanding gate and recoverable operations */
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Current Intake gate projection */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['System3IntakeGate'];
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/projects/{id}/source-versions/{sourceVersionId}/change-detection/retry': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Explicitly retry OP-01 Change Detection for one active Source Version */
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+          sourceVersionId: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: {
+        content: {
+          'application/json': components['schemas']['RetrySystem3IntakeOperationBody'];
+        };
+      };
+      responses: {
+        /** @description Completed Change Detection operation */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['System3Operation'];
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/projects/{id}/source-changes/{sourceVersionId}/analyze': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Analyze one immutable Source Version with OP-01 Change Detection */
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+          sourceVersionId: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: {
+        content: {
+          'application/json': components['schemas']['RetrySystem3IntakeOperationBody'];
+        };
+      };
+      responses: {
+        /** @description Completed OP-01 operation */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['System3Operation'];
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/projects/{id}/source-versions/{sourceVersionId}/content': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Download one immutable System 3 source version by its descriptor ID */
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+          sourceVersionId: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Immutable source bytes */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/octet-stream': string;
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/projects/{id}/readiness-contracts/latest': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get the latest immutable System 3 readiness contract */
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Readiness contract */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['System3ReadinessContract'];
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/projects/{id}/compilations/latest': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get the latest System 3 compilation plan */
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Compilation */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['System3Compilation'];
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/projects/{id}/approval-manifests/latest': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get the latest System 3 approval manifest */
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Approval */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['System3ApprovalManifest'];
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/projects/{id}/executions/latest': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get the latest System 3 execution */
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Execution */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['System3ProjectExecution'];
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/projects/{id}/history': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get immutable System 3 workflow, plan, approval, execution and artifact history */
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description System 3 project history */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['System3ProjectHistory'];
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/projects/{id}/phases/{phaseId}': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get lifecycle and technical detail for one System 3 phase */
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+          phaseId: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Phase detail */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': {
+              id: string;
+              title: string;
+              summary: string;
+              technicalWorkflow: string;
+              /** @enum {string} */
+              status:
+                | 'completed'
+                | 'active'
+                | 'blocked'
+                | 'ready'
+                | 'waiting'
+                | 'not_started'
+                | 'stale'
+                | 'not_verified'
+                | 'out_of_mvp_scope';
+              progress: number;
+              objective: string;
+              inputs: string[];
+              outputs: string[];
+              workflowSteps: {
+                id: string;
+                title: string;
+                description: string;
+                /** @enum {string} */
+                kind: 'input' | 'check' | 'artifact' | 'approval';
+                /** @enum {string} */
+                status: 'completed' | 'running' | 'pending' | 'blocked';
+                input: string;
+                output: string;
+              }[];
+            };
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/projects/{id}/activities/{activityId}': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get one canonical Lifecycle Activity with its typed resources */
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+          activityId:
+            | 'OP-00'
+            | 'OP-01'
+            | 'TW-02'
+            | 'TW-03'
+            | 'OP-04'
+            | 'OP-05'
+            | 'TW-06'
+            | 'TW-07'
+            | 'OP-08'
+            | 'TW-09';
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Lifecycle Activity read model */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': {
+              /** @enum {string} */
+              activityId:
+                | 'OP-00'
+                | 'OP-01'
+                | 'TW-02'
+                | 'TW-03'
+                | 'OP-04'
+                | 'OP-05'
+                | 'TW-06'
+                | 'TW-07'
+                | 'OP-08'
+                | 'TW-09';
+              /** @enum {string} */
+              executionKind: 'operation' | 'workflow';
+              title: string;
+              description: string;
+              status: string;
+              inputs: {
+                id: string;
+                /** @enum {string} */
+                resourceType:
+                  | 'source_version'
+                  | 'source_intake_report'
+                  | 'impact_manifest'
+                  | 'dependency_graph_snapshot'
+                  | 'input_snapshot'
+                  | 'knowledge_snapshot'
+                  | 'decision'
+                  | 'readiness_contract'
+                  | 'execution_plan'
+                  | 'approval_manifest'
+                  | 'execution_artifact'
+                  | 'verification_report'
+                  | 'evidence'
+                  | 'delivery_request'
+                  | 'delivery_manifest'
+                  | 'delivery_package'
+                  | 'workflow_run';
+                /** @enum {string} */
+                activityId:
+                  | 'OP-00'
+                  | 'OP-01'
+                  | 'TW-02'
+                  | 'TW-03'
+                  | 'OP-04'
+                  | 'OP-05'
+                  | 'TW-06'
+                  | 'TW-07'
+                  | 'OP-08'
+                  | 'TW-09';
+                /** @enum {string} */
+                relation: 'input' | 'output' | 'evidence';
+                title: string;
+                summary: string;
+                /** @enum {string} */
+                status: 'pending' | 'current' | 'stale' | 'superseded' | 'failed';
+                version: number | null;
+                /** Format: date-time */
+                createdAt: string | null;
+                mediaType: string;
+                schemaVersion: string | null;
+                producer: {
+                  /** Format: uuid */
+                  operationId: string | null;
+                  workflowRunId: string | null;
+                  workflowNodeId: string | null;
+                };
+                sourceVersionIds: string[];
+                parentResourceIds: string[];
+                staleReason: string | null;
+                hasPresentation: boolean;
+                hasDownload: boolean;
+              }[];
+              outputs: {
+                id: string;
+                /** @enum {string} */
+                resourceType:
+                  | 'source_version'
+                  | 'source_intake_report'
+                  | 'impact_manifest'
+                  | 'dependency_graph_snapshot'
+                  | 'input_snapshot'
+                  | 'knowledge_snapshot'
+                  | 'decision'
+                  | 'readiness_contract'
+                  | 'execution_plan'
+                  | 'approval_manifest'
+                  | 'execution_artifact'
+                  | 'verification_report'
+                  | 'evidence'
+                  | 'delivery_request'
+                  | 'delivery_manifest'
+                  | 'delivery_package'
+                  | 'workflow_run';
+                /** @enum {string} */
+                activityId:
+                  | 'OP-00'
+                  | 'OP-01'
+                  | 'TW-02'
+                  | 'TW-03'
+                  | 'OP-04'
+                  | 'OP-05'
+                  | 'TW-06'
+                  | 'TW-07'
+                  | 'OP-08'
+                  | 'TW-09';
+                /** @enum {string} */
+                relation: 'input' | 'output' | 'evidence';
+                title: string;
+                summary: string;
+                /** @enum {string} */
+                status: 'pending' | 'current' | 'stale' | 'superseded' | 'failed';
+                version: number | null;
+                /** Format: date-time */
+                createdAt: string | null;
+                mediaType: string;
+                schemaVersion: string | null;
+                producer: {
+                  /** Format: uuid */
+                  operationId: string | null;
+                  workflowRunId: string | null;
+                  workflowNodeId: string | null;
+                };
+                sourceVersionIds: string[];
+                parentResourceIds: string[];
+                staleReason: string | null;
+                hasPresentation: boolean;
+                hasDownload: boolean;
+              }[];
+              evidence: {
+                id: string;
+                /** @enum {string} */
+                resourceType:
+                  | 'source_version'
+                  | 'source_intake_report'
+                  | 'impact_manifest'
+                  | 'dependency_graph_snapshot'
+                  | 'input_snapshot'
+                  | 'knowledge_snapshot'
+                  | 'decision'
+                  | 'readiness_contract'
+                  | 'execution_plan'
+                  | 'approval_manifest'
+                  | 'execution_artifact'
+                  | 'verification_report'
+                  | 'evidence'
+                  | 'delivery_request'
+                  | 'delivery_manifest'
+                  | 'delivery_package'
+                  | 'workflow_run';
+                /** @enum {string} */
+                activityId:
+                  | 'OP-00'
+                  | 'OP-01'
+                  | 'TW-02'
+                  | 'TW-03'
+                  | 'OP-04'
+                  | 'OP-05'
+                  | 'TW-06'
+                  | 'TW-07'
+                  | 'OP-08'
+                  | 'TW-09';
+                /** @enum {string} */
+                relation: 'input' | 'output' | 'evidence';
+                title: string;
+                summary: string;
+                /** @enum {string} */
+                status: 'pending' | 'current' | 'stale' | 'superseded' | 'failed';
+                version: number | null;
+                /** Format: date-time */
+                createdAt: string | null;
+                mediaType: string;
+                schemaVersion: string | null;
+                producer: {
+                  /** Format: uuid */
+                  operationId: string | null;
+                  workflowRunId: string | null;
+                  workflowNodeId: string | null;
+                };
+                sourceVersionIds: string[];
+                parentResourceIds: string[];
+                staleReason: string | null;
+                hasPresentation: boolean;
+                hasDownload: boolean;
+              }[];
+              technicalResources: {
+                id: string;
+                /** @enum {string} */
+                resourceType:
+                  | 'source_version'
+                  | 'source_intake_report'
+                  | 'impact_manifest'
+                  | 'dependency_graph_snapshot'
+                  | 'input_snapshot'
+                  | 'knowledge_snapshot'
+                  | 'decision'
+                  | 'readiness_contract'
+                  | 'execution_plan'
+                  | 'approval_manifest'
+                  | 'execution_artifact'
+                  | 'verification_report'
+                  | 'evidence'
+                  | 'delivery_request'
+                  | 'delivery_manifest'
+                  | 'delivery_package'
+                  | 'workflow_run';
+                /** @enum {string} */
+                activityId:
+                  | 'OP-00'
+                  | 'OP-01'
+                  | 'TW-02'
+                  | 'TW-03'
+                  | 'OP-04'
+                  | 'OP-05'
+                  | 'TW-06'
+                  | 'TW-07'
+                  | 'OP-08'
+                  | 'TW-09';
+                /** @enum {string} */
+                relation: 'input' | 'output' | 'evidence';
+                title: string;
+                summary: string;
+                /** @enum {string} */
+                status: 'pending' | 'current' | 'stale' | 'superseded' | 'failed';
+                version: number | null;
+                /** Format: date-time */
+                createdAt: string | null;
+                mediaType: string;
+                schemaVersion: string | null;
+                producer: {
+                  /** Format: uuid */
+                  operationId: string | null;
+                  workflowRunId: string | null;
+                  workflowNodeId: string | null;
+                };
+                sourceVersionIds: string[];
+                parentResourceIds: string[];
+                staleReason: string | null;
+                hasPresentation: boolean;
+                hasDownload: boolean;
+              }[];
+              history: {
+                id: string;
+                title: string;
+                detail: string;
+                status: string;
+                /** Format: date-time */
+                createdAt: string | null;
+                resource?: {
+                  id: string;
+                  /** @enum {string} */
+                  resourceType:
+                    | 'source_version'
+                    | 'source_intake_report'
+                    | 'impact_manifest'
+                    | 'dependency_graph_snapshot'
+                    | 'input_snapshot'
+                    | 'knowledge_snapshot'
+                    | 'decision'
+                    | 'readiness_contract'
+                    | 'execution_plan'
+                    | 'approval_manifest'
+                    | 'execution_artifact'
+                    | 'verification_report'
+                    | 'evidence'
+                    | 'delivery_request'
+                    | 'delivery_manifest'
+                    | 'delivery_package'
+                    | 'workflow_run';
+                  /** @enum {string} */
+                  activityId:
+                    | 'OP-00'
+                    | 'OP-01'
+                    | 'TW-02'
+                    | 'TW-03'
+                    | 'OP-04'
+                    | 'OP-05'
+                    | 'TW-06'
+                    | 'TW-07'
+                    | 'OP-08'
+                    | 'TW-09';
+                  /** @enum {string} */
+                  relation: 'input' | 'output' | 'evidence';
+                  title: string;
+                  summary: string;
+                  /** @enum {string} */
+                  status: 'pending' | 'current' | 'stale' | 'superseded' | 'failed';
+                  version: number | null;
+                  /** Format: date-time */
+                  createdAt: string | null;
+                  mediaType: string;
+                  schemaVersion: string | null;
+                  producer: {
+                    /** Format: uuid */
+                    operationId: string | null;
+                    workflowRunId: string | null;
+                    workflowNodeId: string | null;
+                  };
+                  sourceVersionIds: string[];
+                  parentResourceIds: string[];
+                  staleReason: string | null;
+                  hasPresentation: boolean;
+                  hasDownload: boolean;
+                } | null;
+              }[];
+            };
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/projects/{id}/resources/{resourceType}/{resourceId}': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get a friendly typed presentation for one System 3 resource */
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+          resourceType:
+            | 'source_version'
+            | 'source_intake_report'
+            | 'impact_manifest'
+            | 'dependency_graph_snapshot'
+            | 'input_snapshot'
+            | 'knowledge_snapshot'
+            | 'decision'
+            | 'readiness_contract'
+            | 'execution_plan'
+            | 'approval_manifest'
+            | 'execution_artifact'
+            | 'verification_report'
+            | 'evidence'
+            | 'delivery_request'
+            | 'delivery_manifest'
+            | 'delivery_package'
+            | 'workflow_run';
+          resourceId: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Friendly resource presentation */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': {
+              resource: {
+                id: string;
+                /** @enum {string} */
+                resourceType:
+                  | 'source_version'
+                  | 'source_intake_report'
+                  | 'impact_manifest'
+                  | 'dependency_graph_snapshot'
+                  | 'input_snapshot'
+                  | 'knowledge_snapshot'
+                  | 'decision'
+                  | 'readiness_contract'
+                  | 'execution_plan'
+                  | 'approval_manifest'
+                  | 'execution_artifact'
+                  | 'verification_report'
+                  | 'evidence'
+                  | 'delivery_request'
+                  | 'delivery_manifest'
+                  | 'delivery_package'
+                  | 'workflow_run';
+                /** @enum {string} */
+                activityId:
+                  | 'OP-00'
+                  | 'OP-01'
+                  | 'TW-02'
+                  | 'TW-03'
+                  | 'OP-04'
+                  | 'OP-05'
+                  | 'TW-06'
+                  | 'TW-07'
+                  | 'OP-08'
+                  | 'TW-09';
+                /** @enum {string} */
+                relation: 'input' | 'output' | 'evidence';
+                title: string;
+                summary: string;
+                /** @enum {string} */
+                status: 'pending' | 'current' | 'stale' | 'superseded' | 'failed';
+                version: number | null;
+                /** Format: date-time */
+                createdAt: string | null;
+                mediaType: string;
+                schemaVersion: string | null;
+                producer: {
+                  /** Format: uuid */
+                  operationId: string | null;
+                  workflowRunId: string | null;
+                  workflowNodeId: string | null;
+                };
+                sourceVersionIds: string[];
+                parentResourceIds: string[];
+                staleReason: string | null;
+                hasPresentation: boolean;
+                hasDownload: boolean;
+              };
+              rendererVersion: string;
+              title: string;
+              summary: string;
+              blocks: (
+                | {
+                    /** @enum {string} */
+                    kind: 'callout';
+                    /** @enum {string} */
+                    tone: 'info' | 'success' | 'warning' | 'danger';
+                    title: string | null;
+                    body: string;
+                  }
+                | {
+                    /** @enum {string} */
+                    kind: 'facts';
+                    title: string | null;
+                    items: {
+                      label: string;
+                      value: string;
+                      /** @enum {string} */
+                      tone?: 'neutral' | 'positive' | 'warning' | 'danger';
+                    }[];
+                  }
+                | {
+                    /** @enum {string} */
+                    kind: 'markdown';
+                    markdown: string;
+                  }
+                | {
+                    /** @enum {string} */
+                    kind: 'table';
+                    title: string | null;
+                    columns: string[];
+                    rows: string[][];
+                    truncated: boolean;
+                  }
+                | {
+                    /** @enum {string} */
+                    kind: 'checklist';
+                    title: string | null;
+                    items: {
+                      label: string;
+                      /** @enum {string} */
+                      status: 'passed' | 'warning' | 'failed' | 'pending';
+                      detail: string | null;
+                    }[];
+                  }
+                | {
+                    /** @enum {string} */
+                    kind: 'timeline';
+                    title: string | null;
+                    items: {
+                      title: string;
+                      detail: string;
+                      /** Format: date-time */
+                      at: string | null;
+                    }[];
+                  }
+                | {
+                    /** @enum {string} */
+                    kind: 'fileTree';
+                    title: string | null;
+                    files: {
+                      path: string;
+                      sizeBytes: number | null;
+                    }[];
+                    truncated: boolean;
+                  }
+                | {
+                    /** @enum {string} */
+                    kind: 'evidence';
+                    title: string | null;
+                    items: {
+                      requirement: string;
+                      status: string;
+                      proof: string[];
+                      reason: string | null;
+                    }[];
+                  }
+                | {
+                    /** @enum {string} */
+                    kind: 'download';
+                    label: string;
+                    filename: string;
+                    sizeBytes: number | null;
+                  }
+              )[];
+              technicalDetailsAvailable: boolean;
+              downloadUrl: string | null;
+            };
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/projects/{id}/resources/{resourceType}/{resourceId}/content': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Download or inspect the immutable original System 3 resource */
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+          resourceType:
+            | 'source_version'
+            | 'source_intake_report'
+            | 'impact_manifest'
+            | 'dependency_graph_snapshot'
+            | 'input_snapshot'
+            | 'knowledge_snapshot'
+            | 'decision'
+            | 'readiness_contract'
+            | 'execution_plan'
+            | 'approval_manifest'
+            | 'execution_artifact'
+            | 'verification_report'
+            | 'evidence'
+            | 'delivery_request'
+            | 'delivery_manifest'
+            | 'delivery_package'
+            | 'workflow_run';
+          resourceId: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Immutable original resource */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': unknown;
+            'application/octet-stream': string;
+            'application/gzip': string;
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/projects/{id}/source-intake-operations/{operationId}/retry': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Explicitly resume one interrupted Source Intake operation */
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+          operationId: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: {
+        content: {
+          'application/json': components['schemas']['RetrySystem3IntakeOperationBody'];
+        };
+      };
+      responses: {
+        /** @description Recovered Source Intake operation */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['System3SourceIntakeResult'];
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/projects/{id}/knowledge-snapshots': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Analyze sources into Project Understanding */
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: {
+        content: {
+          'application/json': components['schemas']['AnalyzeSystem3ProjectBody'];
+        };
+      };
+      responses: {
+        /** @description Accepted understanding operation */
+        202: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': {
+              operation: components['schemas']['System3Operation'];
+            };
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/projects/{id}/decisions/{decisionId}/respond': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Answer a System 3 decision */
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+          decisionId: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: {
+        content: {
+          'application/json': components['schemas']['AnswerSystem3DecisionBody'];
+        };
+      };
+      responses: {
+        /** @description Updated flow */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['System3ProjectFlow'];
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/projects/{id}/readiness-contracts': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Run readiness gates and persist an immutable System 3 readiness contract */
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: {
+        content: {
+          'application/json': components['schemas']['CreateSystem3ReadinessContractBody'];
+        };
+      };
+      responses: {
+        /** @description Accepted readiness operation */
+        202: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': {
+              operation: components['schemas']['System3Operation'];
+            };
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/projects/{id}/compilations': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Compile an immutable System 3 execution plan */
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: {
+        content: {
+          'application/json': components['schemas']['CompileSystem3ProjectBody'];
+        };
+      };
+      responses: {
+        /** @description Accepted compilation operation */
+        202: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': {
+              operation: components['schemas']['System3Operation'];
+            };
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/projects/{id}/approval-manifests': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Approve a compiled System 3 plan */
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: {
+        content: {
+          'application/json': components['schemas']['ApproveSystem3ProjectBody'];
+        };
+      };
+      responses: {
+        /** @description Approval manifest */
+        201: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['System3ApprovalManifest'];
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/projects/{id}/executions': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Execute an approved immutable System 3 plan */
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: {
+        content: {
+          'application/json': components['schemas']['ExecuteSystem3ProjectBody'];
+        };
+      };
+      responses: {
+        /** @description Accepted execution operation */
+        202: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': {
+              operation: components['schemas']['System3Operation'];
+              execution: components['schemas']['System3ProjectExecution'];
+            };
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/projects/{id}/executions/{executionId}/verifications': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Retry or start independent verification for a completed baseline execution */
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+          executionId: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: {
+        content: {
+          'application/json': components['schemas']['StartSystem3VerificationBody'];
+        };
+      };
+      responses: {
+        /** @description Accepted verification operation */
+        202: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': {
+              operation: components['schemas']['System3Operation'];
+              verification: components['schemas']['System3Verification'];
+            };
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/projects/{id}/verifications/{verificationId}/deliveries': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Create delivery from a current successful verification */
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+          verificationId: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: {
+        content: {
+          'application/json': components['schemas']['StartSystem3DeliveryBody'];
+        };
+      };
+      responses: {
+        /** @description Accepted delivery operation */
+        202: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': {
+              operation: components['schemas']['System3Operation'];
+            };
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/operations/{operationId}': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Poll a System 3 long-running operation */
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          operationId: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Operation state */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['System3Operation'];
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/operations/{operationId}/events': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Stream a System 3 operation projection */
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          operationId: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Server-sent operation state events */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'text/event-stream': string;
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/operations/{operationId}/abandon': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Explicitly abandon a System 3 operation with unknown process ownership */
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          operationId: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Abandoned operation state */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['System3Operation'];
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/projects/{id}/evidence': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get evidence for the latest System 3 execution */
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Evidence records */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': {
+              execution: components['schemas']['System3ProjectExecution'];
+              evidence: components['schemas']['System3EvidenceRecord'][];
+            };
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/projects/{id}/traceability': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get normalized requirement and artifact traceability counts */
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Traceability summary */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': {
+              requirements: number;
+              knowledgeFacts: number;
+              openIssues: number;
+              dependencyEdges: number;
+              artifactVersions: number;
+            };
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/projects/{id}/delivery/package': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Download the latest verified System 3 delivery package */
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Gzip delivery archive */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/gzip': string;
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
     options?: never;
     head?: never;
     patch?: never;
@@ -1699,6 +6683,7 @@ export interface paths {
           before?: string;
           limit?: string;
           offset?: string;
+          rootOnly?: 'true' | 'false';
         };
         header?: never;
         path?: never;
@@ -1998,6 +6983,71 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/workflows/runs/{runId}/continue': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Continue a workflow after a completed manual phase */
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          runId: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Continued */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['WorkflowRunActionResponse'];
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/workflows/runs/{runId}/reject': {
     parameters: {
       query?: never;
@@ -2247,6 +7297,7 @@ export interface paths {
           status?: string;
           codebaseId?: string;
           limit?: string;
+          rootOnly?: 'true' | 'false';
           mine?: 'true' | 'false';
         };
         header?: never;
@@ -2339,6 +7390,128 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/workflows/runs/{runId}/flow': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get the recursive execution flow for a root or child run */
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          runId: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Workflow execution flow */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['WorkflowFlowResponse'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/workflows/runs/{runId}/nodes/{nodePath}/io': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get lazy-loaded node input/output attempts and events */
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          runId: string;
+          nodePath: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Node input/output detail */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['WorkflowNodeIoResponse'];
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/workflows/validate': {
     parameters: {
       query?: never;
@@ -2391,6 +7564,73 @@ export interface paths {
         };
       };
     };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/workflows/{name}/composition': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Resolve a workflow and all composed child definitions */
+    get: {
+      parameters: {
+        query: {
+          cwd: string;
+        };
+        header?: never;
+        path: {
+          name: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Resolved composition graph */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['WorkflowCompositionResponse'];
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
     delete?: never;
     options?: never;
     head?: never;
@@ -3250,6 +8490,28 @@ export interface components {
     ProviderConnectionDefaultResponse: {
       success: boolean;
     };
+    ProviderConnectionUsageResponse: {
+      connectionId: string;
+      connectionName: string;
+      planType?: string;
+      primary?: {
+        usedPercent: number;
+        windowDurationMins?: number;
+        resetsAt?: number;
+      };
+      secondary?: {
+        usedPercent: number;
+        windowDurationMins?: number;
+        resetsAt?: number;
+      };
+      credits?: {
+        hasCredits: boolean;
+        unlimited: boolean;
+        balance?: string;
+      };
+      lifetimeTokens?: number;
+      currentStreakDays?: number;
+    };
     ProviderOAuthStartResponse: {
       sessionId: string;
       /** @enum {string} */
@@ -3311,6 +8573,8 @@ export interface components {
       id: string;
       platform_type: string;
       platform_conversation_id: string;
+      /** @default null */
+      client_request_id: string | null;
       codebase_id: string | null;
       cwd: string | null;
       isolation_env_id: string | null;
@@ -3331,10 +8595,6 @@ export interface components {
       conversationId: string;
       id: string;
       dispatched?: boolean;
-    };
-    CreateConversationBody: {
-      codebaseId?: string;
-      message?: string;
     };
     SuccessResponse: {
       success: boolean;
@@ -3377,9 +8637,67 @@ export interface components {
       /** Format: date-time */
       updated_at: string;
     };
+    WorkflowIntakeDraft: {
+      id: string;
+      codebaseId: string;
+      workflowName: string;
+      definitionHash: string;
+      /** @enum {string} */
+      status: 'draft' | 'ready' | 'starting' | 'started' | 'discarded';
+      values: {
+        [key: string]: unknown;
+      };
+      currentField: string | null;
+      validationErrors: string[];
+      startedRunId: string | null;
+      createdAt: string;
+      updatedAt: string;
+    } | null;
+    PatchWorkflowIntakeBody: {
+      values?: {
+        [key: string]: unknown;
+      };
+      currentField?: string | null;
+    };
+    WorkflowIntakeAttachmentResponse: {
+      draft: components['schemas']['WorkflowIntakeDraft'];
+      /** @enum {string} */
+      state: 'collecting' | 'review';
+      attachment: {
+        input: string;
+        name: string;
+        path: string;
+        size: number;
+        mime: string;
+        sha256: string;
+      };
+    };
+    WorkflowIntakeChatResponse: {
+      draft: components['schemas']['WorkflowIntakeDraft'];
+      /** @enum {string} */
+      state: 'collecting' | 'review' | 'confirmed' | 'stopped';
+      shouldStart: boolean;
+    };
+    WorkflowIntakeChatBody: {
+      conversationId: string;
+      message: string;
+    };
+    WorkflowIntakeStartResponse: {
+      accepted: boolean;
+      status: string;
+      runId: string | null;
+    };
+    StartWorkflowIntakeBody: {
+      conversationId: string;
+      /** @default Start workflow from confirmed intake */
+      message: string;
+    };
     AddCodebaseBody: {
       url?: string;
       path?: string;
+      create?: {
+        name: string;
+      };
     };
     DeleteCodebaseResponse: {
       success: boolean;
@@ -3394,6 +8712,948 @@ export interface components {
       key: string;
       value: string;
     };
+    System3Project: {
+      /** Format: uuid */
+      id: string;
+      codebaseId: string;
+      name: string;
+      description: string;
+      /** @enum {string} */
+      stage:
+        | 'draft'
+        | 'understanding'
+        | 'workflow_design'
+        | 'approved'
+        | 'executing'
+        | 'verifying'
+        | 'delivery'
+        | 'delivered';
+      /** @enum {string} */
+      attention: 'none' | 'input_required' | 'decision_required' | 'approval_required' | 'failed';
+      /** @enum {string} */
+      freshness: 'current' | 'partially_stale' | 'stale';
+      version: number;
+      /** @enum {string} */
+      templateId: 'customer-churn-reference@1';
+      /** Format: uuid */
+      activeKnowledgeSnapshotId: string | null;
+      /** Format: date-time */
+      createdAt: string;
+      /** Format: date-time */
+      updatedAt: string;
+    };
+    CreateSystem3ProjectBody: {
+      name: string;
+      description?: string;
+      codebaseId?: string;
+      /** @default true */
+      createManagedCodebase: boolean;
+    };
+    System3ProjectFlow: {
+      project: components['schemas']['System3Project'];
+      sources: components['schemas']['System3Source'][];
+      analysis: {
+        /** @enum {number} */
+        schemaVersion: 1;
+        businessGoal: string | null;
+        technicalObjective: string | null;
+        targetDefinition: string | null;
+        runtime: {
+          cpuOnly: boolean;
+          ramGb: number | null;
+        };
+        requirements: {
+          id: string;
+          kind: string;
+          priority: string | null;
+          source: string | null;
+          statement: string;
+          acceptanceCriterion: string;
+          sourcePointer: string;
+        }[];
+        modules: string[];
+        manualReviews: {
+          id: string;
+          text: string;
+          sourcePointer: string;
+        }[];
+        dataset: {
+          filename: string;
+          rowCount: number;
+          columnCount: number;
+          columns: string[];
+          targetColumn: string | null;
+          targetExists: boolean;
+          targetDistribution: {
+            [key: string]: number;
+          };
+        } | null;
+      } | null;
+      decisions: components['schemas']['System3Decision'][];
+      readiness: components['schemas']['System3ReadinessContract'];
+      compilation: {
+        /** Format: uuid */
+        id: string;
+        /** Format: uuid */
+        projectId: string;
+        /** Format: uuid */
+        knowledgeSnapshotId: string;
+        plan: {
+          [key: string]: unknown;
+        };
+        definitionHash: string;
+        capabilityRegistryHash: string;
+        /** Format: date-time */
+        createdAt: string;
+      } | null;
+      approval: {
+        /** Format: uuid */
+        id: string;
+        /** Format: uuid */
+        projectId: string;
+        /** Format: uuid */
+        compilationId: string;
+        idempotencyKey: string;
+        manifest: {
+          [key: string]: unknown;
+        };
+        /** Format: date-time */
+        createdAt: string;
+      } | null;
+      execution: {
+        /** Format: uuid */
+        id: string;
+        /** Format: uuid */
+        projectId: string;
+        /** Format: uuid */
+        approvalId: string;
+        workflowRunId: string;
+        definitionHash: string;
+        /** @enum {string} */
+        status: 'accepted' | 'running' | 'completed' | 'failed';
+        error: string | null;
+        /** Format: date-time */
+        createdAt: string;
+        /** Format: date-time */
+        updatedAt: string;
+      } | null;
+      verification: {
+        /** Format: uuid */
+        id: string;
+        /** Format: uuid */
+        projectId: string;
+        /** Format: uuid */
+        executionId: string;
+        /** Format: uuid */
+        workflowRunId: string;
+        /** Format: uuid */
+        inputArtifactId: string;
+        /** @enum {string} */
+        status: 'accepted' | 'running' | 'completed' | 'failed';
+        validatorVersion: string;
+        basisHash: string;
+        evidenceMap: {
+          [key: string]: unknown;
+        } | null;
+        gate: {
+          [key: string]: unknown;
+        } | null;
+        error: string | null;
+        /** Format: date-time */
+        createdAt: string;
+        /** Format: date-time */
+        updatedAt: string;
+      } | null;
+      delivery: {
+        /** Format: uuid */
+        id: string;
+        /** Format: uuid */
+        projectId: string;
+        /** Format: uuid */
+        executionId: string;
+        /** Format: uuid */
+        verificationId: string | null;
+        packageStorageKey: string;
+        packageFilename: string;
+        contentHash: string;
+        sizeBytes: number;
+        manifest: {
+          [key: string]: unknown;
+        };
+        /** Format: date-time */
+        createdAt: string;
+      } | null;
+      impacts: {
+        /** Format: uuid */
+        id: string;
+        /** Format: uuid */
+        projectId: string;
+        /** Format: uuid */
+        sourceVersionId: string;
+        affectedPhases: string[];
+        reason: string;
+        /** Format: uuid */
+        operationId: string | null;
+        /** Format: uuid */
+        previousSourceVersionId: string | null;
+        schemaVersion: 1 | 2 | 3;
+        detectorVersion: string;
+        basisHash: string;
+        manifestHash: string;
+        manifest: {
+          schemaVersion: 2 | 3;
+          /** @enum {string} */
+          detectorVersion: 'system3-change-detector@2' | 'system3-change-detector@3';
+          /** Format: uuid */
+          projectId: string;
+          /** Format: uuid */
+          operationId: string;
+          /** Format: uuid */
+          sourceVersionId: string;
+          /** Format: uuid */
+          previousSourceVersionId: string | null;
+          basis: {
+            /** Format: uuid */
+            sourceId: string;
+            /** @enum {string} */
+            kind:
+              | 'blueprint'
+              | 'dataset'
+              | 'constraints'
+              | 'data_dictionary'
+              | 'user_brief'
+              | 'supporting_document';
+            currentContentHash: string;
+            previousContentHash: string | null;
+            /** Format: uuid */
+            knowledgeSnapshotId: string | null;
+            /** @enum {string} */
+            dependencyGraphVersion: 'system3-dependency-graph@1' | 'system3-dependency-graph@2';
+            dependencyGraphHash?: string;
+            dependencyNodeCount?: number;
+            dependencyEdgeCount?: number;
+            /** @enum {string} */
+            dependencyCoverage?: 'complete' | 'partial';
+            parserVersion: string;
+            /** @enum {string} */
+            policyVersion: 'system3-impact-policy@2' | 'system3-impact-policy@3';
+          };
+          /** @enum {string} */
+          analysisMode: 'deterministic' | 'llm_assisted' | 'conservative_fallback' | 'legacy_broad';
+          /** @enum {string} */
+          confidence: 'high' | 'medium' | 'low';
+          changes: {
+            /** @enum {string} */
+            kind:
+              | 'first_source'
+              | 'formatting_only'
+              | 'content'
+              | 'requirement'
+              | 'schema'
+              | 'row_only'
+              | 'target'
+              | 'runtime'
+              | 'policy'
+              | 'delivery'
+              | 'unknown';
+            /** @enum {string} */
+            changeType: 'added' | 'modified' | 'removed' | 'unchanged';
+            entityType: string;
+            entityKey: string | null;
+            summary: string;
+            sourcePointers: string[];
+            /** @enum {string} */
+            confidence: 'high' | 'medium' | 'low';
+            /** @enum {string} */
+            detector: 'deterministic' | 'llm_candidate' | 'conservative_fallback';
+            previousValue?: string | null;
+            currentValue?: string | null;
+          }[];
+          affectedActivities: (
+            | 'OP-00'
+            | 'OP-01'
+            | 'TW-02'
+            | 'TW-03'
+            | 'OP-04'
+            | 'OP-05'
+            | 'TW-06'
+            | 'TW-07'
+            | 'OP-08'
+            | 'TW-09'
+          )[];
+          affectedResources: {
+            /** @enum {string} */
+            resourceType:
+              | 'source_version'
+              | 'source_intake_report'
+              | 'impact_manifest'
+              | 'dependency_graph_snapshot'
+              | 'input_snapshot'
+              | 'knowledge_snapshot'
+              | 'decision'
+              | 'readiness_contract'
+              | 'execution_plan'
+              | 'approval_manifest'
+              | 'execution_artifact'
+              | 'verification_report'
+              | 'evidence'
+              | 'delivery_request'
+              | 'delivery_manifest'
+              | 'delivery_package'
+              | 'workflow_run';
+            resourceId: string | null;
+            /** @enum {string} */
+            activityId:
+              | 'OP-00'
+              | 'OP-01'
+              | 'TW-02'
+              | 'TW-03'
+              | 'OP-04'
+              | 'OP-05'
+              | 'TW-06'
+              | 'TW-07'
+              | 'OP-08'
+              | 'TW-09';
+            reason: string;
+            dependencyPath: string[];
+          }[];
+          reusableResources: {
+            /** @enum {string} */
+            resourceType:
+              | 'source_version'
+              | 'source_intake_report'
+              | 'impact_manifest'
+              | 'dependency_graph_snapshot'
+              | 'input_snapshot'
+              | 'knowledge_snapshot'
+              | 'decision'
+              | 'readiness_contract'
+              | 'execution_plan'
+              | 'approval_manifest'
+              | 'execution_artifact'
+              | 'verification_report'
+              | 'evidence'
+              | 'delivery_request'
+              | 'delivery_manifest'
+              | 'delivery_package'
+              | 'workflow_run';
+            resourceId: string | null;
+            /** @enum {string} */
+            activityId:
+              | 'OP-00'
+              | 'OP-01'
+              | 'TW-02'
+              | 'TW-03'
+              | 'OP-04'
+              | 'OP-05'
+              | 'TW-06'
+              | 'TW-07'
+              | 'OP-08'
+              | 'TW-09';
+            reason: string;
+            dependencyPath: string[];
+          }[];
+          proposedRerun: {
+            /** @enum {string} */
+            mode: 'none' | 'scoped' | 'full';
+            activityIds: (
+              | 'OP-00'
+              | 'OP-01'
+              | 'TW-02'
+              | 'TW-03'
+              | 'OP-04'
+              | 'OP-05'
+              | 'TW-06'
+              | 'TW-07'
+              | 'OP-08'
+              | 'TW-09'
+            )[];
+            /** @enum {string} */
+            executableScope: 'none' | 'full' | 'experiment' | 'delivery';
+            reason: string;
+          };
+          uncertainties: string[];
+          llmAssistance: {
+            used: boolean;
+            provider: string | null;
+            model: string | null;
+            promptVersion: string | null;
+            candidateCount: number;
+            attempts?: number;
+            inputTokens?: number | null;
+            outputTokens?: number | null;
+            costUsd?: number | null;
+            durationMs?: number | null;
+            /** @enum {string} */
+            outcome?: 'not_used' | 'succeeded' | 'failed';
+          };
+          summary: string;
+          /** Format: date-time */
+          createdAt: string;
+        } | null;
+        /** Format: date-time */
+        createdAt: string;
+      }[];
+      /** Format: uuid */
+      understandingRunId: string | null;
+      phases: {
+        id: string;
+        title: string;
+        summary: string;
+        technicalWorkflow: string;
+        /** @enum {string} */
+        status:
+          | 'completed'
+          | 'active'
+          | 'blocked'
+          | 'ready'
+          | 'waiting'
+          | 'not_started'
+          | 'stale'
+          | 'not_verified'
+          | 'out_of_mvp_scope';
+        progress: number;
+        objective: string;
+        inputs: string[];
+        outputs: string[];
+        workflowSteps: {
+          id: string;
+          title: string;
+          description: string;
+          /** @enum {string} */
+          kind: 'input' | 'check' | 'artifact' | 'approval';
+          /** @enum {string} */
+          status: 'completed' | 'running' | 'pending' | 'blocked';
+          input: string;
+          output: string;
+        }[];
+      }[];
+    };
+    System3Source: {
+      /** Format: uuid */
+      id: string;
+      /** Format: uuid */
+      sourceId: string;
+      /** Format: uuid */
+      projectId: string;
+      /** @enum {string} */
+      kind:
+        | 'blueprint'
+        | 'dataset'
+        | 'constraints'
+        | 'data_dictionary'
+        | 'user_brief'
+        | 'supporting_document';
+      /** @enum {string} */
+      role: 'primary' | 'supplemental';
+      filename: string;
+      originalFilename: string;
+      mediaType: string;
+      version: number;
+      contentHash: string;
+      sizeBytes: number;
+      /** @enum {string} */
+      storageStatus: 'pending' | 'ready' | 'failed';
+      validationReport: components['schemas']['System3SourceValidationReport'];
+      createdBy: string | null;
+      origin: string;
+      /** Format: uuid */
+      operationId: string | null;
+      /** Format: uuid */
+      intakeReportArtifactId: string | null;
+      /** Format: date-time */
+      createdAt: string;
+    };
+    System3SourceValidationReport: {
+      /** @enum {number} */
+      schemaVersion: 1;
+      /** @enum {string} */
+      outcome: 'accepted' | 'unchanged' | 'rejected';
+      checks: {
+        id: string;
+        label: string;
+        /** @enum {string} */
+        status: 'passed' | 'warning' | 'failed';
+        message: string;
+      }[];
+      warnings: string[];
+    };
+    System3Decision: {
+      /** Format: uuid */
+      id: string;
+      /** Format: uuid */
+      projectId: string;
+      /** Format: uuid */
+      knowledgeSnapshotId: string;
+      title: string;
+      question: string;
+      why: string;
+      recommendation: string;
+      options: string[];
+      affectedPhases: string[];
+      /** @enum {string} */
+      status: 'pending' | 'answered';
+      answer: string | null;
+      /** Format: date-time */
+      createdAt: string;
+      /** Format: date-time */
+      updatedAt: string;
+    };
+    System3ReadinessContract: {
+      /** Format: uuid */
+      id: string;
+      /** Format: uuid */
+      projectId: string;
+      /** Format: uuid */
+      knowledgeSnapshotId: string;
+      /** Format: uuid */
+      workflowRunId: string;
+      contract: {
+        [key: string]: unknown;
+      };
+      contractHash: string;
+      artifactKey: string;
+      /** Format: date-time */
+      createdAt: string;
+    } | null;
+    System3SourceIntakeReportView: {
+      /** Format: uuid */
+      id: string;
+      /** Format: uuid */
+      projectId: string;
+      /** Format: uuid */
+      operationId: string;
+      /** Format: uuid */
+      sourceVersionId: string | null;
+      /** Format: date-time */
+      createdAt: string;
+      report: {
+        /** @enum {number} */
+        schemaVersion: 1;
+        /** @enum {string} */
+        artifactKind: 'source_intake_report';
+        /** Format: uuid */
+        operationId: string;
+        /** @enum {string} */
+        outcome: 'created_source' | 'created_version' | 'unchanged' | 'rejected';
+        /** Format: uuid */
+        projectId: string;
+        /** Format: uuid */
+        sourceId: string | null;
+        /** Format: uuid */
+        sourceVersionId: string | null;
+        /** Format: uuid */
+        previousVersionId: string | null;
+        /** @enum {string} */
+        kind:
+          | 'blueprint'
+          | 'dataset'
+          | 'constraints'
+          | 'data_dictionary'
+          | 'user_brief'
+          | 'supporting_document';
+        /** @enum {string} */
+        role: 'primary' | 'supplemental';
+        originalFilename: string;
+        filename: string;
+        mediaType: string;
+        sizeBytes: number;
+        contentHash: string | null;
+        /** @enum {string} */
+        storageStatus: 'not_stored' | 'pending' | 'ready' | 'failed';
+        actorId: string | null;
+        origin: string;
+        validationReport: components['schemas']['System3SourceValidationReport'];
+        changeDetection: {
+          /** Format: uuid */
+          operationId: string | null;
+          /** @enum {string} */
+          status: 'not_required' | 'succeeded' | 'failed';
+          error: string | null;
+        };
+        /** @enum {string} */
+        nextAction: 'retry_intake' | 'retry_change_detection' | 'review_and_continue';
+        /** Format: date-time */
+        createdAt: string;
+      };
+    };
+    System3IntakeGate: {
+      ready: boolean;
+      blueprintReady: boolean;
+      activeSourceCount: number;
+      changeDetection: {
+        /** Format: uuid */
+        sourceVersionId: string;
+        filename: string;
+        /** Format: uuid */
+        operationId: string | null;
+        /** @enum {string} */
+        status: 'not_started' | 'running' | 'succeeded' | 'failed' | 'unknown';
+        error: string | null;
+        retryable: boolean;
+      }[];
+      recoveries: {
+        /** Format: uuid */
+        operationId: string;
+        /** @enum {string} */
+        status: 'accepted' | 'running' | 'failed' | 'unknown';
+        /** @enum {string} */
+        stage: 'accepted' | 'staged' | 'pending' | 'ready' | 'unknown';
+        filename: string | null;
+        /** Format: uuid */
+        sourceVersionId: string | null;
+        error: string | null;
+        retryable: boolean;
+        requiresTakeoverConfirmation: boolean;
+      }[];
+      blockingReasons: string[];
+    };
+    System3Operation: {
+      /** Format: uuid */
+      id: string;
+      /** Format: uuid */
+      projectId: string;
+      /** Format: uuid */
+      executionId: string | null;
+      /** @enum {string} */
+      type:
+        | 'source_intake'
+        | 'change_detection'
+        | 'analyze'
+        | 'readiness'
+        | 'compile'
+        | 'execute'
+        | 'verify'
+        | 'delivery';
+      /** @enum {string} */
+      status: 'accepted' | 'running' | 'succeeded' | 'failed' | 'abandoned' | 'unknown';
+      idempotencyKey: string;
+      error: string | null;
+      requestFingerprint: string;
+      projectVersion: number;
+      result: {
+        [key: string]: unknown;
+      } | null;
+      workflowRunId: string | null;
+      ownerInstanceId: string | null;
+      /** Format: date-time */
+      heartbeatAt: string | null;
+      /** Format: date-time */
+      startedAt: string | null;
+      /** Format: date-time */
+      finishedAt: string | null;
+      /** Format: date-time */
+      createdAt: string;
+      /** Format: date-time */
+      updatedAt: string;
+    };
+    RetrySystem3IntakeOperationBody: {
+      expectedVersion: number;
+    };
+    System3Compilation: {
+      /** Format: uuid */
+      id: string;
+      /** Format: uuid */
+      projectId: string;
+      /** Format: uuid */
+      knowledgeSnapshotId: string;
+      plan: {
+        [key: string]: unknown;
+      };
+      definitionHash: string;
+      capabilityRegistryHash: string;
+      /** Format: date-time */
+      createdAt: string;
+    } | null;
+    System3ApprovalManifest: {
+      /** Format: uuid */
+      id: string;
+      /** Format: uuid */
+      projectId: string;
+      /** Format: uuid */
+      compilationId: string;
+      idempotencyKey: string;
+      manifest: {
+        [key: string]: unknown;
+      };
+      /** Format: date-time */
+      createdAt: string;
+    } | null;
+    System3ProjectExecution: {
+      /** Format: uuid */
+      id: string;
+      /** Format: uuid */
+      projectId: string;
+      /** Format: uuid */
+      approvalId: string;
+      workflowRunId: string;
+      definitionHash: string;
+      /** @enum {string} */
+      status: 'accepted' | 'running' | 'completed' | 'failed';
+      error: string | null;
+      /** Format: date-time */
+      createdAt: string;
+      /** Format: date-time */
+      updatedAt: string;
+    } | null;
+    System3ProjectHistory: {
+      workflowVersions: {
+        /** Format: uuid */
+        id: string;
+        /** Format: uuid */
+        projectId: string;
+        /** @enum {string} */
+        templateId: 'customer-churn-reference@1';
+        definitionHash: string;
+        /** @enum {string} */
+        status: 'fixed_mvp';
+        /** Format: date-time */
+        createdAt: string;
+      }[];
+      transitions: {
+        /** Format: uuid */
+        id: string;
+        /** Format: uuid */
+        projectId: string;
+        /** @enum {string|null} */
+        fromStage:
+          | 'draft'
+          | 'understanding'
+          | 'workflow_design'
+          | 'approved'
+          | 'executing'
+          | 'verifying'
+          | 'delivery'
+          | 'delivered'
+          | null;
+        /** @enum {string} */
+        toStage:
+          | 'draft'
+          | 'understanding'
+          | 'workflow_design'
+          | 'approved'
+          | 'executing'
+          | 'verifying'
+          | 'delivery'
+          | 'delivered';
+        actorId: string | null;
+        /** Format: uuid */
+        operationId: string | null;
+        /** Format: uuid */
+        workflowRunId: string | null;
+        entityType: string | null;
+        entityId: string | null;
+        /** @enum {string|null} */
+        fromAttention:
+          | 'none'
+          | 'input_required'
+          | 'decision_required'
+          | 'approval_required'
+          | 'failed'
+          | null;
+        /** @enum {string|null} */
+        toAttention:
+          | 'none'
+          | 'input_required'
+          | 'decision_required'
+          | 'approval_required'
+          | 'failed'
+          | null;
+        /** @enum {string|null} */
+        fromFreshness: 'current' | 'partially_stale' | 'stale' | null;
+        /** @enum {string|null} */
+        toFreshness: 'current' | 'partially_stale' | 'stale' | null;
+        projectVersion: number | null;
+        metadata: {
+          [key: string]: unknown;
+        };
+        reason: string;
+        /** Format: date-time */
+        createdAt: string;
+      }[];
+      compilations: components['schemas']['System3Compilation'][];
+      approvals: components['schemas']['System3ApprovalManifest'][];
+      executions: components['schemas']['System3ProjectExecution'][];
+      verifications: components['schemas']['System3Verification'][];
+      operations: components['schemas']['System3Operation'][];
+      deliveries: {
+        /** Format: uuid */
+        id: string;
+        /** Format: uuid */
+        projectId: string;
+        /** Format: uuid */
+        executionId: string;
+        packageStorageKey: string;
+        packageFilename: string;
+        contentHash: string;
+        sizeBytes: number;
+        manifest: {
+          [key: string]: unknown;
+        };
+        /** Format: date-time */
+        createdAt: string;
+      }[];
+      artifacts: {
+        /** Format: uuid */
+        id: string;
+        /** Format: uuid */
+        projectId: string;
+        /** Format: uuid */
+        executionId: string | null;
+        /** Format: uuid */
+        knowledgeSnapshotId: string | null;
+        /** Format: uuid */
+        sourceVersionId: string | null;
+        /** Format: uuid */
+        operationId: string | null;
+        artifactKey: string;
+        artifactKind: string;
+        version: number;
+        contentHash: string;
+        sizeBytes: number;
+        /** @enum {string|null} */
+        activityId:
+          | 'OP-00'
+          | 'OP-01'
+          | 'TW-02'
+          | 'TW-03'
+          | 'OP-04'
+          | 'OP-05'
+          | 'TW-06'
+          | 'TW-07'
+          | 'OP-08'
+          | 'TW-09'
+          | null;
+        workflowRunId: string | null;
+        workflowNodeId: string | null;
+        displayName: string | null;
+        summary: string | null;
+        mediaType: string | null;
+        schemaId: string | null;
+        schemaVersion: string | null;
+        /** @enum {string|null} */
+        visibility: 'user' | 'technical' | null;
+        /** @enum {string|null} */
+        status: 'pending' | 'current' | 'stale' | 'superseded' | 'failed' | null;
+        staleReason: string | null;
+        sourceVersionIds: string[];
+        parentResourceIds: string[];
+        /** Format: date-time */
+        createdAt: string;
+      }[];
+    };
+    System3Verification: {
+      /** Format: uuid */
+      id: string;
+      /** Format: uuid */
+      projectId: string;
+      /** Format: uuid */
+      executionId: string;
+      /** Format: uuid */
+      workflowRunId: string;
+      /** Format: uuid */
+      inputArtifactId: string;
+      /** @enum {string} */
+      status: 'accepted' | 'running' | 'completed' | 'failed';
+      validatorVersion: string;
+      basisHash: string;
+      evidenceMap: {
+        [key: string]: unknown;
+      } | null;
+      gate: {
+        [key: string]: unknown;
+      } | null;
+      error: string | null;
+      /** Format: date-time */
+      createdAt: string;
+      /** Format: date-time */
+      updatedAt: string;
+    };
+    System3SourceIntakeResult: {
+      /** Format: uuid */
+      operationId: string;
+      /** @enum {string} */
+      outcome: 'created_source' | 'created_version' | 'unchanged';
+      source: components['schemas']['System3LogicalSourceSummary'];
+      version: components['schemas']['System3Source'];
+      /** Format: uuid */
+      previousVersionId: string | null;
+      projectVersion: number;
+      /** Format: uuid */
+      changeDetectionOperationId: string | null;
+      intakeReport: components['schemas']['System3SourceIntakeReportView'];
+    };
+    System3LogicalSourceSummary: {
+      /** Format: uuid */
+      id: string;
+      /** Format: uuid */
+      projectId: string;
+      /** @enum {string} */
+      kind:
+        | 'blueprint'
+        | 'dataset'
+        | 'constraints'
+        | 'data_dictionary'
+        | 'user_brief'
+        | 'supporting_document';
+      /** @enum {string} */
+      role: 'primary' | 'supplemental';
+      displayName: string;
+      /** @enum {string} */
+      status: 'active';
+    };
+    System3SourceIntakeError: components['schemas']['Error'] & {
+      report?: components['schemas']['System3SourceValidationReport'];
+      intakeReport?: components['schemas']['System3SourceIntakeReportView'];
+    };
+    AnalyzeSystem3ProjectBody: {
+      expectedVersion: number;
+    };
+    AnswerSystem3DecisionBody: {
+      answer: string;
+      expectedVersion: number;
+    };
+    CreateSystem3ReadinessContractBody: {
+      expectedVersion: number;
+    };
+    CompileSystem3ProjectBody: {
+      expectedVersion: number;
+    };
+    ApproveSystem3ProjectBody: {
+      /** Format: uuid */
+      compilationId: string;
+      expectedVersion: number;
+    };
+    ExecuteSystem3ProjectBody: {
+      /** Format: uuid */
+      approvalId: string;
+      expectedVersion: number;
+    };
+    StartSystem3VerificationBody: {
+      expectedVersion: number;
+    };
+    StartSystem3DeliveryBody: {
+      expectedVersion: number;
+    };
+    System3EvidenceRecord: {
+      /** Format: uuid */
+      id: string;
+      /** Format: uuid */
+      projectId: string;
+      /** Format: uuid */
+      executionId: string;
+      /** Format: uuid */
+      verificationId: string | null;
+      requirementId: string | null;
+      /** @enum {string} */
+      status: 'passed' | 'failed' | 'not_verified' | 'out_of_mvp_scope';
+      validatorVersion: string;
+      basisHash: string;
+      evidence: string[];
+      reason: string | null;
+      /** Format: date-time */
+      createdAt: string;
+    };
     WorkflowListResponse: {
       workflows: components['schemas']['WorkflowListEntry'][];
       recommended: string[];
@@ -3406,6 +9666,12 @@ export interface components {
     WorkflowDefinition: {
       name: string;
       description: string;
+      ui?: {
+        label?: string;
+        phase?: string;
+        phase_label?: string;
+        gate?: string;
+      };
       provider?: string;
       model?: string;
       /** @enum {string} */
@@ -3466,14 +9732,50 @@ export interface components {
       worktree?: {
         enabled?: boolean;
       };
+      progression?: {
+        /** @enum {string} */
+        mode: 'manual';
+        auto_continue_after?: string[];
+      };
+      intake?: {
+        /** @enum {number} */
+        version: 1;
+        title: string;
+        fields: {
+          input: string;
+          /** @enum {string} */
+          control: 'file' | 'dataset' | 'textarea' | 'approval_policy';
+          prompt: string;
+          required?: boolean;
+          options?: {
+            [key: string]: unknown;
+          };
+          default?: unknown;
+        }[];
+      };
       mutates_checkout?: boolean;
       persist_sessions?: boolean;
       tags?: string[];
       requires?: 'github'[];
+      input_schema?: {
+        [key: string]: unknown;
+      };
+      output_schema?: {
+        [key: string]: unknown;
+      };
+      outputs?: {
+        [key: string]: string;
+      };
       nodes: components['schemas']['DagNode'][];
     };
     DagNode: {
       id: string;
+      ui?: {
+        label?: string;
+        phase?: string;
+        phase_label?: string;
+        gate?: string;
+      };
       depends_on?: string[];
       when?: string;
       /** @enum {string} */
@@ -3733,6 +10035,26 @@ export interface components {
       };
       cancel?: string;
       script?: string;
+      workflow?: {
+        name: string;
+        inputs?: {
+          [key: string]: unknown;
+        };
+        artifacts?: {
+          inputs?: {
+            [key: string]: string;
+          };
+          outputs?: {
+            [key: string]: string;
+          };
+        };
+      };
+      action?: {
+        executor: string;
+        input?: {
+          [key: string]: unknown;
+        };
+      };
       /** @enum {string} */
       runtime?: 'bun' | 'uv';
       deps?: string[];
@@ -3764,6 +10086,10 @@ export interface components {
       workflow_name: string;
       conversation_id: string;
       parent_conversation_id: string | null;
+      /** @default null */
+      parent_workflow_run_id: string | null;
+      /** @default null */
+      parent_node_id: string | null;
       codebase_id: string | null;
       /** @enum {string} */
       status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'paused';
@@ -3814,6 +10140,10 @@ export interface components {
       workflow_name: string;
       conversation_id: string;
       parent_conversation_id: string | null;
+      /** @default null */
+      parent_workflow_run_id: string | null;
+      /** @default null */
+      parent_node_id: string | null;
       codebase_id: string | null;
       /** @enum {string} */
       status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'paused';
@@ -3830,13 +10160,161 @@ export interface components {
     WorkflowRunByWorkerResponse: {
       run: components['schemas']['WorkflowRun'];
     };
-    WorkflowRunDetail: {
-      run: components['schemas']['WorkflowRun'] & {
-        worker_platform_id?: string;
-        parent_platform_id?: string;
-        conversation_platform_id: string | null;
+    WorkflowFlowResponse: {
+      rootRun: components['schemas']['WorkflowRun'];
+      snapshot: {
+        /** @enum {string} */
+        source: 'snapshot' | 'current_definition';
+        hash: string | null;
+        warning: string | null;
       };
+      tree: {
+        rootRunId: string;
+        workflows: components['schemas']['WorkflowFlowTree'][];
+      };
+      inconsistencies: components['schemas']['WorkflowFlowInconsistency'][];
+    };
+    WorkflowFlowTree: {
+      runId: string | null;
+      parentNodePath: string | null;
+      workflowName: string;
+      /** @enum {string} */
+      persistedStatus:
+        | 'pending'
+        | 'running'
+        | 'paused'
+        | 'completed'
+        | 'failed'
+        | 'skipped'
+        | 'cancelled'
+        | 'inconsistent';
+      /** @enum {string} */
+      effectiveStatus:
+        | 'pending'
+        | 'running'
+        | 'paused'
+        | 'completed'
+        | 'failed'
+        | 'skipped'
+        | 'cancelled'
+        | 'inconsistent';
+      ui: {
+        label?: string;
+        phase?: string;
+        phaseLabel?: string;
+        gate?: string;
+      };
+      nodes: components['schemas']['WorkflowFlowNode'][];
+    };
+    WorkflowFlowNode: {
+      nodePath: string;
+      runId: string | null;
+      nodeId: string;
+      label: string;
+      /** @enum {string} */
+      kind:
+        | 'prompt'
+        | 'command'
+        | 'bash'
+        | 'script'
+        | 'approval'
+        | 'loop'
+        | 'cancel'
+        | 'workflow'
+        | 'action';
+      dependsOn: string[];
+      /** @enum {string} */
+      persistedStatus:
+        | 'pending'
+        | 'running'
+        | 'paused'
+        | 'completed'
+        | 'failed'
+        | 'skipped'
+        | 'cancelled'
+        | 'inconsistent';
+      /** @enum {string} */
+      effectiveStatus:
+        | 'pending'
+        | 'running'
+        | 'paused'
+        | 'completed'
+        | 'failed'
+        | 'skipped'
+        | 'cancelled'
+        | 'inconsistent';
+      startedAt: string | null;
+      completedAt: string | null;
+      durationMs: number | null;
+      attemptCount: number;
+      provider: string | null;
+      model: string | null;
+      costUsd: number | null;
+      inputCount: number;
+      outputCount: number;
+      declaredInputs: {
+        [key: string]: unknown;
+      };
+      declaredOutputs: {
+        [key: string]: unknown;
+      };
+      artifactCount: number;
+      ioAvailable: boolean;
+      partialTelemetry: boolean;
+      error: string | null;
+      childRunId: string | null;
+      childWorkflowName: string | null;
+      actions: ('continue' | 'approve' | 'reject' | 'resume' | 'cancel' | 'abandon')[];
+      transition: {
+        /** @enum {string} */
+        status: 'awaiting_continue' | 'continued';
+        nextNodeIds: string[];
+      } | null;
+      ui: {
+        label?: string;
+        phase?: string;
+        phaseLabel?: string;
+        gate?: string;
+      };
+    };
+    WorkflowFlowInconsistency: {
+      runId: string;
+      nodePath: string | null;
+      message: string;
+    };
+    WorkflowNodeIoResponse: {
+      partialTelemetry: boolean;
+      attempts: components['schemas']['WorkflowNodeIoAttempt'][];
       events: components['schemas']['WorkflowEvent'][];
+    };
+    WorkflowNodeIoAttempt: {
+      version: number;
+      runId: string;
+      nodeId: string;
+      attempt: number;
+      kind: string;
+      declaredInputs: {
+        [key: string]: unknown;
+      };
+      resolvedInputs: {
+        [key: string]: unknown;
+      };
+      output: {
+        value?: unknown;
+        preview: string;
+        truncated: boolean;
+        artifactPath?: string;
+      };
+      artifacts: {
+        inputs: {
+          [key: string]: string;
+        };
+        outputs: {
+          [key: string]: string;
+        };
+      };
+      startedAt: string;
+      completedAt?: string;
     };
     WorkflowEvent: {
       id: string;
@@ -3850,6 +10328,22 @@ export interface components {
       /** Format: date-time */
       created_at: string;
     };
+    WorkflowRunDetail: {
+      run: components['schemas']['WorkflowRun'] & {
+        worker_platform_id?: string;
+        parent_platform_id?: string;
+        conversation_platform_id: string | null;
+      };
+      events: components['schemas']['WorkflowEvent'][];
+      children: {
+        runId: string;
+        parentNodeId: string;
+        workflowName: string;
+        status: components['schemas']['WorkflowRunStatus'];
+      }[];
+    };
+    /** @enum {string} */
+    WorkflowRunStatus: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'paused';
     ValidateWorkflowResponse: {
       valid: boolean;
       errors?: string[];
@@ -3858,6 +10352,10 @@ export interface components {
       definition: {
         [key: string]: unknown;
       };
+    };
+    WorkflowCompositionResponse: {
+      rootWorkflow: string;
+      workflows: components['schemas']['WorkflowFlowTree'][];
     };
     GetWorkflowResponse: {
       workflow: components['schemas']['WorkflowDefinition'];

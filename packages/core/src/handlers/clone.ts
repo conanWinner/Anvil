@@ -11,6 +11,7 @@ import {
   expandTilde,
   getCommandFolderSearchPaths,
   ensureProjectStructure,
+  getProjectRoot,
   getProjectSourcePath,
   createProjectSourceSymlink,
   parseOwnerRepo,
@@ -131,6 +132,9 @@ export interface RegisterResult {
   commandCount: number;
   alreadyExisted: boolean;
 }
+
+const MANAGED_LOCAL_OWNER = '_local';
+const PROJECT_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
 
 async function detectCurrentGitBranch(targetPath: string): Promise<string | null> {
   try {
@@ -465,4 +469,70 @@ export async function registerRepository(localPath: string): Promise<RegisterRes
 
   // default_cwd is the real local path (not the symlink)
   return registerRepoAtPath(localPath, name, remoteUrl);
+}
+
+/**
+ * Create an Anvil-managed local repository and register it as a project.
+ * The strict folder-safe name prevents path traversal outside ANVIL_HOME.
+ */
+export async function createRepository(projectName: string): Promise<RegisterResult> {
+  const name = projectName.trim();
+  if (!PROJECT_NAME_PATTERN.test(name)) {
+    throw new Error(
+      'Project name must be 1-100 characters and contain only letters, numbers, dots, underscores, or hyphens'
+    );
+  }
+
+  const existing = await codebaseDb.findCodebaseByName(name);
+  if (existing) {
+    return {
+      codebaseId: existing.id,
+      name: existing.name,
+      repositoryUrl: existing.repository_url,
+      defaultCwd: existing.default_cwd,
+      defaultBranch: existing.default_branch ?? null,
+      commandCount: 0,
+      alreadyExisted: true,
+    };
+  }
+
+  const targetPath = getProjectSourcePath(MANAGED_LOCAL_OWNER, name);
+  try {
+    await access(targetPath);
+    throw new Error(`Project folder already exists: ${targetPath}`);
+  } catch (error) {
+    const err = error as NodeJS.ErrnoException;
+    if (err.code !== 'ENOENT') {
+      throw error;
+    }
+  }
+
+  await ensureProjectStructure(MANAGED_LOCAL_OWNER, name);
+
+  try {
+    await execFileAsync('git', ['init', '-b', 'main', targetPath], { timeout: 10_000 });
+    await execFileAsync(
+      'git',
+      [
+        '-C',
+        targetPath,
+        '-c',
+        'user.name=Anvil',
+        '-c',
+        'user.email=anvil@local',
+        'commit',
+        '--allow-empty',
+        '-m',
+        'Initialize project',
+      ],
+      { timeout: 10_000 }
+    );
+  } catch (error) {
+    await rm(getProjectRoot(MANAGED_LOCAL_OWNER, name), { recursive: true, force: true });
+    throw new Error(`Failed to initialize project repository: ${(error as Error).message}`);
+  }
+
+  const result = await registerRepoAtPath(targetPath, name, null);
+  getLog().info({ name, targetPath }, 'managed_project_created');
+  return result;
 }

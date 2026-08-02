@@ -1,5 +1,8 @@
 import { describe, test, expect, mock, beforeEach } from 'bun:test';
 import { OpenAPIHono } from '@hono/zod-openapi';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { ConversationLockManager } from '@anvil/core';
 import type { WebAdapter } from '../adapters/web';
 import { validationErrorHook } from './openapi-defaults';
@@ -11,6 +14,10 @@ import { mockAllWorkflowModules } from '../test/workflow-mock-factories';
 
 const mockGetWorkflowRun = mock(async (_id: string) => null as null | MockWorkflowRun);
 const mockCancelWorkflowRun = mock(async (_id: string) => ({ cancelled: true }));
+const mockCancelWorkflowRunTree = mock(async (_id: string) => {});
+const mockFindActivePausedDescendant = mock(async (_id: string) => null as null | MockWorkflowRun);
+const mockGetRootWorkflowRun = mock(async (_id: string) => null as null | MockWorkflowRun);
+const mockMarkPausedAncestorsResumable = mock(async (_id: string) => {});
 const mockListWorkflowRuns = mock(async () => [] as MockWorkflowRun[]);
 const mockListDashboardRuns = mock(async () => ({
   runs: [] as MockWorkflowRun[],
@@ -129,6 +136,15 @@ mock.module('@anvil/paths', () => ({
   getDefaultWorkflowsPath: mock(() => '/tmp/.anvil-test-nonexistent/workflows/defaults'),
   getAnvilWorkspacesPath: () => '/tmp/.anvil/workspaces',
   getAnvilHome: () => '/tmp/.anvil',
+  resolveRegisteredProjectRoot: (name: string, cwd: string): string | null => {
+    const match = /^\/tmp\/\.anvil\/workspaces\/([^/]+)\/([^/]+)/.exec(cwd);
+    if (match) return `/tmp/.anvil/workspaces/${match[1]}/${match[2]}`;
+    const parts = name.split('/');
+    if (parts.length === 2 && parts.every(value => /^[A-Za-z0-9._-]+$/.test(value))) {
+      return `/tmp/.anvil/workspaces/${parts[0]}/${parts[1]}`;
+    }
+    return /^[A-Za-z0-9._-]+$/.test(name) ? `/tmp/.anvil/workspaces/_local/${name}` : null;
+  },
   getRunArtifactsPath: (owner: string, repo: string, runId: string): string =>
     `/tmp/.anvil/workspaces/${owner}/${repo}/artifacts/runs/${runId}`,
 }));
@@ -180,7 +196,12 @@ mock.module('@anvil/core/db/workflows', () => ({
   listWorkflowRuns: mockListWorkflowRuns,
   listDashboardRuns: mockListDashboardRuns,
   getWorkflowRun: mockGetWorkflowRun,
+  listChildWorkflowRuns: mock(async () => []),
   cancelWorkflowRun: mockCancelWorkflowRun,
+  cancelWorkflowRunTree: mockCancelWorkflowRunTree,
+  findActivePausedDescendant: mockFindActivePausedDescendant,
+  getRootWorkflowRun: mockGetRootWorkflowRun,
+  markPausedAncestorsResumable: mockMarkPausedAncestorsResumable,
   deleteWorkflowRun: mockDeleteWorkflowRun,
   updateWorkflowRun: mockUpdateWorkflowRun,
   getWorkflowRunByWorkerPlatformId: mockGetWorkflowRunByWorkerPlatformId,
@@ -1189,7 +1210,7 @@ describe('POST /api/workflows/runs/:runId/resume', () => {
       string,
     ];
     expect(platformConvId).toBe('web-plat-abc');
-    expect(dispatchedMessage).toBe('/workflow run deploy Run the deploy');
+    expect(dispatchedMessage).toBe('/workflow resume run-uuid-4');
   });
 });
 
@@ -1543,7 +1564,7 @@ describe('approve/reject auto-resume', () => {
       string,
     ];
     expect(platformConvId).toBe('web-plat-abc');
-    expect(dispatchedMessage).toBe('/workflow run deploy Deploy feature X');
+    expect(dispatchedMessage).toBe('/workflow resume run-auto-resume-approve');
   });
 
   test('approve: skips dispatch when parent_conversation_id is null (CLI-dispatched run)', async () => {
@@ -1655,7 +1676,7 @@ describe('approve/reject auto-resume', () => {
       string,
     ];
     expect(platformConvId).toBe('web-plat-xyz');
-    expect(dispatchedMessage).toBe('/workflow run deploy Review PR');
+    expect(dispatchedMessage).toBe('/workflow resume run-auto-resume-reject');
   });
 
   test('reject: surfaces CLI resume hint when on_reject configured but parent is non-web', async () => {
@@ -1750,7 +1771,7 @@ describe('GET /api/runs/:runId/artifacts', () => {
     expect(mockGetCodebase).not.toHaveBeenCalled();
   });
 
-  test('returns empty files when codebase name lacks owner/repo shape', async () => {
+  test('falls back to the run worktree when codebase name lacks owner/repo shape', async () => {
     mockGetWorkflowRun.mockImplementationOnce(async () => ({
       ...MOCK_RUNNING_RUN,
       id: 'run-no-slash',
@@ -1762,6 +1783,50 @@ describe('GET /api/runs/:runId/artifacts', () => {
     expect(response.status).toBe(200);
     const body = (await response.json()) as { files: unknown[] };
     expect(body.files).toEqual([]);
+  });
+
+  test('lists artifacts for a registered local project from its workspace root', async () => {
+    const workingPath = await mkdtemp(join(tmpdir(), 'anvil-local-artifacts-'));
+    const projectRoot = '/tmp/.anvil/workspaces/_local/System3_test_run_local';
+    const artifactDir = join(projectRoot, 'artifacts', 'runs', 'run-local', 'overview');
+    await mkdir(artifactDir, { recursive: true });
+    await writeFile(join(artifactDir, 'project.json'), '{"ok":true}', 'utf8');
+    const credentialDir = join(projectRoot, 'artifacts', 'runs', 'run-local', 'codex-home');
+    await mkdir(credentialDir, { recursive: true });
+    await writeFile(join(credentialDir, 'auth.json'), '{"token":"secret"}', 'utf8');
+    try {
+      mockGetWorkflowRun.mockImplementationOnce(async () => ({
+        ...MOCK_RUNNING_RUN,
+        id: 'run-local',
+        codebase_id: 'cb-local',
+        working_path: workingPath,
+      }));
+      mockGetCodebase.mockImplementationOnce(async () => ({ name: 'System3_test_run_local' }));
+
+      const { app } = makeApp();
+      const response = await app.request('/api/runs/run-local/artifacts');
+
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as { files: { path: string }[] };
+      expect(body.files.map(file => file.path)).toEqual(['overview/project.json']);
+    } finally {
+      await rm(workingPath, { recursive: true, force: true });
+      await rm(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  test('blocks direct reads from provider credential homes', async () => {
+    mockGetWorkflowRun.mockImplementationOnce(async () => ({
+      ...MOCK_RUNNING_RUN,
+      id: 'run-secret',
+      codebase_id: 'cb-local',
+    }));
+    mockGetCodebase.mockImplementationOnce(async () => ({ name: 'System3_test' }));
+
+    const { app } = makeApp();
+    const response = await app.request('/api/artifacts/run-secret/codex-home/auth.json');
+
+    expect(response.status).toBe(400);
   });
 
   test('returns 500 + logs when the codebase lookup throws', async () => {

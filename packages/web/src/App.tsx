@@ -1,12 +1,30 @@
-import { Component } from 'react';
+import { Component, lazy, Suspense } from 'react';
 import type { ReactNode, ErrorInfo } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router';
-import { ConsoleApp } from '@/experiments/console/ConsoleApp';
 import { SessionGate } from '@/components/auth/SessionGate';
 import { LoginPage } from '@/components/auth/LoginPage';
 import { QueryClientProvider } from '@tanstack/react-query';
 import { ProjectProvider } from '@/contexts/ProjectContext';
 import { queryClient } from '@/lib/query-client';
+
+const lazyRoutes = {
+  console: lazy(async () => ({
+    default: (await import('@/experiments/console/ConsoleApp')).ConsoleApp,
+  })),
+  system3: lazy(async () => ({
+    default: (await import('@/features/system3/System3App')).System3App,
+  })),
+};
+
+function RouteLoading(): React.ReactElement {
+  return (
+    <main className="flex min-h-screen items-center justify-center" aria-busy="true">
+      <p role="status" aria-live="polite">
+        Đang tải giao diện…
+      </p>
+    </main>
+  );
+}
 
 interface ErrorBoundaryState {
   hasError: boolean;
@@ -62,19 +80,29 @@ export function App(): React.ReactElement {
       <QueryClientProvider client={queryClient}>
         <ProjectProvider>
           <BrowserRouter>
-            <Routes>
-              <Route path="/" element={<Navigate to="/console" replace />} />
-              <Route path="/login" element={<LoginPage />} />
-              <Route
-                path="/console/*"
-                element={
-                  <SessionGate>
-                    <ConsoleApp />
-                  </SessionGate>
-                }
-              />
-              <Route path="*" element={<Navigate to="/console" replace />} />
-            </Routes>
+            <Suspense fallback={<RouteLoading />}>
+              <Routes>
+                <Route path="/" element={<Navigate to="/console" replace />} />
+                <Route path="/login" element={<LoginPage />} />
+                <Route
+                  path="/console/projects/*"
+                  element={
+                    <SessionGate>
+                      <lazyRoutes.system3 />
+                    </SessionGate>
+                  }
+                />
+                <Route
+                  path="/console/*"
+                  element={
+                    <SessionGate>
+                      <lazyRoutes.console />
+                    </SessionGate>
+                  }
+                />
+                <Route path="*" element={<Navigate to="/console" replace />} />
+              </Routes>
+            </Suspense>
           </BrowserRouter>
         </ProjectProvider>
       </QueryClientProvider>

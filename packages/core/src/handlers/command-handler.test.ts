@@ -38,6 +38,8 @@ const mockGetWorkflowRun = mock(() => Promise.resolve(null));
 const mockResumeWorkflowRun = mock(() => Promise.resolve({ id: 'run-id', status: 'running' }));
 const mockFailWorkflowRun = mock(() => Promise.resolve());
 const mockUpdateWorkflowRun = mock(() => Promise.resolve());
+const mockFindActivePausedDescendant = mock(() => Promise.resolve(null));
+const mockMarkPausedAncestorsResumable = mock(() => Promise.resolve());
 
 // Workflow events database mocks
 const mockCreateWorkflowEvent = mock(() => Promise.resolve());
@@ -85,6 +87,10 @@ mock.module('../db/sessions', () => ({
 mock.module('../db/workflows', () => ({
   getActiveWorkflowRun: mockGetActiveWorkflowRun,
   cancelWorkflowRun: mockCancelWorkflowRun,
+  cancelWorkflowRunTree: mockCancelWorkflowRun,
+  getRootWorkflowRun: mock(async () => null),
+  findActivePausedDescendant: mockFindActivePausedDescendant,
+  markPausedAncestorsResumable: mockMarkPausedAncestorsResumable,
   listWorkflowRuns: mockListWorkflowRuns,
   getWorkflowRun: mockGetWorkflowRun,
   resumeWorkflowRun: mockResumeWorkflowRun,

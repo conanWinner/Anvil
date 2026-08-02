@@ -1,12 +1,9 @@
 import { useEffect, useState, type ReactElement } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import remarkBreaks from 'remark-breaks';
-import rehypeHighlight from 'rehype-highlight';
 import { useEntity } from '../store/cache';
 import { K } from '../store/keys';
 import * as skill from '../skills';
 import type { ArtifactFile } from '../skills/runs';
+import { ArtifactContent, ArtifactKindIcon, describeArtifact } from './ArtifactPresentation';
 
 interface ArtifactPanelProps {
   runId: string;
@@ -18,8 +15,8 @@ interface ArtifactPanelProps {
  * artifact dir) rather than `workflow_artifact` events — bash/script nodes
  * typically write straight to $ARTIFACTS_DIR without emitting an event.
  *
- * Markdown gets the same react-markdown + GFM + highlight stack the old UI
- * used; everything else renders as monospace plain text.
+ * Friendly summaries are the default. Raw JSON stays available behind a
+ * technical disclosure so users can inspect it without making it the primary UI.
  */
 export function ArtifactPanel({ runId }: ArtifactPanelProps): ReactElement {
   const {
@@ -30,10 +27,20 @@ export function ArtifactPanel({ runId }: ArtifactPanelProps): ReactElement {
 
   const [selected, setSelected] = useState<string | null>(null);
 
+  useEffect(() => {
+    setSelected(null);
+  }, [runId]);
+
   // Auto-select the first file once the list arrives (or when the run changes).
   useEffect(() => {
     if (files !== undefined && files.length > 0 && selected === null) {
-      setSelected(files[0].path);
+      const newestReadable = [...files]
+        .filter(file => !describeArtifact(file.path).technical)
+        .sort(
+          (left, right) =>
+            new Date(right.modifiedAt).getTime() - new Date(left.modifiedAt).getTime()
+        )[0];
+      setSelected(newestReadable?.path ?? files[0].path);
     }
   }, [files, selected]);
 
@@ -84,6 +91,54 @@ interface SidebarProps {
 }
 
 function ArtifactSidebar({ files, selected, onSelect }: SidebarProps): ReactElement {
+  const byNewest = (left: ArtifactFile, right: ArtifactFile): number =>
+    new Date(right.modifiedAt).getTime() - new Date(left.modifiedAt).getTime();
+  const resultFiles = files.filter(file => !describeArtifact(file.path).technical).sort(byNewest);
+  const technicalFiles = files.filter(file => describeArtifact(file.path).technical).sort(byNewest);
+  const renderFiles = (items: ArtifactFile[]): ReactElement => (
+    <ul className="flex flex-col gap-1 p-2">
+      {items.map(file => {
+        const isSelected = selected === file.path;
+        const presentation = describeArtifact(file.path);
+        const dir = file.path.includes('/') ? file.path.slice(0, file.path.lastIndexOf('/')) : null;
+        return (
+          <li key={file.path}>
+            <button
+              type="button"
+              onClick={() => {
+                onSelect(file.path);
+              }}
+              aria-pressed={isSelected}
+              title={`${presentation.title}: ${presentation.description}`}
+              className={`group flex w-full gap-2 rounded-md px-2.5 py-2 text-left transition-colors ${
+                isSelected ? 'bg-surface-elevated' : 'hover:bg-surface-hover'
+              }`}
+            >
+              <span className="mt-0.5 shrink-0 text-text-tertiary">
+                <ArtifactKindIcon technical={presentation.technical} />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span
+                  className={`block text-[12px] font-medium ${
+                    isSelected ? 'text-text-primary' : 'text-text-secondary'
+                  }`}
+                >
+                  {presentation.title}
+                </span>
+                <span className="mt-0.5 line-clamp-2 block text-[10px] leading-4 text-text-tertiary">
+                  {presentation.description}
+                </span>
+                <span className="mt-1 flex items-center justify-between gap-2 font-mono text-[9px] text-text-tertiary">
+                  <span className="truncate">{dir ?? file.path}</span>
+                  <span className="shrink-0 tabular-nums">{formatSize(file.size)}</span>
+                </span>
+              </span>
+            </button>
+          </li>
+        );
+      })}
+    </ul>
+  );
   return (
     <nav
       aria-label="Artifacts"
@@ -92,39 +147,15 @@ function ArtifactSidebar({ files, selected, onSelect }: SidebarProps): ReactElem
       <header className="sticky top-0 z-10 border-b border-border bg-surface-inset px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-text-tertiary">
         Files · {files.length.toString()}
       </header>
-      <ul className="flex flex-col gap-px p-2">
-        {files.map(f => {
-          const isSelected = selected === f.path;
-          const basename = f.path.split('/').pop() ?? f.path;
-          const dir = f.path.includes('/') ? f.path.slice(0, f.path.lastIndexOf('/')) : null;
-          return (
-            <li key={f.path}>
-              <button
-                type="button"
-                onClick={() => {
-                  onSelect(f.path);
-                }}
-                aria-pressed={isSelected}
-                className={`group flex w-full flex-col gap-0.5 rounded-md px-2.5 py-1.5 text-left transition-colors ${
-                  isSelected ? 'bg-surface-elevated' : 'hover:bg-surface-hover'
-                }`}
-              >
-                <span
-                  className={`truncate font-mono text-[12px] ${
-                    isSelected ? 'text-text-primary' : 'text-text-secondary'
-                  }`}
-                >
-                  {basename}
-                </span>
-                <span className="flex items-center justify-between gap-2 font-mono text-[10px] text-text-tertiary">
-                  <span className="truncate">{dir ?? '·'}</span>
-                  <span className="shrink-0 tabular-nums">{formatSize(f.size)}</span>
-                </span>
-              </button>
-            </li>
-          );
-        })}
-      </ul>
+      {resultFiles.length > 0 ? renderFiles(resultFiles) : null}
+      {technicalFiles.length > 0 ? (
+        <details className="border-t border-border">
+          <summary className="cursor-pointer px-3 py-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-text-tertiary hover:text-text-secondary">
+            Technical files · {technicalFiles.length.toString()}
+          </summary>
+          {renderFiles(technicalFiles)}
+        </details>
+      ) : null}
     </nav>
   );
 }
@@ -139,9 +170,6 @@ interface ViewerProps {
   runId: string;
   path: string;
 }
-
-const REMARK_PLUGINS = [remarkGfm, remarkBreaks];
-const REHYPE_PLUGINS = [rehypeHighlight];
 
 function ArtifactViewer({ runId, path }: ViewerProps): ReactElement {
   const [content, setContent] = useState<string | null>(null);
@@ -165,13 +193,18 @@ function ArtifactViewer({ runId, path }: ViewerProps): ReactElement {
       });
   }, [runId, path]);
 
-  const basename = path.split('/').pop() ?? path;
-  const isMarkdown = basename.endsWith('.md') || basename.endsWith('.mdx');
+  const presentation = describeArtifact(path);
 
   return (
     <>
-      <header className="flex shrink-0 items-center justify-between border-b border-border bg-surface px-6 py-2">
-        <span className="truncate font-mono text-[12px] text-text-primary">{path}</span>
+      <header className="flex shrink-0 items-start justify-between gap-4 border-b border-border bg-surface px-6 py-3">
+        <div className="min-w-0">
+          <div className="truncate text-sm font-semibold text-text-primary">
+            {presentation.title}
+          </div>
+          <div className="mt-0.5 text-[11px] text-text-tertiary">{presentation.description}</div>
+          <div className="mt-1 truncate font-mono text-[9px] text-text-tertiary">{path}</div>
+        </div>
         <a
           href={`/api/artifacts/${encodeURIComponent(runId)}/${path
             .split('/')
@@ -189,16 +222,8 @@ function ArtifactViewer({ runId, path }: ViewerProps): ReactElement {
           <p className="font-mono text-[12px] text-text-tertiary">Loading…</p>
         ) : error !== null ? (
           <p className="font-mono text-[12px] text-error">{error}</p>
-        ) : content === null ? null : isMarkdown ? (
-          <div className="chat-markdown max-w-[820px] text-[13px] leading-relaxed text-text-primary">
-            <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS}>
-              {content}
-            </ReactMarkdown>
-          </div>
-        ) : (
-          <pre className="max-w-[1100px] whitespace-pre-wrap break-words font-mono text-[12px] leading-relaxed text-text-primary">
-            {content}
-          </pre>
+        ) : content === null ? null : (
+          <ArtifactContent path={path} content={content} />
         )}
       </div>
     </>

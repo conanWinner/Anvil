@@ -54,7 +54,7 @@ import {
   executeDagWorkflow,
 } from './dag-executor';
 import { loadMcpConfig } from '@anvil/providers/mcp/config';
-import type { DagNode, BashNode, ScriptNode, NodeOutput, WorkflowRun } from './schemas';
+import type { ActionNode, DagNode, BashNode, ScriptNode, NodeOutput, WorkflowRun } from './schemas';
 import { discoverWorkflows } from './workflow-discovery';
 import { parseWorkflow } from './loader';
 import { OutputRefError } from './output-ref';
@@ -1544,6 +1544,88 @@ describe('executeDagWorkflow -- tool restrictions', () => {
     const messages = sendMessage.mock.calls.map((call: unknown[]) => call[1] as string);
     const warning = messages.find(m => m.includes('hooks') && m.includes('codex'));
     expect(warning).toBeDefined();
+  });
+});
+
+describe('executeDagWorkflow -- action nodes', () => {
+  let testDir: string;
+
+  beforeEach(async () => {
+    testDir = join(tmpdir(), `dag-action-test-${crypto.randomUUID()}`);
+    await mkdir(testDir, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(testDir, { recursive: true, force: true });
+  });
+
+  it('dispatches executor ID and substituted input through the injected registry', async () => {
+    const deps = createMockDeps();
+    const execute = mock(async (_executorId: string, input: Readonly<Record<string, unknown>>) => ({
+      output: JSON.stringify(input),
+      structuredOutput: input,
+    }));
+    deps.actionRegistry = { has: mock(() => true), execute };
+    const nodes: DagNode[] = [
+      { id: 'seed', bash: 'printf 42' },
+      {
+        id: 'action',
+        action: { executor: 'example.executor', input: { value: '$seed.output' } },
+        depends_on: ['seed'],
+      } as ActionNode,
+    ];
+
+    await executeDagWorkflow(
+      deps,
+      createMockPlatform(),
+      'conv-action',
+      testDir,
+      { name: 'action-test', nodes },
+      makeWorkflowRun('action-run'),
+      'claude',
+      undefined,
+      join(testDir, 'artifacts'),
+      join(testDir, 'logs'),
+      'main',
+      'docs/',
+      minimalConfig
+    );
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute.mock.calls[0]?.[0]).toBe('example.executor');
+    expect(execute.mock.calls[0]?.[1]).toEqual({ value: '42' });
+  });
+
+  it('fails fast when the executor is not registered', async () => {
+    const deps = createMockDeps();
+    deps.actionRegistry = {
+      has: mock(() => false),
+      execute: mock(async () => ({ output: '' })),
+    };
+    const store = deps.store;
+    const node: ActionNode = {
+      id: 'action',
+      action: { executor: 'missing.executor' },
+    };
+
+    await executeDagWorkflow(
+      deps,
+      createMockPlatform(),
+      'conv-action',
+      testDir,
+      { name: 'action-test', nodes: [node] },
+      makeWorkflowRun('action-run'),
+      'claude',
+      undefined,
+      join(testDir, 'artifacts'),
+      join(testDir, 'logs'),
+      'main',
+      'docs/',
+      minimalConfig
+    );
+
+    const events = (store.createWorkflowEvent as ReturnType<typeof mock>).mock.calls;
+    expect(events.some(call => call[0]?.event_type === 'node_failed')).toBe(true);
   });
 });
 

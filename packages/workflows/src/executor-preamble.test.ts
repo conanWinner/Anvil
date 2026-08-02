@@ -28,6 +28,7 @@ const mockLogger = {
 mock.module('@anvil/paths', () => ({
   createLogger: mock(() => mockLogger),
   parseOwnerRepo: mock(() => null),
+  resolveRegisteredProjectRoot: mock(() => null),
   getRunArtifactsPath: mock(() => '/tmp/artifacts'),
   getProjectLogsPath: mock(() => '/tmp/logs'),
 }));

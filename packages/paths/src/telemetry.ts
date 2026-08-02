@@ -603,7 +603,9 @@ export type WorkflowNodeType =
   | 'script'
   | 'loop'
   | 'approval'
-  | 'cancel';
+  | 'cancel'
+  | 'workflow'
+  | 'action';
 
 /**
  * Terminal workflow-run event (`workflow_completed` / `workflow_failed`).

@@ -38,6 +38,7 @@ export function ApprovalPanel({ run }: ApprovalPanelProps): ReactElement {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const isDemo = run.id.startsWith('demo-');
+  const isPhaseTransition = run.approval?.type === 'phase_transition';
 
   const stopPropagation = (e: MouseEvent | ReactKeyboardEvent): void => {
     e.stopPropagation();
@@ -58,6 +59,24 @@ export function ApprovalPanel({ run }: ApprovalPanelProps): ReactElement {
       setComment('');
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Approve failed.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const continuePhase = async (): Promise<void> => {
+    setBusy(true);
+    setError(null);
+    try {
+      if (isDemo) {
+        await new Promise<void>(r => setTimeout(r, 300));
+      } else {
+        await skill.continueRun(run.id);
+      }
+      invalidate('runs');
+      invalidate(`run:${run.id}`);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Continue failed.');
     } finally {
       setBusy(false);
     }
@@ -123,7 +142,16 @@ export function ApprovalPanel({ run }: ApprovalPanelProps): ReactElement {
         </p>
       ) : null}
 
-      {mode === 'idle' ? (
+      {isPhaseTransition ? (
+        <button
+          type="button"
+          onClick={() => void continuePhase()}
+          disabled={busy}
+          className="rounded border border-success/40 bg-success/15 px-3 py-1.5 text-[12px] font-medium text-success transition-colors hover:bg-success/25 disabled:opacity-50"
+        >
+          {busy ? 'Continuing…' : 'Continue to next phase'}
+        </button>
+      ) : mode === 'idle' ? (
         <div className="flex items-stretch gap-2">
           <input
             type="text"

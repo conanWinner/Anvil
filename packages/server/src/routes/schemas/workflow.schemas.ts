@@ -133,8 +133,157 @@ export const workflowRunDetailSchema = z
       conversation_platform_id: z.string().nullable(),
     }),
     events: z.array(workflowEventSchema),
+    children: z.array(
+      z.object({
+        runId: z.string(),
+        parentNodeId: z.string(),
+        workflowName: z.string(),
+        status: workflowRunStatusSchema,
+      })
+    ),
   })
   .openapi('WorkflowRunDetail');
+
+export const workflowFlowStatusSchema = z.enum([
+  'pending',
+  'running',
+  'paused',
+  'completed',
+  'failed',
+  'skipped',
+  'cancelled',
+  'inconsistent',
+]);
+
+export const workflowFlowUiSchema = z.object({
+  label: z.string().optional(),
+  phase: z.string().optional(),
+  phaseLabel: z.string().optional(),
+  gate: z.string().optional(),
+});
+
+export const workflowFlowTransitionSchema = z.object({
+  status: z.enum(['awaiting_continue', 'continued']),
+  nextNodeIds: z.array(z.string()),
+});
+
+export const workflowFlowNodeSchema = z
+  .object({
+    nodePath: z.string(),
+    runId: z.string().nullable(),
+    nodeId: z.string(),
+    label: z.string(),
+    kind: z.enum([
+      'prompt',
+      'command',
+      'bash',
+      'script',
+      'approval',
+      'loop',
+      'cancel',
+      'workflow',
+      'action',
+    ]),
+    dependsOn: z.array(z.string()),
+    persistedStatus: workflowFlowStatusSchema,
+    effectiveStatus: workflowFlowStatusSchema,
+    startedAt: z.string().nullable(),
+    completedAt: z.string().nullable(),
+    durationMs: z.number().nullable(),
+    attemptCount: z.number(),
+    provider: z.string().nullable(),
+    model: z.string().nullable(),
+    costUsd: z.number().nullable(),
+    inputCount: z.number(),
+    outputCount: z.number(),
+    declaredInputs: z.record(z.string(), z.unknown()),
+    declaredOutputs: z.record(z.string(), z.unknown()),
+    artifactCount: z.number(),
+    ioAvailable: z.boolean(),
+    partialTelemetry: z.boolean(),
+    error: z.string().nullable(),
+    childRunId: z.string().nullable(),
+    childWorkflowName: z.string().nullable(),
+    actions: z.array(z.enum(['continue', 'approve', 'reject', 'resume', 'cancel', 'abandon'])),
+    transition: workflowFlowTransitionSchema.nullable(),
+    ui: workflowFlowUiSchema,
+  })
+  .openapi('WorkflowFlowNode');
+
+export const workflowFlowTreeSchema = z
+  .object({
+    runId: z.string().nullable(),
+    parentNodePath: z.string().nullable(),
+    workflowName: z.string(),
+    persistedStatus: workflowFlowStatusSchema,
+    effectiveStatus: workflowFlowStatusSchema,
+    ui: workflowFlowUiSchema,
+    nodes: z.array(workflowFlowNodeSchema),
+  })
+  .openapi('WorkflowFlowTree');
+
+export const workflowFlowInconsistencySchema = z
+  .object({
+    runId: z.string(),
+    nodePath: z.string().nullable(),
+    message: z.string(),
+  })
+  .openapi('WorkflowFlowInconsistency');
+
+export const workflowFlowResponseSchema = z
+  .object({
+    rootRun: workflowRunSchema,
+    snapshot: z.object({
+      source: z.enum(['snapshot', 'current_definition']),
+      hash: z.string().nullable(),
+      warning: z.string().nullable(),
+    }),
+    tree: z.object({
+      rootRunId: z.string(),
+      workflows: z.array(workflowFlowTreeSchema),
+    }),
+    inconsistencies: z.array(workflowFlowInconsistencySchema),
+  })
+  .openapi('WorkflowFlowResponse');
+
+export const workflowCompositionResponseSchema = z
+  .object({
+    rootWorkflow: z.string(),
+    workflows: z.array(workflowFlowTreeSchema),
+  })
+  .openapi('WorkflowCompositionResponse');
+
+export const workflowNodeIoAttemptSchema = z
+  .object({
+    version: z.number(),
+    runId: z.string(),
+    nodeId: z.string(),
+    attempt: z.number(),
+    kind: z.string(),
+    declaredInputs: z.record(z.string(), z.unknown()),
+    resolvedInputs: z.record(z.string(), z.unknown()),
+    output: z.object({
+      value: z.unknown().optional(),
+      preview: z.string(),
+      truncated: z.boolean(),
+      artifactPath: z.string().optional(),
+    }),
+    artifacts: z.object({
+      inputs: z.record(z.string(), z.string()),
+      outputs: z.record(z.string(), z.string()),
+    }),
+    startedAt: z.string(),
+    completedAt: z.string().optional(),
+  })
+  .openapi('WorkflowNodeIoAttempt');
+
+export const workflowNodeIoResponseSchema = z
+  .object({
+    partialTelemetry: z.boolean(),
+    attempts: z.array(workflowNodeIoAttemptSchema),
+    events: z.array(workflowEventSchema),
+  })
+  .openapi('WorkflowNodeIoResponse');
 
 /** GET /api/workflows/runs/by-worker/:platformId response. */
 export const workflowRunByWorkerResponseSchema = z
@@ -220,6 +369,7 @@ export const runWorkflowBodySchema = z
   .object({
     conversationId: z.string(),
     message: z.string(),
+    inputs: z.record(z.string(), z.unknown()).optional(),
   })
   .openapi('RunWorkflowBody');
 
@@ -249,6 +399,7 @@ export const dashboardRunsQuerySchema = z.object({
   before: z.string().optional(),
   limit: z.string().optional(),
   offset: z.string().optional(),
+  rootOnly: z.enum(['true', 'false']).optional(),
 });
 
 /** GET /api/workflows/runs query params. */
@@ -258,6 +409,7 @@ export const workflowRunsQuerySchema = z.object({
   status: z.string().optional(),
   codebaseId: z.string().optional(),
   limit: z.string().optional(),
+  rootOnly: z.enum(['true', 'false']).optional(),
   // Non-enforcing "mine" filter: 'true' restricts to the caller's own runs
   // when an identity resolves. Default lists everything. Enum makes the boolean
   // contract explicit (the handler treats only 'true' as on).

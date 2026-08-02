@@ -3,13 +3,18 @@ import { Link } from 'react-router';
 
 interface ProjectViewTabsProps {
   projectId: string;
-  active: 'runs' | 'chat' | 'workflows';
+  active: 'runs' | 'chat' | 'workflows' | 'flow';
 }
 
-const TABS: readonly { key: 'runs' | 'chat' | 'workflows'; label: string; suffix: string }[] = [
+const TABS: readonly {
+  key: 'runs' | 'chat' | 'workflows' | 'flow';
+  label: string;
+  suffix: string;
+}[] = [
   { key: 'runs', label: 'Runs', suffix: '' },
   { key: 'chat', label: 'Chat', suffix: '/chat' },
   { key: 'workflows', label: 'Workflows', suffix: '/workflows' },
+  { key: 'flow', label: 'Progress', suffix: '/flow' },
 ];
 
 /**

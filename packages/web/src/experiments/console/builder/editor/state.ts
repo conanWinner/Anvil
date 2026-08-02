@@ -51,6 +51,7 @@ export const NODE_ID_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_-]*$/;
 
 export type EditorAction =
   | { type: 'add-node'; variant: VariantId; position: XYPosition; at: number }
+  | { type: 'patch-meta'; meta: BuilderWorkflow['meta']; at: number }
   | { type: 'patch-node'; node: BuilderNode; at: number }
   | { type: 'rename-node'; id: string; nextId: string; at: number }
   | { type: 'remove-nodes'; ids: readonly string[]; at: number }
@@ -181,6 +182,13 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
         selectedEdges: new Set(),
       };
     }
+
+    case 'patch-meta':
+      return {
+        ...state,
+        history: remember(state, 'patch-meta', action.at),
+        workflow: { ...state.workflow, meta: action.meta },
+      };
 
     case 'patch-node': {
       if (!state.workflow.nodes.some(n => n.id === action.node.id)) return state;

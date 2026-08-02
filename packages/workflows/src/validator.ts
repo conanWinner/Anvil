@@ -30,7 +30,7 @@ function getLog(): ReturnType<typeof createLogger> {
   if (!cachedLog) cachedLog = createLogger('workflow.validator');
   return cachedLog;
 }
-import { isBashNode, isLoopNode, isScriptNode } from './schemas';
+import { isBashNode, isLoopNode, isScriptNode, isWorkflowNode } from './schemas';
 import type { WorkflowDefinition, DagNode, WorkflowSource } from './schemas';
 import type { ScriptRuntime } from './script-discovery';
 import { discoverScriptsForCwd } from './script-discovery';
@@ -89,6 +89,8 @@ export interface ValidationConfig {
   assistant?: string;
   aliases?: RawAliasesConfig;
   tiers?: RawTiersConfig;
+  /** Effective discovery set used to validate composition references and cycles. */
+  availableWorkflows?: readonly WorkflowDefinition[];
 }
 
 // =============================================================================
@@ -366,6 +368,177 @@ export async function validateWorkflowResources(
     });
   }
   if (workflow.model) validateModelRef(workflow.model);
+
+  if (workflow.progression?.mode === 'manual') {
+    const workflowNodeIds = new Set(workflow.nodes.filter(isWorkflowNode).map(node => node.id));
+    const seen = new Set<string>();
+    for (const nodeId of workflow.progression.auto_continue_after ?? []) {
+      if (seen.has(nodeId)) {
+        issues.push({
+          level: 'error',
+          nodeId,
+          field: 'progression.auto_continue_after',
+          message: `Workflow node '${nodeId}' is listed more than once`,
+        });
+      }
+      seen.add(nodeId);
+      if (!workflowNodeIds.has(nodeId)) {
+        issues.push({
+          level: 'error',
+          nodeId,
+          field: 'progression.auto_continue_after',
+          message: `Progression node '${nodeId}' must reference a workflow node`,
+        });
+      }
+    }
+  }
+
+  if (workflow.intake) {
+    const properties =
+      workflow.input_schema?.properties !== null &&
+      typeof workflow.input_schema?.properties === 'object' &&
+      !Array.isArray(workflow.input_schema.properties)
+        ? workflow.input_schema.properties
+        : {};
+    const required = Array.isArray(workflow.input_schema?.required)
+      ? workflow.input_schema.required.filter((field): field is string => typeof field === 'string')
+      : [];
+    const seen = new Set<string>();
+    for (const field of workflow.intake.fields) {
+      if (seen.has(field.input)) {
+        issues.push({
+          level: 'error',
+          field: 'intake.fields',
+          message: `Intake field '${field.input}' is declared more than once`,
+        });
+      }
+      seen.add(field.input);
+      if (!(field.input in properties)) {
+        issues.push({
+          level: 'error',
+          field: `intake.fields.${field.input}`,
+          message: `Intake field '${field.input}' is missing from input_schema.properties`,
+        });
+      }
+      if (field.required === true && !required.includes(field.input)) {
+        issues.push({
+          level: 'warning',
+          field: `intake.fields.${field.input}.required`,
+          message: `Intake marks '${field.input}' required but input_schema does not`,
+        });
+      }
+    }
+    for (const field of required) {
+      if (!seen.has(field)) {
+        issues.push({
+          level: 'error',
+          field: 'intake.fields',
+          message: `Required input '${field}' has no intake field`,
+        });
+      }
+    }
+  }
+
+  const workflowNodes = workflow.nodes.filter(isWorkflowNode);
+  if (workflowNodes.length > 0 && config?.availableWorkflows) {
+    const byName = new Map(config.availableWorkflows.map(item => [item.name, item]));
+    const depsById = new Map(workflow.nodes.map(node => [node.id, node.depends_on ?? []]));
+    const layerMemo = new Map<string, number>();
+    const layerOf = (nodeId: string): number => {
+      const cached = layerMemo.get(nodeId);
+      if (cached !== undefined) return cached;
+      const deps = depsById.get(nodeId) ?? [];
+      const layer = deps.length === 0 ? 0 : 1 + Math.max(...deps.map(layerOf));
+      layerMemo.set(nodeId, layer);
+      return layer;
+    };
+    const dependsTransitively = (nodeId: string, targetId: string): boolean => {
+      const pending = [...(depsById.get(nodeId) ?? [])];
+      const seen = new Set<string>();
+      while (pending.length > 0) {
+        const current = pending.pop();
+        if (!current || seen.has(current)) continue;
+        if (current === targetId) return true;
+        seen.add(current);
+        pending.push(...(depsById.get(current) ?? []));
+      }
+      return false;
+    };
+
+    for (let index = 0; index < workflowNodes.length; index++) {
+      const node = workflowNodes[index];
+      const child = byName.get(node.workflow.name);
+      const sameLayer = workflow.nodes.filter(
+        candidate => layerOf(candidate.id) === layerOf(node.id)
+      );
+      if (sameLayer.length > 1) {
+        issues.push({
+          level: 'error',
+          nodeId: node.id,
+          field: 'depends_on',
+          message: `Workflow node '${node.id}' must be exclusive in its topological layer`,
+        });
+      }
+      if (!child) {
+        issues.push({
+          level: 'error',
+          nodeId: node.id,
+          field: 'workflow.name',
+          message: `Child workflow '${node.workflow.name}' was not found`,
+        });
+        continue;
+      }
+      const required = Array.isArray(child.input_schema?.required)
+        ? child.input_schema.required.filter((item): item is string => typeof item === 'string')
+        : [];
+      for (const field of required) {
+        if (!(field in (node.workflow.inputs ?? {}))) {
+          issues.push({
+            level: 'error',
+            nodeId: node.id,
+            field: `workflow.inputs.${field}`,
+            message: `Required child input '${field}' is not mapped`,
+          });
+        }
+      }
+      const previous = workflowNodes[index - 1];
+      if (previous && !dependsTransitively(node.id, previous.id)) {
+        issues.push({
+          level: 'error',
+          nodeId: node.id,
+          field: 'depends_on',
+          message: `Child workflow nodes must be explicitly ordered in v1; '${node.id}' must depend on '${previous.id}'`,
+        });
+      }
+    }
+
+    const visit = (name: string, path: string[]): void => {
+      // Path includes the root, so six names represent the allowed root + five child levels.
+      if (path.length > 6) {
+        issues.push({
+          level: 'error',
+          field: 'workflow',
+          message: `Composition depth exceeds 5: ${path.join(' -> ')}`,
+        });
+        return;
+      }
+      const current = byName.get(name);
+      if (!current) return;
+      for (const node of current.nodes.filter(isWorkflowNode)) {
+        if (path.includes(node.workflow.name)) {
+          issues.push({
+            level: 'error',
+            nodeId: node.id,
+            field: 'workflow.name',
+            message: `Workflow composition cycle detected: ${[...path, node.workflow.name].join(' -> ')}`,
+          });
+          continue;
+        }
+        visit(node.workflow.name, [...path, node.workflow.name]);
+      }
+    };
+    visit(workflow.name, [workflow.name]);
+  }
 
   for (const node of workflow.nodes) {
     const provider = resolveProvider(node, workflow.provider, defaultProvider);

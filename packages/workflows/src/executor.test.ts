@@ -4,6 +4,8 @@
  * that the inner dag-executor.test.ts cannot reach.
  */
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
+import { mkdir, readFile, rm, writeFile } from 'fs/promises';
+import { join } from 'path';
 
 // --- Mock logger ---
 const mockLogFn = mock(() => {});
@@ -26,6 +28,7 @@ const mockCaptureWorkflowCompleted = mock(() => {});
 mock.module('@anvil/paths', () => ({
   createLogger: mock(() => mockLogger),
   parseOwnerRepo: mock(() => null),
+  resolveRegisteredProjectRoot: mock(() => null),
   getRunArtifactsPath: mock(() => '/tmp/artifacts'),
   getProjectLogsPath: mock(() => '/tmp/logs'),
   captureWorkflowInvoked: mockCaptureWorkflowInvoked,
@@ -39,9 +42,31 @@ mock.module('@anvil/git', () => ({
 }));
 
 // --- Mock dag-executor ---
-const mockExecuteDagWorkflow = mock(async (): Promise<string | undefined> => undefined);
+const mockExecuteDagWorkflow = mock(
+  async (..._args: unknown[]): Promise<string | undefined> => undefined
+);
 mock.module('./dag-executor', () => ({
   executeDagWorkflow: mockExecuteDagWorkflow,
+  substituteNodeOutputRefs: (
+    value: string,
+    outputs: ReadonlyMap<string, { output: string; structuredOutput?: unknown }>
+  ): string =>
+    value.replace(
+      /\$([A-Za-z_][A-Za-z0-9_-]*)\.output\.([A-Za-z_][A-Za-z0-9_]*)/g,
+      (_match, nodeId: string, field: string) => {
+        const nodeOutput = outputs.get(nodeId);
+        const structured = nodeOutput?.structuredOutput;
+        if (structured && typeof structured === 'object' && field in structured) {
+          return String((structured as Record<string, unknown>)[field]);
+        }
+        try {
+          const parsed = JSON.parse(nodeOutput?.output ?? '') as Record<string, unknown>;
+          return String(parsed[field] ?? '');
+        } catch {
+          return '';
+        }
+      }
+    ),
 }));
 
 // --- Mock logger functions ---
@@ -69,7 +94,7 @@ registerBuiltinProviders();
 import { executeWorkflow, hydrateResumableRun } from './executor';
 import type { WorkflowDeps, IWorkflowPlatform, WorkflowConfig } from './deps';
 import type { IWorkflowStore } from './store';
-import type { WorkflowDefinition, WorkflowRun } from './schemas';
+import type { NodeOutput, WorkflowDefinition, WorkflowNode, WorkflowRun } from './schemas';
 
 // --- Helpers ---
 
@@ -78,8 +103,15 @@ function makeStore(overrides: Partial<IWorkflowStore> = {}): IWorkflowStore {
     getActiveWorkflowRunByPath: mock(async () => null),
     failOrphanedRuns: mock(async () => ({ count: 0 })),
     createWorkflowRun: mock(async () => makeRun()),
+    getChildWorkflowRun: mock(async () => null),
+    listChildWorkflowRuns: mock(async () => []),
+    findActivePausedDescendant: mock(async () => null),
     updateWorkflowRun: mock(async () => {}),
+    updateWorkflowActivity: mock(async () => {}),
+    completeWorkflowRun: mock(async () => {}),
     failWorkflowRun: mock(async () => {}),
+    pauseWorkflowRun: mock(async () => {}),
+    cancelWorkflowRun: mock(async () => ({ cancelled: true })),
     getWorkflowRun: mock(async () => ({ ...makeRun(), status: 'completed' as const })),
     getWorkflowRunStatus: mock(async () => 'completed' as const),
     createWorkflowEvent: mock(async () => {}),
@@ -88,6 +120,9 @@ function makeStore(overrides: Partial<IWorkflowStore> = {}): IWorkflowStore {
     resumeWorkflowRun: mock(async () => makeRun()),
     getCodebase: mock(async () => null),
     getCodebaseEnvVars: mock(async () => ({})),
+    getWorkflowNodeSession: mock(async () => null),
+    upsertWorkflowNodeSession: mock(async () => {}),
+    deleteWorkflowNodeSessions: mock(async () => ({ deleted: 0 })),
     ...overrides,
   };
 }
@@ -148,6 +183,93 @@ describe('executeWorkflow', () => {
     mockEmitter.unregisterRun.mockClear();
     mockEmitter.emit.mockClear();
     mockExecuteDagWorkflow.mockImplementation(async (): Promise<string | undefined> => undefined);
+  });
+
+  it('persists a redacted root intake manifest', async () => {
+    const artifactsDir = `/tmp/anvil-intake-manifest-${crypto.randomUUID()}`;
+    const workflow = makeWorkflow({
+      intake: {
+        version: 1,
+        title: 'Collect inputs',
+        fields: [{ input: 'blueprint', control: 'file', prompt: 'Blueprint?' }],
+      },
+    });
+
+    try {
+      const result = await executeWorkflow(
+        makeDeps(),
+        makePlatform(),
+        'conv-1',
+        '/tmp',
+        workflow,
+        'message',
+        'db-conv-1',
+        {
+          artifactsDirOverride: artifactsDir,
+          inputs: {
+            blueprint: { path: 'docs/system2.md' },
+            apiToken: 'must-not-be-persisted',
+            __anvil_intake_context: {
+              draftId: 'draft-123',
+              definitionHash: 'definition-hash-123',
+              provenance: { blueprint: { sha256: 'abc123' } },
+            },
+          },
+        }
+      );
+
+      expect(result.success).toBe(true);
+      const manifest = JSON.parse(
+        await readFile(join(artifactsDir, 'input', 'intake_manifest.json'), 'utf8')
+      ) as {
+        workflowName: string;
+        definitionHash: string;
+        draftId: string;
+        provenance: Record<string, unknown>;
+        inputs: Record<string, unknown>;
+      };
+      expect(manifest.workflowName).toBe('test-workflow');
+      expect(manifest.definitionHash).toBe('definition-hash-123');
+      expect(manifest.draftId).toBe('draft-123');
+      expect(manifest.provenance).toEqual({ blueprint: { sha256: 'abc123' } });
+      expect(manifest.inputs.apiToken).toBe('[redacted]');
+      expect(manifest.inputs.__anvil_intake_context).toBeUndefined();
+    } finally {
+      await rm(artifactsDir, { recursive: true, force: true });
+    }
+  });
+
+  it('snapshots a non-composite dynamic workflow for immutable run inspection', async () => {
+    const artifactsDir = `/tmp/anvil-definition-snapshot-${crypto.randomUUID()}`;
+    const workflow = makeWorkflow({ name: 'dynamic-workflow' });
+
+    try {
+      const result = await executeWorkflow(
+        makeDeps(),
+        makePlatform(),
+        'conv-1',
+        '/tmp',
+        workflow,
+        'message',
+        'db-conv-1',
+        { artifactsDirOverride: artifactsDir }
+      );
+
+      expect(result.success).toBe(true);
+      const manifest = JSON.parse(
+        await readFile(join(artifactsDir, 'composition', 'manifest.json'), 'utf8')
+      ) as { rootWorkflow: string; workflows: { name: string; snapshot: string }[] };
+      expect(manifest.rootWorkflow).toBe('dynamic-workflow');
+      expect(manifest.workflows).toHaveLength(1);
+      const snapshotFile = manifest.workflows[0]?.snapshot;
+      expect(snapshotFile).toBeString();
+      const snapshot = JSON.parse(
+        await readFile(join(artifactsDir, 'composition', snapshotFile as string), 'utf8')
+      ) as WorkflowDefinition;
+      expect(snapshot).toEqual(workflow);
+    } finally {
+      await rm(artifactsDir, { recursive: true, force: true });
+    }
   });
 
   // -------------------------------------------------------------------------
@@ -1277,6 +1399,228 @@ describe('telemetry wiring', () => {
     );
 
     expect(mockExecuteDagWorkflow.mock.calls[0]?.[16]).toBeUndefined();
+  });
+
+  it('creates a namespaced child run and propagates typed outputs and artifacts', async () => {
+    const artifactsDir = `/tmp/anvil-composition-${crypto.randomUUID()}`;
+    const createRun = mock(
+      async (data: Parameters<IWorkflowStore['createWorkflowRun']>[0]): Promise<WorkflowRun> =>
+        makeRun({
+          id: data.parent_workflow_run_id ? 'child-run' : 'root-run',
+          workflow_name: data.workflow_name,
+          status: data.parent_workflow_run_id ? 'pending' : 'running',
+          parent_workflow_run_id: data.parent_workflow_run_id,
+          parent_node_id: data.parent_node_id,
+        })
+    );
+    const createEvent = mock(async () => {});
+    const store = makeStore({
+      createWorkflowRun: createRun,
+      createWorkflowEvent: createEvent,
+      getCompletedDagNodeOutputs: mock(async runId =>
+        runId === 'child-run'
+          ? new Map([['build', JSON.stringify({ path: 'overview.md' })]])
+          : new Map()
+      ),
+      getWorkflowRun: mock(async id =>
+        makeRun({ id, workflow_name: id === 'child-run' ? 'child' : 'root', status: 'completed' })
+      ),
+    });
+    const deps = makeDeps(store);
+    const child = makeWorkflow({
+      name: 'child',
+      input_schema: {
+        type: 'object',
+        properties: { request: { type: 'object' } },
+        required: ['request'],
+      },
+      output_schema: {
+        type: 'object',
+        properties: { overviewPath: { type: 'string' } },
+        required: ['overviewPath'],
+      },
+      outputs: { overviewPath: '$build.output.path' },
+      nodes: [{ id: 'build', prompt: 'build' }],
+    });
+    const root = makeWorkflow({
+      name: 'root',
+      input_schema: {
+        type: 'object',
+        properties: { request: { type: 'object' } },
+        required: ['request'],
+      },
+      nodes: [
+        { id: 'prepare', prompt: 'prepare' },
+        {
+          id: 'invoke',
+          depends_on: ['prepare'],
+          workflow: {
+            name: 'child',
+            inputs: { request: '$prepare.output.request' },
+            artifacts: { outputs: { canonical: 'canonical/result.json' } },
+          },
+        } as WorkflowNode,
+      ],
+    });
+    let childOutput: NodeOutput | undefined;
+    mockExecuteDagWorkflow.mockImplementation(async (...args: unknown[]) => {
+      const definition = args[4] as WorkflowDefinition;
+      const currentArtifactsDir = args[8] as string;
+      if (definition.name === 'child') {
+        await mkdir(join(currentArtifactsDir, 'canonical'), { recursive: true });
+        await writeFile(join(currentArtifactsDir, 'canonical', 'result.json'), '{}');
+        return undefined;
+      }
+      const runner = args.at(-1) as
+        | ((node: WorkflowNode, outputs: ReadonlyMap<string, NodeOutput>) => Promise<NodeOutput>)
+        | undefined;
+      childOutput = await runner?.(
+        definition.nodes[1] as WorkflowNode,
+        new Map([
+          [
+            'prepare',
+            {
+              state: 'completed',
+              output: JSON.stringify({ request: { target: 'churn', horizonDays: 90 } }),
+              structuredOutput: { request: { target: 'churn', horizonDays: 90 } },
+            },
+          ],
+        ])
+      );
+      return undefined;
+    });
+
+    try {
+      const result = await executeWorkflow(
+        deps,
+        makePlatform(),
+        'conv-1',
+        '/tmp',
+        root,
+        'message',
+        'db-conv-1',
+        {
+          inputs: { request: { target: 'churn' } },
+          artifactsDirOverride: artifactsDir,
+          compositionDefinitions: new Map([
+            ['root', root],
+            ['child', child],
+          ]),
+        }
+      );
+
+      expect(result.success).toBe(true);
+      expect(createRun).toHaveBeenCalledTimes(2);
+      expect(createRun.mock.calls[1]?.[0]).toEqual(
+        expect.objectContaining({
+          parent_workflow_run_id: 'root-run',
+          parent_node_id: 'invoke',
+          working_path: '/tmp',
+          metadata: {
+            composition_depth: 1,
+            inputs: { request: { target: 'churn', horizonDays: 90 } },
+          },
+        })
+      );
+      expect(childOutput?.structuredOutput).toEqual({
+        overviewPath: 'overview.md',
+        artifacts: {
+          canonical: join(artifactsDir, 'children', 'invoke', 'child-run', 'canonical/result.json'),
+        },
+      });
+      expect(
+        createEvent.mock.calls.some(
+          call => (call[0] as { event_type?: string }).event_type === 'child_workflow_completed'
+        )
+      ).toBe(true);
+    } finally {
+      await rm(artifactsDir, { recursive: true, force: true });
+    }
+  });
+
+  it('resumes a composite workflow from the snapshotted root definition', async () => {
+    const artifactsDir = `/tmp/anvil-composition-resume-${crypto.randomUUID()}`;
+    const child = makeWorkflow({
+      name: 'child',
+      input_schema: {
+        type: 'object',
+        properties: { request: { type: 'string' } },
+        required: ['request'],
+      },
+    });
+    const snapshottedRoot = makeWorkflow({
+      name: 'root',
+      input_schema: {
+        type: 'object',
+        properties: { request: { type: 'string' } },
+        required: ['request'],
+      },
+      nodes: [
+        {
+          id: 'invoke',
+          workflow: { name: 'child', inputs: { request: 'original-request.json' } },
+        } as WorkflowNode,
+      ],
+    });
+    const currentRoot = makeWorkflow({
+      name: 'root',
+      // Simulate YAML edited after the run started. This mapping is invalid for
+      // the snapshotted child and must not participate in resume validation.
+      nodes: [
+        {
+          id: 'invoke',
+          workflow: { name: 'child', inputs: { legacy_payload: '$INPUTS_JSON_BASE64' } },
+        } as WorkflowNode,
+      ],
+    });
+    const rootSnapshot = 'root.json';
+    const childSnapshot = 'child.json';
+    await mkdir(join(artifactsDir, 'composition'), { recursive: true });
+    await writeFile(
+      join(artifactsDir, 'composition', 'manifest.json'),
+      JSON.stringify({
+        rootWorkflow: 'root',
+        workflows: [
+          { name: 'root', snapshot: rootSnapshot },
+          { name: 'child', snapshot: childSnapshot },
+        ],
+      })
+    );
+    await writeFile(
+      join(artifactsDir, 'composition', rootSnapshot),
+      JSON.stringify(snapshottedRoot)
+    );
+    await writeFile(join(artifactsDir, 'composition', childSnapshot), JSON.stringify(child));
+    let executedRoot: WorkflowDefinition | undefined;
+    mockExecuteDagWorkflow.mockImplementationOnce(async (...args: unknown[]) => {
+      executedRoot = args[4] as WorkflowDefinition;
+      return undefined;
+    });
+
+    try {
+      const result = await executeWorkflow(
+        makeDeps(),
+        makePlatform(),
+        'conv-1',
+        '/tmp',
+        currentRoot,
+        'message',
+        'db-conv-1',
+        {
+          preCreatedRun: makeRun({ id: 'root-run', workflow_name: 'root' }),
+          priorCompletedNodes: new Map([['prior', 'done']]),
+          inputs: { request: 'original-request.json' },
+          artifactsDirOverride: artifactsDir,
+        }
+      );
+
+      expect(result.success).toBe(true);
+      expect((executedRoot?.nodes[0] as WorkflowNode).workflow.inputs).toEqual({
+        request: 'original-request.json',
+      });
+    } finally {
+      await rm(artifactsDir, { recursive: true, force: true });
+    }
   });
 });
 

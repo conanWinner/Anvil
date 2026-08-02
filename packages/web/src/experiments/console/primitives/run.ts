@@ -29,7 +29,11 @@ export interface Run {
   /** Derived from metadata/events at runtime; initially undefined. */
   currentNode?: string | null;
   lastTool?: string | null;
-  approval?: { nodeId: string; message: string } | null;
+  approval?: {
+    nodeId: string;
+    message: string;
+    type?: 'approval' | 'interactive_loop' | 'child_workflow' | 'phase_transition';
+  } | null;
 }
 
 // Server shapes we read from. These track the real server schema loosely —
@@ -105,6 +109,17 @@ export function toRun(raw: RawWorkflowRun): Run {
             'message' in approval && typeof (approval as { message: unknown }).message === 'string'
               ? (approval as { message: string }).message
               : '',
+          type:
+            'type' in approval &&
+            ['approval', 'interactive_loop', 'child_workflow', 'phase_transition'].includes(
+              (approval as { type: string }).type
+            )
+              ? (
+                  approval as {
+                    type: 'approval' | 'interactive_loop' | 'child_workflow' | 'phase_transition';
+                  }
+                ).type
+              : undefined,
         }
       : null;
 
