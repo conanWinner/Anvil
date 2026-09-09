@@ -27,15 +27,22 @@ import {
 } from 'lucide-react';
 import { createElement, useEffect, useRef, useState, type ReactElement } from 'react';
 import { Link, NavLink, Navigate, Route, Routes, useNavigate, useParams } from 'react-router';
-import { listSystem3Projects, type System3ProjectResponse } from '@/lib/api';
+import {
+  listSystem3Projects,
+  type System3LifecycleAttemptActivity,
+  type System3ProjectResponse,
+} from '@/lib/api';
 import {
   buildLifecycleView,
   completedLifecyclePhaseCount,
   type LifecycleActivityView,
   type LifecyclePhaseView,
 } from './lifecycle-view';
+import { presentDecisionQuestion } from './decision-presentation';
 import { System3SourceIntakeRequestError, system3Store, useSystem3Project } from './store';
 import { InlineResourceViewer, ResourceList } from './ResourceViewer';
+import { UnderstandingWorkspace } from './UnderstandingWorkspace';
+import { LifecycleAttemptBar } from './LifecycleAttemptBar';
 import type {
   PhaseStatus,
   System3ActivityResourceView,
@@ -263,6 +270,29 @@ function ProjectHeader({
       return {
         label: `Xử lý ${pending.toString()} quyết định`,
         action: () => navigate(`/console/projects/${project.id}/decisions`),
+      };
+    if (project.readinessEvaluation?.status === 'data_required')
+      return {
+        label: 'Liên kết Dataset',
+        action: () => navigate(`/console/projects/${project.id}/sources`),
+      };
+    if (project.readinessEvaluation?.status === 'decision_required')
+      return {
+        label: 'Trả lời Decision',
+        action: () => navigate(`/console/projects/${project.id}/decisions`),
+      };
+    if (project.readinessEvaluation?.status === 'blocked')
+      return {
+        label:
+          project.readinessEvaluation.nextAction === 'configure_runtime'
+            ? 'Kiểm tra Runtime'
+            : 'Xem lại bản hiểu dự án',
+        action: () =>
+          navigate(
+            project.readinessEvaluation?.nextAction === 'configure_runtime'
+              ? `/console/projects/${project.id}/technical`
+              : `/console/projects/${project.id}/flow`
+          ),
       };
     if (!project.readiness)
       return {
@@ -545,6 +575,15 @@ function FlowPage(): ReactElement {
       !project.planCompiled &&
       selectedActivityId === 'OP-04') ||
     (project.planCompiled && !project.manifestApproved && selectedActivityId === 'OP-05');
+  const runAttemptActivity = async (activityId: System3LifecycleAttemptActivity): Promise<void> => {
+    if (activityId === 'TW-03') return system3Store.runReadiness();
+    if (activityId === 'OP-04') return system3Store.compile();
+    if (activityId === 'OP-05') return system3Store.approve();
+    if (activityId === 'TW-06') return system3Store.execute();
+    if (activityId === 'TW-07') return system3Store.verify();
+    if (activityId === 'TW-09') return system3Store.deliver();
+    throw new Error(`Activity ${activityId} cần được thực hiện trong workspace tương ứng.`);
+  };
   useEffect(() => {
     if (!selectionWasExplicit.current) setSelectedActivityId(suggestedActivityId);
   }, [project.id, suggestedActivityId]);
@@ -575,6 +614,16 @@ function FlowPage(): ReactElement {
               </span>
             </div>
           </header>
+          <LifecycleAttemptBar
+            projectId={project.id}
+            projectVersion={project.version}
+            selectedActivityId={selectedActivityId}
+            onSelectActivity={activityId => {
+              selectionWasExplicit.current = true;
+              setSelectedActivityId(activityId);
+            }}
+            onRunActivity={runAttemptActivity}
+          />
           <div className="s3-lifecycle-layout">
             <nav
               className="s3-lifecycle-rail"
@@ -620,6 +669,7 @@ function FlowPage(): ReactElement {
             <LifecyclePhaseDetail
               phase={selected}
               projectId={project.id}
+              projectVersion={project.version}
               selectedActivityId={selectedActivityId}
             />
           </div>
@@ -821,6 +871,7 @@ function activityIcon(activityId: string): ReactElement {
 
 function activityActionLabel(activity: LifecycleActivityView): string {
   if (activity.id === 'OP-00' || activity.id === 'OP-01') return 'Mở trung tâm nguồn';
+  if (activity.id === 'TW-03' && activity.route === 'sources') return 'Liên kết Dataset';
   if (activity.id === 'OP-04') return 'Chuẩn bị Execution Plan';
   if (activity.id === 'OP-05') return 'Xem và phê duyệt kế hoạch';
   if (activity.route === 'decisions') return 'Xử lý các quyết định';
@@ -883,12 +934,15 @@ function ActivityResourceSection({
 function LifecyclePhaseDetail({
   phase,
   projectId,
+  projectVersion,
   selectedActivityId,
 }: {
   phase: LifecyclePhaseView;
   projectId: string;
+  projectVersion: number;
   selectedActivityId: string;
 }): ReactElement {
+  const project = useSystem3Project();
   const [activityView, setActivityView] = useState<System3ActivityResourceView | null>(null);
   const [activityViewError, setActivityViewError] = useState<string | null>(null);
   const [activityViewLoading, setActivityViewLoading] = useState(false);
@@ -933,7 +987,10 @@ function LifecyclePhaseDetail({
     setSelectedResource(resource);
   };
   const inputs = activityView?.inputs ?? [];
-  const outputs = activityView?.outputs ?? [];
+  const outputs =
+    activityView?.outputs.filter(
+      resource => selectedActivity.id !== 'TW-02' || resource.resourceType !== 'decision'
+    ) ?? [];
   const evidence = activityView?.evidence ?? [];
   const technicalResources = activityView?.technicalResources ?? [];
   return (
@@ -1014,6 +1071,26 @@ function LifecyclePhaseDetail({
             {activityViewError}
           </p>
         )}
+
+        {selectedActivity.id === 'TW-02' ? (
+          <UnderstandingWorkspace projectId={projectId} projectVersion={projectVersion} />
+        ) : null}
+
+        {selectedActivity.id === 'TW-03' && project.readinessEvaluation !== undefined ? (
+          <section className="s3-section" aria-labelledby="readiness-checks-title">
+            <h3 id="readiness-checks-title">Điều kiện Readiness</h3>
+            <ul className="s3-check-list">
+              {project.readinessEvaluation.checks.map(check => (
+                <li key={check.id}>
+                  {check.status === 'passed' ? <Check size={15} /> : <CircleHelp size={15} />}
+                  <span>
+                    <strong>{check.label}</strong> — {check.message}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
 
         <div className="s3-activity-resource-grid">
           <ActivityResourceSection
@@ -2442,12 +2519,13 @@ function DecisionRow({ decision }: { decision: import('./types').System3Decision
   const [answer, setAnswer] = useState(decision.answer ?? decision.options[0] ?? '');
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const presentation = presentDecisionQuestion(decision.question);
   return (
     <article className="s3-decision-card">
       <div className="s3-decision-head">
         <div>
           <h3>{decision.title}</h3>
-          <p>{decision.question}</p>
+          <p>{presentation.summary}</p>
         </div>
         <span className={`s3-chip ${decision.status === 'answered' ? 'good' : 'warn'}`}>
           {decision.status === 'answered' ? 'Đã xác nhận' : 'Cần quyết định'}
@@ -2455,9 +2533,27 @@ function DecisionRow({ decision }: { decision: import('./types').System3Decision
       </div>
       {decision.status === 'pending' ? (
         <>
-          <div className="s3-decision-why">
-            <strong>Vì sao cần quyết định:</strong> {decision.why}
-          </div>
+          <details className="s3-decision-context">
+            <summary>Xem lý do và nội dung nguồn</summary>
+            <div className="s3-decision-why">
+              {presentation.suggestion !== null ? (
+                <p>
+                  <strong>Gợi ý từ tài liệu:</strong> {presentation.suggestion}
+                </p>
+              ) : null}
+              <p>
+                <strong>Vì sao cần quyết định:</strong> {decision.why}
+              </p>
+              <p>
+                <strong>Khuyến nghị:</strong> {decision.recommendation}
+              </p>
+              {presentation.showOriginal ? (
+                <p>
+                  <strong>Nội dung nguyên văn:</strong> <code>{presentation.original}</code>
+                </p>
+              ) : null}
+            </div>
+          </details>
           <fieldset className="s3-decision-options">
             <legend>Chọn một phương án</legend>
             {decision.options.map(option => (
@@ -2994,7 +3090,7 @@ function NewProjectPage(): ReactElement {
             <span>Blueprint Markdown *</span>
             <input
               type="file"
-              accept=".md,text/markdown"
+              accept=".md,.json,.pdf,text/markdown,application/json,application/pdf"
               onChange={event => {
                 setBlueprintFile(event.target.files?.[0] ?? null);
               }}

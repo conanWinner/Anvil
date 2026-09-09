@@ -147,9 +147,12 @@ describe('detectSystem3SourceChange', () => {
       'data.csv',
       'id,churn,age\n1,0,30\n'
     );
-    expect(
-      (await detect({ current: rowChange, previous, targetColumn: 'churn' })).changes[0]?.kind
-    ).toBe('row_only');
+    const rowOnly = await detect({ current: rowChange, previous, targetColumn: 'churn' });
+    expect(rowOnly.changes[0]?.kind).toBe('row_only');
+    expect(rowOnly.proposedRerun).toMatchObject({
+      mode: 'scoped',
+      executableScope: 'experiment',
+    });
     expect(
       (await detect({ current: schemaChange, previous, targetColumn: 'churn' })).changes[0]?.kind
     ).toBe('schema');

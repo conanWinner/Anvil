@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   system3LifecycleActivityIdSchema,
   type System3ActivityView,
@@ -12,7 +13,280 @@ import {
   type System3Store,
 } from '@anvil/system3';
 
-const RENDERER_VERSION = 'system3-resource-renderer@1';
+const RENDERER_VERSION = 'system3-resource-renderer@2';
+const MAX_MARKDOWN_CITATIONS = 24;
+const MAX_CITATION_EXCERPT_CHARS = 1_200;
+const MAX_CITATION_SOURCE_BYTES = 512 * 1024;
+
+interface CitationPointer {
+  sourceVersionId: string;
+  filename: string;
+  headingPath: string[];
+  startLine: number | null;
+  endLine: number | null;
+  excerptHash: string;
+}
+
+interface CitationSource {
+  id: string;
+  filename: string;
+  mediaType: string;
+  sizeBytes: number;
+  storageKey: string;
+  storageStatus: string;
+  contentHash: string;
+}
+
+interface CitationRequirement {
+  id: string;
+  statement: string;
+  sourcePointers?: unknown;
+}
+
+function citationDigest(value: Uint8Array | string): string {
+  return `sha256:${createHash('sha256').update(value).digest('hex')}`;
+}
+
+function isCitationPointer(value: unknown): value is CitationPointer {
+  if (value === null || typeof value !== 'object') return false;
+  const pointer = value as Record<string, unknown>;
+  return (
+    typeof pointer.sourceVersionId === 'string' &&
+    typeof pointer.filename === 'string' &&
+    Array.isArray(pointer.headingPath) &&
+    pointer.headingPath.every(value => typeof value === 'string') &&
+    (pointer.startLine === null ||
+      (typeof pointer.startLine === 'number' &&
+        Number.isSafeInteger(pointer.startLine) &&
+        pointer.startLine > 0)) &&
+    (pointer.endLine === null ||
+      (typeof pointer.endLine === 'number' &&
+        Number.isSafeInteger(pointer.endLine) &&
+        pointer.endLine > 0)) &&
+    typeof pointer.excerptHash === 'string'
+  );
+}
+
+function citationItem(input: {
+  label: string;
+  pointer: CitationPointer | null;
+  status: 'verified' | 'unavailable';
+  excerpt?: string | null;
+  reason?: string | null;
+  truncated?: boolean;
+}): Extract<System3PresentationBlock, { kind: 'citations' }>['items'][number] {
+  return {
+    label: input.label,
+    filename: input.pointer?.filename || 'Nguồn không xác định',
+    sourceVersionId: input.pointer?.sourceVersionId || 'unknown',
+    startLine: input.pointer?.startLine ?? null,
+    endLine: input.pointer?.endLine ?? null,
+    headingPath: input.pointer?.headingPath.slice() ?? [],
+    excerpt: input.excerpt ?? null,
+    status: input.status,
+    reason: input.reason ?? null,
+    truncated: input.truncated ?? false,
+  };
+}
+
+/**
+ * Produces a bounded, provenance-preserving read model. Source bytes are only
+ * rendered after their complete stored hash and the parser's line-normalized
+ * excerpt hash both match the immutable pointer.
+ */
+export async function buildMarkdownRequirementCitationBlock(input: {
+  analysis: { requirements: readonly CitationRequirement[] };
+  sources: readonly CitationSource[];
+  readSource: (source: CitationSource) => Promise<Uint8Array>;
+}): Promise<Extract<System3PresentationBlock, { kind: 'citations' }>> {
+  const sources = new Map(input.sources.map(source => [source.id, source]));
+  const verifiedTexts = new Map<string, Promise<{ text: string | null; reason: string | null }>>();
+  const readVerifiedText = (
+    source: CitationSource
+  ): Promise<{ text: string | null; reason: string | null }> => {
+    const cached = verifiedTexts.get(source.id);
+    if (cached !== undefined) return cached;
+    const result = (async (): Promise<{ text: string | null; reason: string | null }> => {
+      if (source.storageStatus !== 'ready') {
+        return { text: null, reason: 'Phiên bản nguồn chưa sẵn sàng để đối chiếu.' };
+      }
+      if (source.sizeBytes > MAX_CITATION_SOURCE_BYTES) {
+        return { text: null, reason: 'Nguồn quá lớn để xác minh nhanh trong phần xem trước.' };
+      }
+      try {
+        const bytes = await input.readSource(source);
+        if (bytes.byteLength > MAX_CITATION_SOURCE_BYTES) {
+          return { text: null, reason: 'Nguồn quá lớn để xác minh nhanh trong phần xem trước.' };
+        }
+        if (citationDigest(bytes) !== source.contentHash) {
+          return { text: null, reason: 'Nội dung nguồn không khớp phiên bản đã ghim.' };
+        }
+        return { text: new TextDecoder('utf-8', { fatal: true }).decode(bytes), reason: null };
+      } catch {
+        return { text: null, reason: 'Không thể đọc nguồn để xác minh đoạn trích.' };
+      }
+    })();
+    verifiedTexts.set(source.id, result);
+    return result;
+  };
+
+  const items: Extract<System3PresentationBlock, { kind: 'citations' }>['items'] = [];
+  for (const requirement of input.analysis.requirements) {
+    const pointers =
+      Array.isArray(requirement.sourcePointers) && requirement.sourcePointers.length > 0
+        ? requirement.sourcePointers
+        : [null];
+    for (const rawPointer of pointers) {
+      if (items.length >= MAX_MARKDOWN_CITATIONS) break;
+      const label = `${requirement.id}: ${requirement.statement}`;
+      if (!isCitationPointer(rawPointer)) {
+        items.push(
+          citationItem({
+            label,
+            pointer: null,
+            status: 'unavailable',
+            reason: 'Vị trí nguồn không hợp lệ.',
+          })
+        );
+        continue;
+      }
+      const source = sources.get(rawPointer.sourceVersionId);
+      if (source === undefined) {
+        items.push(
+          citationItem({
+            label,
+            pointer: rawPointer,
+            status: 'unavailable',
+            reason: 'Phiên bản nguồn đã ghim không còn khả dụng.',
+          })
+        );
+        continue;
+      }
+      if (
+        !/\.(?:md|mdown|markdown)$/iu.test(source.filename) ||
+        source.mediaType.split(';', 1)[0]?.trim().toLowerCase() !== 'text/markdown'
+      ) {
+        items.push(
+          citationItem({
+            label,
+            pointer: rawPointer,
+            status: 'unavailable',
+            reason: 'Đoạn trích chỉ hỗ trợ nguồn Markdown.',
+          })
+        );
+        continue;
+      }
+      if (source.filename !== rawPointer.filename) {
+        items.push(
+          citationItem({
+            label,
+            pointer: rawPointer,
+            status: 'unavailable',
+            reason: 'Tên nguồn không khớp phiên bản đã ghim.',
+          })
+        );
+        continue;
+      }
+      const verified = await readVerifiedText(source);
+      if (verified.text === null) {
+        items.push(
+          citationItem({
+            label,
+            pointer: rawPointer,
+            status: 'unavailable',
+            reason: verified.reason,
+          })
+        );
+        continue;
+      }
+      if (
+        rawPointer.startLine === null ||
+        rawPointer.endLine === null ||
+        rawPointer.endLine < rawPointer.startLine
+      ) {
+        items.push(
+          citationItem({
+            label,
+            pointer: rawPointer,
+            status: 'unavailable',
+            reason: 'Đoạn trích Markdown cần phạm vi dòng hợp lệ.',
+          })
+        );
+        continue;
+      }
+      // Matches parseUnderstandingMarkdown(): split CRLF, then join excerpt lines with LF.
+      const lines = verified.text.split(/\r?\n/u);
+      if (rawPointer.startLine > lines.length || rawPointer.endLine > lines.length) {
+        items.push(
+          citationItem({
+            label,
+            pointer: rawPointer,
+            status: 'unavailable',
+            reason: 'Vị trí dòng không còn trong phiên bản nguồn đã ghim.',
+          })
+        );
+        continue;
+      }
+      const excerpt = lines.slice(rawPointer.startLine - 1, rawPointer.endLine).join('\n');
+      if (citationDigest(excerpt) !== rawPointer.excerptHash) {
+        items.push(
+          citationItem({
+            label,
+            pointer: rawPointer,
+            status: 'unavailable',
+            reason: 'Đoạn trích không khớp thông tin nguồn đã lưu.',
+          })
+        );
+        continue;
+      }
+      // Only narrow an already verified table to an unambiguous exact ID cell.
+      // Otherwise retain its original range; never guess from prose or substrings.
+      const excerptLines = excerpt.split('\n');
+      const matchingRows = excerptLines
+        .map((line, index) => ({ line, index }))
+        .filter(
+          ({ line }) =>
+            line.trimStart().startsWith('|') && line.split('|')[1]?.trim() === requirement.id
+        );
+      const matchingRow = matchingRows.length === 1 ? matchingRows[0] : undefined;
+      const displayExcerpt = matchingRow?.line ?? excerpt;
+      const displayPointer =
+        matchingRow === undefined
+          ? rawPointer
+          : {
+              ...rawPointer,
+              startLine: rawPointer.startLine + matchingRow.index,
+              endLine: rawPointer.startLine + matchingRow.index,
+            };
+      items.push(
+        citationItem({
+          label,
+          pointer: displayPointer,
+          status: 'verified',
+          excerpt: displayExcerpt.slice(0, MAX_CITATION_EXCERPT_CHARS),
+          truncated: displayExcerpt.length > MAX_CITATION_EXCERPT_CHARS,
+        })
+      );
+    }
+    if (items.length >= MAX_MARKDOWN_CITATIONS) break;
+  }
+  const allPointerCount = input.analysis.requirements.reduce(
+    (total, requirement) =>
+      total +
+      (Array.isArray(requirement.sourcePointers) && requirement.sourcePointers.length > 0
+        ? requirement.sourcePointers.length
+        : 1),
+    0
+  );
+  return {
+    kind: 'citations',
+    title:
+      allPointerCount > MAX_MARKDOWN_CITATIONS
+        ? `Nguồn của các yêu cầu (chỉ hiển thị ${String(MAX_MARKDOWN_CITATIONS)} mục)`
+        : 'Nguồn của các yêu cầu',
+    items,
+  };
+}
 
 export function friendlyDecisionQuestion(question: string): string {
   const trimmed = question.trim();
@@ -236,7 +510,10 @@ function artifactDescriptor(
 ): System3ResourceDescriptor {
   return descriptor({
     id: artifact.id,
-    resourceType: 'execution_artifact',
+    resourceType:
+      artifact.artifactKind === 'understanding_report'
+        ? 'understanding_report'
+        : 'execution_artifact',
     activityId,
     relation,
     title: artifact.displayName ?? 'Kết quả thực thi',
@@ -287,6 +564,11 @@ function activityResources(
   const evidence: System3ResourceDescriptor[] = [];
   const technicalResources: System3ResourceDescriptor[] = [];
   const latestImpact = orderedImpacts(context)[0] ?? null;
+  const currentReadiness =
+    context.readiness?.knowledgeSnapshotId === context.knowledge?.id &&
+    context.project.freshness === 'current'
+      ? context.readiness
+      : null;
   for (const source of context.sources) {
     const isCurrent =
       context.sources.find(value => value.sourceId === source.sourceId)?.id === source.id;
@@ -394,7 +676,7 @@ function activityResources(
       );
     }
     for (const knowledge of context.knowledgeSnapshots) {
-      const isActive = knowledge.id === context.knowledge?.id;
+      const isActive = knowledge.lifecycleStatus === 'active';
       outputs.push(
         descriptor({
           id: knowledge.id,
@@ -403,11 +685,16 @@ function activityResources(
           relation: 'output',
           title: 'Bản hiểu dự án',
           summary: 'Mục tiêu, yêu cầu, dữ liệu và vấn đề được trích xuất từ nguồn đã khóa.',
-          status: isActive
-            ? context.project.freshness === 'current'
-              ? 'current'
-              : 'stale'
-            : 'superseded',
+          status:
+            knowledge.lifecycleStatus === 'candidate'
+              ? 'candidate'
+              : knowledge.lifecycleStatus === 'stale'
+                ? 'stale'
+                : isActive
+                  ? context.project.freshness === 'current'
+                    ? 'current'
+                    : 'stale'
+                  : 'superseded',
           createdAt: knowledge.createdAt,
           workflowRunId: knowledge.workflowRunId,
           staleReason:
@@ -417,7 +704,16 @@ function activityResources(
         })
       );
     }
-    for (const decision of context.decisions) {
+    for (const artifact of context.artifacts.filter(
+      value => value.artifactKind === 'understanding_report'
+    )) {
+      const resource = artifactDescriptor(artifact, activityId, 'output');
+      if (artifact.visibility === 'technical') technicalResources.push(resource);
+      else outputs.push(resource);
+    }
+    for (const decision of context.decisions.filter(
+      value => value.knowledgeSnapshotId === context.knowledge?.id
+    )) {
       const isCurrent = decision.knowledgeSnapshotId === context.knowledge?.id;
       outputs.push(
         descriptor({
@@ -453,7 +749,9 @@ function activityResources(
         })
       );
     }
-    for (const decision of context.decisions) {
+    for (const decision of context.decisions.filter(
+      value => value.knowledgeSnapshotId === context.knowledge?.id
+    )) {
       inputs.push(
         descriptor({
           id: decision.id,
@@ -467,35 +765,35 @@ function activityResources(
         })
       );
     }
-    if (context.readiness !== null) {
+    if (currentReadiness !== null) {
       outputs.push(
         descriptor({
-          id: context.readiness.id,
+          id: currentReadiness.id,
           resourceType: 'readiness_contract',
           activityId,
           relation: 'output',
           title: 'Readiness Contract',
           summary: 'Kết quả kiểm tra các điều kiện phải đạt trước khi compile.',
-          status: context.project.freshness === 'current' ? 'current' : 'stale',
-          createdAt: context.readiness.createdAt,
-          workflowRunId: context.readiness.workflowRunId,
-          parentResourceIds: [context.readiness.knowledgeSnapshotId],
+          status: 'current',
+          createdAt: currentReadiness.createdAt,
+          workflowRunId: currentReadiness.workflowRunId,
+          parentResourceIds: [currentReadiness.knowledgeSnapshotId],
         })
       );
     }
   }
   const latestCompilation = context.compilations[0];
   if (activityId === 'OP-04') {
-    if (context.readiness !== null) {
+    if (currentReadiness !== null) {
       inputs.push(
         descriptor({
-          id: context.readiness.id,
+          id: currentReadiness.id,
           resourceType: 'readiness_contract',
           activityId,
           relation: 'input',
           title: 'Readiness Contract được dùng',
           summary: 'Bản kiểm tra sẵn sàng làm cơ sở cho kế hoạch.',
-          createdAt: context.readiness.createdAt,
+          createdAt: currentReadiness.createdAt,
         })
       );
     }
@@ -871,7 +1169,8 @@ export async function getSystem3ResourcePresentation(
   store: System3Store,
   projectId: string,
   resourceType: System3ResourceType,
-  resourceId: string
+  resourceId: string,
+  readArtifact?: (storageKey: string) => Promise<Uint8Array>
 ): Promise<System3ResourcePresentation | null> {
   const context = await loadContext(store, projectId);
   if (context === null) return null;
@@ -1045,6 +1344,7 @@ export async function getSystem3ResourcePresentation(
       };
       const resourceTypeLabels: Readonly<Record<string, string>> = {
         knowledge_snapshot: 'Bản hiểu dự án',
+        understanding_report: 'Báo cáo Hiểu dự án',
         readiness_contract: 'Kết quả kiểm tra sẵn sàng',
         execution_plan: 'Kế hoạch thực hiện',
         approval_manifest: 'Bản ghi phê duyệt',
@@ -1251,6 +1551,48 @@ export async function getSystem3ResourcePresentation(
         })),
       }
     );
+    blocks.push(
+      await buildMarkdownRequirementCitationBlock({
+        analysis,
+        sources: context.sources,
+        readSource: async source => {
+          if (readArtifact === undefined) throw new Error('Source reader is unavailable');
+          return readArtifact(source.storageKey);
+        },
+      })
+    );
+  } else if (resourceType === 'understanding_report') {
+    const artifact = context.artifacts.find(
+      value => value.id === resourceId && value.artifactKind === 'understanding_report'
+    );
+    if (artifact === undefined) return null;
+    if (artifact.mediaType === 'text/markdown' && readArtifact) {
+      const bytes = await readArtifact(artifact.artifactKey);
+      blocks.push({ kind: 'markdown', markdown: new TextDecoder('utf-8').decode(bytes) });
+    } else {
+      blocks.push({
+        kind: 'callout',
+        tone: 'info',
+        title: 'Dữ liệu kỹ thuật của báo cáo',
+        body: 'Mở phần tải xuống để xem dữ liệu máy đọc; bản Markdown thân thiện được hiển thị ở danh sách kết quả.',
+      });
+    }
+    const knowledge =
+      artifact.knowledgeSnapshotId === null
+        ? undefined
+        : context.knowledgeSnapshots.find(value => value.id === artifact.knowledgeSnapshotId);
+    if (knowledge !== undefined) {
+      blocks.push(
+        await buildMarkdownRequirementCitationBlock({
+          analysis: knowledge.analysis,
+          sources: context.sources,
+          readSource: async source => {
+            if (readArtifact === undefined) throw new Error('Source reader is unavailable');
+            return readArtifact(source.storageKey);
+          },
+        })
+      );
+    }
   } else if (resourceType === 'decision') {
     const decision = context.decisions.find(value => value.id === resourceId);
     if (decision === undefined) return null;
@@ -1489,6 +1831,13 @@ export async function getSystem3ResourceRawValue(
     return context.understandingInputs.find(value => value.id === resourceId) ?? null;
   if (resourceType === 'knowledge_snapshot') {
     return context.knowledgeSnapshots.find(value => value.id === resourceId) ?? null;
+  }
+  if (resourceType === 'understanding_report') {
+    return (
+      context.artifacts.find(
+        value => value.id === resourceId && value.artifactKind === 'understanding_report'
+      ) ?? null
+    );
   }
   if (resourceType === 'decision')
     return context.decisions.find(value => value.id === resourceId) ?? null;

@@ -2,6 +2,23 @@
 
 Tài liệu này mô tả cách giữ lịch sử kết quả, đánh dấu kết quả cũ và chỉ chạy lại phần thật sự bị ảnh hưởng.
 
+## Lifecycle Attempt: lượt chạy để kiểm thử
+
+Một **Lifecycle Attempt** là một lượt chạy lại có thể xem và dọn độc lập. Nó không phải Workflow Run: một attempt có thể đi qua nhiều Technical Workflow nhưng dùng chung một worktree/branch tách biệt.
+
+- Attempt ghim Source Version, hash và snapshot liên quan trước khi chạy.
+- Preview ghim cả commit Git và worktree phải được tạo từ đúng commit đó; thay đổi chưa commit không thuộc basis tái lập.
+- Chạy lại toàn bộ bắt đầu ở OP-00 bằng cách kiểm tra lại Source Version đã ghim; không tạo Source Version trùng chỉ vì chạy lại.
+- Chạy lại một activity hoặc downstream vẫn dừng tại Decision, Approval và Delivery Request.
+- Attempt cũ chỉ đọc; attempt mới không ghi đè Artifact, Evidence, Approval hoặc Source Version cũ.
+- Artifact do một attempt tạo được đặt dưới namespace `attempts/<attempt-id>/`; vì vậy cleanup chỉ xóa payload của lượt đó, không xóa artifact của lượt khác.
+- Cleanup chỉ áp dụng cho attempt terminal. Có thể dọn một attempt hoặc toàn bộ attempt terminal; nếu còn attempt đang chạy, chờ hoặc `unknown`, thao tác dọn toàn bộ bị từ chối. Payload đang được project dùng làm kết quả `current` cũng không được xóa; phải có một lượt thay thế hoàn tất trước. Payload attempt, local worktree và local branch có thể được dọn, nhưng tombstone kiểm toán, nguồn và lịch sử project được giữ lại.
+- Không tự dọn attempt `unknown`; người dùng phải xác minh hoặc abandon trạng thái đó trước.
+
+Chế độ dùng lại basis chỉ được chạy khi các Source Version đã ghim vẫn là đầu vào hiện hành. Nếu nguồn lịch sử đã bị thay thế, preview chặn rõ ràng thay vì âm thầm đổi project truth sang dữ liệu cũ. Khi cần thử với trạng thái mới, người dùng chọn **Source Version hiện hành**; hỗ trợ sandbox replay hoàn toàn độc lập với project truth là một capability khác và không được giả lập bằng cách tái kích hoạt snapshot cũ.
+
+API preview trả về input đã ghim, activity sẽ chạy, checkpoint, cảnh báo và branch dự kiến. API tạo attempt kiểm lại `previewHash` để từ chối khi project đã đổi sau lúc xem trước.
+
 ## 1. Nguyên tắc
 
 - Artifact cũ không bị ghi đè hoặc xóa khi có phiên bản mới.

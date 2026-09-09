@@ -1,33 +1,43 @@
 import { createHash } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import { access, mkdir, readFile, realpath, stat, writeFile } from 'node:fs/promises';
 import { basename, join, relative, resolve, sep } from 'node:path';
 import { z } from '@hono/zod-openapi';
 import { blueprintAnalysisSchema } from './contracts';
 import type { System3CapabilityDescriptor } from './contracts';
+import { SYSTEM3_CSV_LIMITS } from './csv-contract';
+import { profileDatasetCsvStream } from './understanding/dataset-profiler';
 
 function descriptor<const T extends string>(
   id: T,
   phaseId: System3CapabilityDescriptor['phaseId'],
   permissions: System3CapabilityDescriptor['permissions'],
-  timeoutMs: number
+  timeoutMs: number,
+  version = '1'
 ): System3CapabilityDescriptor & { id: T } {
   return {
     id,
-    version: '1',
+    version,
     phaseId,
     permissions,
     timeoutMs,
     resourceProfile: { cpuOnly: true, ramGb: null },
     credentialRequirements: [],
-    inputSchemaId: `${id}.input@1`,
-    outputSchemaId: `${id}.output@1`,
+    inputSchemaId: `${id}.input@${version}`,
+    outputSchemaId: `${id}.output@${version}`,
   };
 }
 
 export const baselineCapabilityDescriptors = [
   descriptor('system3.approved-plan-materializer', 'build', ['artifact:write'], 10_000),
-  descriptor('system3.project-scaffolder', 'build', ['source:read', 'artifact:write'], 30_000),
+  descriptor('system3.project-scaffolder', 'build', ['source:read', 'artifact:write'], 30_000, '2'),
   descriptor('system3.project-validator', 'build', ['artifact:read', 'process:python'], 10_000),
+  descriptor(
+    'system3.pinned-dataset-materializer',
+    'experiment',
+    ['source:read', 'artifact:read', 'artifact:write'],
+    10_000
+  ),
   descriptor('system3.dataset-validator', 'experiment', ['artifact:read'], 10_000),
   descriptor(
     'system3.test-runner',
@@ -110,8 +120,18 @@ const planInputSchema = z.object({
 const scaffoldInputSchema = z.object({
   projectName: z.string().min(1),
   targetColumn: z.string().min(1),
+  datasetSourceVersionId: z.string().uuid(),
+  datasetContentHash: z.string().startsWith('sha256:'),
   datasetFilename: z.string().min(1),
-  datasetCsv: z.string().min(1),
+  datasetBytes: z.instanceof(Uint8Array),
+});
+const materializeDatasetInputSchema = z.object({
+  projectDir: z.string().min(1),
+  targetColumn: z.string().min(1),
+  datasetSourceVersionId: z.string().uuid(),
+  datasetContentHash: z.string().startsWith('sha256:'),
+  datasetFilename: z.string().min(1),
+  datasetBytes: z.instanceof(Uint8Array),
 });
 const projectDirInputSchema = z.object({ projectDir: z.string().min(1) });
 const evidenceInputSchema = projectDirInputSchema.extend({
@@ -139,8 +159,50 @@ const reuseArtifactInputSchema = z.object({
   archiveBytes: z.instanceof(Uint8Array),
 });
 
-const dataPy =
-  'import csv\nfrom pathlib import Path\n\ndef load_rows(path: Path):\n    with path.open(newline="", encoding="utf-8") as handle:\n        rows = list(csv.DictReader(handle))\n    if not rows:\n        raise ValueError("dataset is empty")\n    return rows\n';
+const dataPy = `import csv
+from collections import Counter
+from pathlib import Path
+
+MAX_ROWS = ${SYSTEM3_CSV_LIMITS.maxRows.toString()}
+MAX_COLUMNS = ${SYSTEM3_CSV_LIMITS.maxColumns.toString()}
+MAX_RECORD_BYTES = ${SYSTEM3_CSV_LIMITS.maxRecordBytes.toString()}
+csv.field_size_limit(MAX_RECORD_BYTES)
+
+def _validated_header(reader):
+    try:
+        header = next(reader)
+    except StopIteration as exc:
+        raise ValueError("dataset has no header") from exc
+    if not header or any(not value.strip() for value in header):
+        raise ValueError("dataset has a blank header")
+    if len(header) > MAX_COLUMNS:
+        raise ValueError(f"dataset exceeds {MAX_COLUMNS} columns")
+    if len(set(header)) != len(header):
+        raise ValueError("dataset has duplicate headers")
+    return header
+
+def summarize_dataset(path: Path, target_column: str):
+    with path.open(newline="", encoding="utf-8-sig") as handle:
+        reader = csv.reader(handle, strict=True)
+        header = _validated_header(reader)
+        if target_column not in header:
+            raise ValueError("target column missing")
+        target_index = header.index(target_column)
+        target_counts = Counter()
+        row_count = 0
+        for row in reader:
+            row_count += 1
+            if row_count > MAX_ROWS:
+                raise ValueError(f"dataset exceeds {MAX_ROWS} rows")
+            if len(row) != len(header):
+                raise ValueError(f"row {row_count + 1} has {len(row)} fields; expected {len(header)}")
+            if sum(len(value.encode("utf-8")) for value in row) > MAX_RECORD_BYTES:
+                raise ValueError(f"row {row_count + 1} exceeds the record-size limit")
+            target_counts[row[target_index]] += 1
+    if row_count == 0:
+        raise ValueError("dataset is empty")
+    return row_count, target_counts
+`;
 const modelPy =
   'from collections import Counter\n\ndef majority_label(labels):\n    if not labels:\n        raise ValueError("labels are empty")\n    return Counter(labels).most_common(1)[0][0]\n\ndef evaluate(labels, prediction):\n    correct = sum(1 for label in labels if label == prediction)\n    return {"accuracy": correct / len(labels), "rows": len(labels), "prediction": prediction}\n';
 
@@ -229,20 +291,22 @@ export const baselineCapabilityHandlers: Readonly<Record<BaselineCapabilityId, C
         writeFile(join(projectDir, 'src', 'project', '__init__.py'), '', 'utf8'),
         writeFile(join(projectDir, 'src', 'project', 'data.py'), dataPy, 'utf8'),
         writeFile(join(projectDir, 'src', 'project', 'model.py'), modelPy, 'utf8'),
-        writeFile(join(projectDir, 'data', 'input.csv'), input.datasetCsv, 'utf8'),
+        writeFile(join(projectDir, 'data', 'input.csv'), input.datasetBytes),
         writeJson(join(projectDir, 'config.json'), {
           targetColumn: input.targetColumn,
           primaryMetric: 'accuracy',
           sourceFilename: basename(input.datasetFilename),
+          datasetSourceVersionId: input.datasetSourceVersionId,
+          datasetContentHash: input.datasetContentHash,
         }),
         writeFile(
           join(projectDir, 'run_pipeline.py'),
-          'import csv, json\nfrom pathlib import Path\nconfig=json.loads(Path("config.json").read_text())\nwith Path("data/input.csv").open(newline="", encoding="utf-8") as f: rows=list(csv.DictReader(f))\nif not rows: raise SystemExit("dataset is empty")\nif config["targetColumn"] not in rows[0]: raise SystemExit("target column missing")\nPath("reports").mkdir(exist_ok=True)\nresult={"status":"passed","rows":len(rows),"targetColumn":config["targetColumn"]}\nPath("reports/data_run.json").write_text(json.dumps(result, indent=2)+"\\n")\nprint(json.dumps(result))\n',
+          'import json, sys\nfrom pathlib import Path\nsys.path.insert(0, "src")\nfrom project.data import summarize_dataset\nconfig=json.loads(Path("config.json").read_text())\nrow_count, _ = summarize_dataset(Path("data/input.csv"), config["targetColumn"])\nPath("reports").mkdir(exist_ok=True)\nresult={"status":"passed","rows":row_count,"targetColumn":config["targetColumn"],"datasetSourceVersionId":config["datasetSourceVersionId"],"datasetContentHash":config["datasetContentHash"]}\nPath("reports/data_run.json").write_text(json.dumps(result, indent=2)+"\\n")\nprint(json.dumps(result))\n',
           'utf8'
         ),
         writeFile(
           join(projectDir, 'run_experiments.py'),
-          'import csv, json, sys\nfrom pathlib import Path\nsys.path.insert(0, "src")\nfrom project.model import evaluate, majority_label\nconfig=json.loads(Path("config.json").read_text())\nwith Path("data/input.csv").open(newline="", encoding="utf-8") as f: rows=list(csv.DictReader(f))\nlabels=[row[config["targetColumn"]] for row in rows]\nprediction=majority_label(labels)\nmetrics=evaluate(labels,prediction)\nresult={"status":"passed","model":"majority_class_baseline","seed":42,"metrics":metrics,"selectionPolicy":{"primaryMetric":config["primaryMetric"]}}\nPath("reports").mkdir(exist_ok=True)\nPath("reports/experiment_results.json").write_text(json.dumps(result, indent=2)+"\\n")\nprint(json.dumps(result))\n',
+          'import json, sys\nfrom pathlib import Path\nsys.path.insert(0, "src")\nfrom project.data import summarize_dataset\nconfig=json.loads(Path("config.json").read_text())\nrow_count, target_counts = summarize_dataset(Path("data/input.csv"), config["targetColumn"])\nprediction, correct = target_counts.most_common(1)[0]\nmetrics={"accuracy":correct / row_count,"rows":row_count,"prediction":prediction}\nresult={"status":"passed","model":"majority_class_baseline","seed":42,"metrics":metrics,"selectionPolicy":{"primaryMetric":config["primaryMetric"]}}\nPath("reports").mkdir(exist_ok=True)\nPath("reports/experiment_results.json").write_text(json.dumps(result, indent=2)+"\\n")\nprint(json.dumps(result))\n',
           'utf8'
         ),
         writeFile(
@@ -260,6 +324,24 @@ export const baselineCapabilityHandlers: Readonly<Record<BaselineCapabilityId, C
           `# ${input.projectName}\n\nGenerated by the approved System 3 Customer Churn MVP workflow.\n\nThis package proves a deterministic majority-class baseline only; full DESIGN_B_2 coverage is not claimed.\n`,
           'utf8'
         ),
+      ]);
+      return result({ projectDir });
+    },
+    'system3.pinned-dataset-materializer': async (raw, context) => {
+      assertNotAborted(context);
+      const input = materializeDatasetInputSchema.parse(raw);
+      const projectDir = await assertExecutionPath(input.projectDir, context);
+      const configPath = join(projectDir, 'config.json');
+      const config = JSON.parse(await readFile(configPath, 'utf8')) as Record<string, unknown>;
+      await Promise.all([
+        writeFile(join(projectDir, 'data', 'input.csv'), input.datasetBytes),
+        writeJson(configPath, {
+          ...config,
+          targetColumn: input.targetColumn,
+          sourceFilename: basename(input.datasetFilename),
+          datasetSourceVersionId: input.datasetSourceVersionId,
+          datasetContentHash: input.datasetContentHash,
+        }),
       ]);
       return result({ projectDir });
     },
@@ -282,17 +364,36 @@ export const baselineCapabilityHandlers: Readonly<Record<BaselineCapabilityId, C
       const input = projectDirInputSchema.parse(raw);
       const projectDir = await assertExecutionPath(input.projectDir, context);
       const config = JSON.parse(await readFile(join(projectDir, 'config.json'), 'utf8')) as {
+        datasetContentHash?: unknown;
+        datasetSourceVersionId?: unknown;
+        sourceFilename?: unknown;
         targetColumn?: unknown;
       };
-      const [header = '', ...rows] = (await readFile(join(projectDir, 'data', 'input.csv'), 'utf8'))
-        .trim()
-        .split(/\r?\n/);
-      const columns = header.split(',').map(value => value.trim());
-      if (rows.length === 0) throw new Error('Dataset is empty');
-      if (typeof config.targetColumn !== 'string' || !columns.includes(config.targetColumn)) {
+      if (
+        typeof config.targetColumn !== 'string' ||
+        typeof config.datasetSourceVersionId !== 'string' ||
+        typeof config.sourceFilename !== 'string'
+      ) {
         throw new Error('Dataset target column is missing');
       }
-      return result({ projectDir, rows: rows.length, targetColumn: config.targetColumn });
+      const profile = await profileDatasetCsvStream({
+        filename: config.sourceFilename,
+        sourceVersionId: config.datasetSourceVersionId,
+        chunks: createReadStream(join(projectDir, 'data', 'input.csv')),
+        targetColumn: config.targetColumn,
+        ...(typeof config.datasetContentHash === 'string'
+          ? { expectedContentHash: config.datasetContentHash }
+          : {}),
+        signal: context.signal,
+      });
+      if (!profile.targetExists) throw new Error('Dataset target column is missing');
+      if (profile.rowCount === 0) throw new Error('Dataset is empty');
+      return result({
+        projectDir,
+        rows: profile.rowCount,
+        targetColumn: profile.targetColumn,
+        rowFingerprint: profile.rowFingerprint,
+      });
     },
     'system3.test-runner': async (raw, context) => {
       assertNotAborted(context);

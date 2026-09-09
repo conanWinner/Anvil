@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { System3SourceKind } from './contracts';
 import type { System3SourceValidationCheck, System3SourceValidationReport } from './store';
+import { inspectSystem3CsvText } from './csv-contract';
 
 interface SourcePolicy {
   readonly extensions: readonly string[];
@@ -136,12 +137,21 @@ function validateStructuredText(
     throw new System3SourceValidationError(422, `Nội dung ${extension} không hợp lệ`, checks);
   }
   if (extension === '.csv') {
-    const firstLine = text.split(/\r?\n/, 1)[0]?.trim() ?? '';
-    if (firstLine.length === 0 || !firstLine.includes(',')) {
-      checks.push(check('csv-header', 'Header CSV', 'failed', 'CSV phải có header với nhiều cột.'));
-      throw new System3SourceValidationError(422, 'CSV thiếu hàng tiêu đề hợp lệ', checks);
+    try {
+      const inspection = inspectSystem3CsvText(text);
+      checks.push(
+        check(
+          'csv-contract',
+          'Hợp đồng CSV',
+          'passed',
+          `CSV hợp lệ với ${inspection.headers.length.toString()} cột và ${inspection.rowCount.toString()} dòng dữ liệu.`
+        )
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'CSV không hợp lệ';
+      checks.push(check('csv-contract', 'Hợp đồng CSV', 'failed', message));
+      throw new System3SourceValidationError(422, message, checks);
     }
-    checks.push(check('csv-header', 'Header CSV', 'passed', 'CSV có header có thể đọc được.'));
   }
   if (['.json', '.yaml', '.yml'].includes(extension)) {
     checks.push(

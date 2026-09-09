@@ -48,6 +48,7 @@ Mỗi loại nguồn dùng một bộ đọc riêng:
 | System 2 JSON có schema được hỗ trợ | Bộ đọc System 2 chính thức |
 | Markdown có cấu trúc rõ | Bộ đọc theo heading và bảng |
 | Markdown không theo mẫu | Đọc cấu trúc trước; chỉ dùng AI hỗ trợ ở đoạn thật sự không hiểu |
+| PDF có lớp chữ | Bộ đọc bố cục, giữ số trang và vùng chữ |
 | Dataset CSV | Bộ kiểm tra dataset theo từng phần để tránh nạp toàn bộ vào bộ nhớ |
 | Constraints YAML/JSON | Bộ đọc ràng buộc |
 | Data dictionary | Bộ đọc mô tả cột |
@@ -294,28 +295,51 @@ Bộ đọc không tạo bốn tệp mới. Nó tạo cây nội bộ, rồi sin
 
 ### Trạng thái triển khai hiện tại
 
-Thiết kế mong muốn ở trên chưa đồng nghĩa mọi phần đã có trong mã nguồn. Hiện tại cần tách rõ:
+Phạm vi TW-02 mô tả trong tài liệu này đã được triển khai. Đường chạy hiện tại có hai nút kỹ thuật:
 
-**Đã có ở mức nền tảng:**
+1. `verify-input-snapshot`: mở đúng từng phiên bản nguồn đã cố định và kiểm tra mã nội dung.
+2. `analyze-understanding`: đọc cấu trúc, chạy sáu bộ trích xuất, đối chiếu dữ liệu, kiểm tra chất lượng và tạo báo cáo.
 
-- Source Version bất biến và mã kiểm tra nội dung.
-- Understanding Input Snapshot cố định đầu vào của một lần chạy.
-- Trích xuất Markdown bằng quy tắc cho một số nội dung System 2.
-- Đọc CSV cơ bản khi có dữ liệu thật.
-- Tạo Knowledge Snapshot và các tài nguyên để giao diện mở kết quả.
+Các phần đã có trong mã nguồn:
 
-**Chưa hoàn thiện hoặc cần bổ sung:**
+- Cây tài liệu Markdown dùng `remark-parse`, `remark-gfm` và `unist-util-visit-parents`.
+- Bảng tên chương tương đương và quy tắc trích xuất đều có phiên bản.
+- Sáu bộ trích xuất tương ứng sáu chương chính của System 2.
+- Vị trí nguồn gồm phiên bản nguồn, đường dẫn tiêu đề, dòng, mã đoạn trích; JSON dùng đường dẫn JSON, PDF dùng trang và vùng chữ.
+- Bộ đọc System 2 JSON có phiên bản; bộ đọc YAML/JSON cho ràng buộc và từ điển dữ liệu.
+- Nguồn bổ sung được ghép theo trường có nghĩa: cột mục tiêu, danh sách cột dự kiến, bộ nhớ, ràng buộc, chính sách và cách bàn giao. Nếu hai nguồn mâu thuẫn, hệ thống yêu cầu sửa nguồn thay vì tự chọn.
+- Bộ đọc PDF theo bố cục. PDF chỉ có ảnh sẽ bị từ chối rõ ràng vì hiện chưa có nhận dạng chữ từ ảnh.
+- Bộ kiểm tra CSV đọc theo dòng, không gửi dòng dữ liệu thô cho mô hình ngôn ngữ.
+- Sổ độ bao phủ, kiểm tra mã trùng, tham chiếu sai, trường bắt buộc thiếu, nội dung chưa hỗ trợ và nội dung chưa phân loại.
+- Bảy loại báo cáo dễ đọc; báo cáo hồ sơ dữ liệu chỉ được tạo khi có dữ liệu thật.
+- Báo cáo thay đổi nhận Bản hiểu đang hoạt động trước đó để nêu đúng yêu cầu mới và yêu cầu bị bỏ.
+- Bản hiểu nháp không tự thay bản đang hoạt động. Người dùng phải xử lý quyết định và kích hoạt rõ ràng.
+- Với cột mục tiêu còn thiếu, UI chỉ cho chọn một cột thật trong Dataset đã kiểm tra. Câu trả lời được kiểm tra, lưu riêng và được áp dụng cho Readiness, kế hoạch và thực thi; Bản hiểu gốc vẫn không bị ghi đè.
+- Hỗ trợ ngữ nghĩa có giới hạn chỉ chạy khi còn đoạn chưa phân loại; tối đa hai lần thử, 15 giây mỗi lần, ngân sách 0,025 USD, không có công cụ và chỉ nhận kết quả có trích dẫn nguyên văn trong nguồn.
 
-- Cây tài liệu Markdown đầy đủ.
-- Bảng tên mục tương đương có phiên bản.
-- Vị trí nguồn chi tiết cho mọi kết luận.
-- Bộ đọc chính thức cho System 2 JSON có cấu trúc.
-- Bộ đọc bố cục PDF.
-- Quy tắc an toàn khi chia bảng và khối mã.
-- Báo cáo chất lượng trích xuất đầy đủ.
-- Bộ kiểm thử bao phủ các biến thể Markdown quan trọng.
+Giới hạn còn chủ động giữ lại:
 
-Do đó, TW-02 hiện chưa nên được coi là hoàn thiện theo thiết kế mục tiêu. Việc tệp định nghĩa quy trình có trường `provider: 'claude'` cũng không tự chứng minh rằng mô hình ngôn ngữ đang được gọi; chỉ có thể mô tả như vậy khi đường chạy thật sự có nút gọi nhà cung cấp.
+- Chưa nhận dạng chữ trong PDF dạng ảnh.
+- Chưa cần hệ thống tìm kiếm tăng cường bằng mô hình ngôn ngữ; mỗi lần TW-02 vẫn đọc tập nguồn đã được cố định.
+- JSON System 2 chỉ được nhận khi đúng phiên bản cấu trúc đang hỗ trợ; phiên bản lạ bị từ chối thay vì đoán.
+
+Trường `provider: 'claude'` ở cấp quy trình vẫn không có nghĩa mọi lần chạy đều gọi mô hình. Hai nút chính là bộ xử lý xác định; lời gọi mô hình chỉ xuất hiện trong nhánh hỗ trợ ngữ nghĩa nêu trên.
+
+### Vị trí mã nguồn đã thay đổi
+
+| Phần | Vị trí chính |
+|---|---|
+| Hợp đồng dữ liệu và khả năng tương thích bản cũ | `packages/system3/src/contracts.ts` |
+| Cây Markdown, vị trí nguồn và bảng tên chương | `packages/system3/src/understanding/document-index.ts` |
+| Sáu bộ trích xuất | `packages/system3/src/understanding/extractors/index.ts` |
+| Bộ đọc System 2 JSON, PDF và nguồn bổ sung | `packages/system3/src/understanding/system2-json-reader.ts`, `pdf-layout-reader.ts`, `supplemental-reader.ts` |
+| Đọc CSV theo dòng | `packages/system3/src/understanding/dataset-profiler.ts` |
+| Điều phối phân tích, kiểm tra chất lượng và tạo báo cáo | `packages/system3/src/understanding/index.ts`, `quality.ts`, `reports.ts` |
+| Hai nút của quy trình TW-02 | `packages/system3/src/templates.ts`, `packages/system3/src/capabilities.ts` |
+| Lưu Bản chụp đầu vào, bản hiểu nháp, báo cáo, quyết định và kích hoạt | `packages/system3/src/store.ts`, `migrations/032_system3_understanding_v2.sql`, `migrations/033_system3_decision_binding.sql` |
+| Giao diện lập trình và cách trình bày tài nguyên | `packages/server/src/routes/api.ts`, `schemas/system3.schemas.ts`, `system3-activity-resources.ts` |
+| Khu vực TW-02 trên giao diện | `packages/web/src/features/system3/UnderstandingWorkspace.tsx`, `System3App.tsx`, `ResourceViewer.tsx`, `system3.css` |
+| Kiểm thử | `packages/system3/src/understanding/understanding.test.ts`, `templates.test.ts`, `packages/web/e2e/system3-projects.test.ts` |
 
 ### Bước 3 — Đọc blueprint
 
@@ -394,7 +418,7 @@ Hệ thống tạo báo cáo dễ đọc và các Decision nếu có thông tin 
 
 ### Bước 10 — Người dùng xem và chấp nhận
 
-Người dùng có thể xem thay đổi, trả lời Decision, thay nguồn hoặc chấp nhận bản hiểu mới. Khi chấp nhận, backend chuyển Candidate Knowledge Snapshot thành bản đang hoạt động và giữ bản cũ trong lịch sử.
+Người dùng có thể xem thay đổi, trả lời Decision, thay nguồn hoặc chấp nhận bản hiểu mới. Với câu hỏi về cột mục tiêu, người dùng chọn một cột đã có thật trong Dataset; không thể gửi một câu trả lời tự do rồi để hệ thống tự đoán. Khi chấp nhận, backend chuyển Candidate Knowledge Snapshot thành bản đang hoạt động và giữ bản cũ trong lịch sử. Câu trả lời được áp dụng như một lớp quyết định có phiên bản cho các bước sau, không sửa nội dung gốc của Bản hiểu.
 
 Đây là một thao tác điều khiển nhỏ bên trong phase Understanding, không được tính thêm thành Lifecycle Activity thứ 11.
 
@@ -421,7 +445,7 @@ Decision có thể đến từ:
 - Hai nguồn đưa ra thông tin mâu thuẫn.
 - Một thông tin bắt buộc còn thiếu.
 
-AI không tự trả lời Decision. Người dùng trả lời trên UI, sau đó câu trả lời được lưu và dùng ở Readiness.
+AI không tự trả lời Decision. Người dùng trả lời trên UI; câu trả lời được kiểm tra theo loại câu hỏi, lưu cùng bản hiểu liên quan và dùng ở Readiness, kế hoạch và thực thi.
 
 ## Người dùng nhìn thấy gì trên UI?
 

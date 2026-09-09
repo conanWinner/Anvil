@@ -181,6 +181,17 @@ export function buildLifecycleView(project: System3Project): readonly LifecycleP
   ];
 
   const readinessStatus = normalizeStatus(readiness?.status);
+  const readinessEvaluation = project.readinessEvaluation;
+  const readinessBlocked =
+    readinessEvaluation !== undefined && readinessEvaluation.status !== 'passed';
+  const readinessRoute =
+    readinessEvaluation?.nextAction === 'link_dataset'
+      ? 'sources'
+      : readinessEvaluation?.nextAction === 'answer_decisions'
+        ? 'decisions'
+        : readinessEvaluation?.nextAction === 'configure_runtime'
+          ? 'technical'
+          : 'flow';
   const readinessActivities: readonly LifecycleActivityView[] = [
     {
       id: 'TW-03',
@@ -188,18 +199,18 @@ export function buildLifecycleView(project: System3Project): readonly LifecycleP
       shortLabel: 'Readiness',
       description: 'Kiểm tra dữ liệu, quyết định và điều kiện cần có trước khi lập kế hoạch.',
       executionKind: 'workflow',
-      status: readinessStatus,
+      status: readinessBlocked ? 'blocked' : readinessStatus,
       statusDetail: project.readiness
         ? 'Readiness Contract hiện hành đã được tạo.'
-        : project.decisions.some(decision => decision.status === 'pending')
-          ? 'Còn Decision cần người dùng trả lời.'
-          : 'Chờ bản hiểu dự án hiện hành.',
+        : readinessEvaluation?.blockerReasons[0] !== undefined
+          ? readinessEvaluation.blockerReasons[0]
+          : project.decisions.some(decision => decision.status === 'pending')
+            ? 'Còn Decision cần người dùng trả lời.'
+            : 'Chờ bản hiểu dự án hiện hành.',
       input: 'Knowledge Snapshot, Decisions và runtime profile',
       output: 'Readiness Contract và danh sách điều còn thiếu',
       technicalWorkflow: readiness?.technicalWorkflow ?? 'system3-readiness-contract',
-      route: project.decisions.some(decision => decision.status === 'pending')
-        ? 'decisions'
-        : 'flow',
+      route: readinessRoute,
       workflowSteps: readiness?.workflowSteps ?? [],
     },
     {

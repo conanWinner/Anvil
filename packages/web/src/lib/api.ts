@@ -28,6 +28,67 @@ export type System3ProjectFlowResponse = components['schemas']['System3ProjectFl
 export type CreateSystem3ProjectBody = components['schemas']['CreateSystem3ProjectBody'];
 export type System3OperationResponse = components['schemas']['System3Operation'];
 
+export type System3LifecycleAttemptActivity =
+  | 'OP-00'
+  | 'OP-01'
+  | 'TW-02'
+  | 'TW-03'
+  | 'OP-04'
+  | 'OP-05'
+  | 'TW-06'
+  | 'TW-07'
+  | 'OP-08'
+  | 'TW-09';
+export interface System3LifecycleAttemptBasis {
+  schemaVersion: 1;
+  sourceVersionIds: string[];
+  sourceHashes: string[];
+  knowledgeSnapshotId: string | null;
+  readinessContractId: string | null;
+  compilationId: string | null;
+  approvalId: string | null;
+  executionId: string | null;
+  verificationId: string | null;
+  baseCommitSha: string | null;
+  resources: Record<string, unknown>;
+}
+export interface System3LifecycleAttempt {
+  id: string;
+  projectId: string;
+  sequence: number;
+  baseAttemptId: string | null;
+  startActivityId: System3LifecycleAttemptActivity;
+  scope: 'full' | 'activity' | 'downstream';
+  inputMode: 'replay' | 'current';
+  basis: System3LifecycleAttemptBasis;
+  previewHash: string;
+  conversationId: string | null;
+  isolationEnvironmentId: string | null;
+  branchName: string | null;
+  workingPath: string | null;
+  lifecycleStatus: 'active' | 'superseded' | 'cleaned';
+  runStatus: 'preparing' | 'running' | 'waiting' | 'completed' | 'failed' | 'unknown';
+  cleanupStatus: 'not_started' | 'running' | 'partial' | 'completed' | 'failed';
+  checkpointActivityId: System3LifecycleAttemptActivity | null;
+  nextActivityId: System3LifecycleAttemptActivity | null;
+  cleanupManifest: Record<string, unknown> | null;
+  createdBy: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  cleanedAt: string | null;
+}
+export interface System3LifecycleAttemptPreview {
+  basis: System3LifecycleAttemptBasis;
+  previewHash: string;
+  branchHint: string;
+  activities: System3LifecycleAttemptActivity[];
+  checkpoints: System3LifecycleAttemptActivity[];
+  warnings: string[];
+  blockingReasons: string[];
+  canStart: boolean;
+}
+
 export interface HealthResponse {
   status: string;
   adapter: string;
@@ -72,6 +133,84 @@ export function createSystem3Project(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
+}
+
+export function listSystem3LifecycleAttempts(
+  projectId: string
+): Promise<System3LifecycleAttempt[]> {
+  return fetchJSON<{ attempts: System3LifecycleAttempt[] }>(
+    `/api/system3/projects/${encodeURIComponent(projectId)}/attempts`
+  ).then(response => response.attempts);
+}
+
+export function previewSystem3LifecycleAttempt(
+  projectId: string,
+  body: {
+    expectedVersion: number;
+    baseAttemptId?: string | null;
+    startActivityId: System3LifecycleAttemptActivity;
+    scope: 'full' | 'activity' | 'downstream';
+    inputMode: 'replay' | 'current';
+  }
+): Promise<System3LifecycleAttemptPreview> {
+  return fetchJSON<System3LifecycleAttemptPreview>(
+    `/api/system3/projects/${encodeURIComponent(projectId)}/attempts/preview`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+  );
+}
+
+export function createSystem3LifecycleAttempt(
+  projectId: string,
+  body: {
+    expectedVersion: number;
+    baseAttemptId?: string | null;
+    startActivityId: System3LifecycleAttemptActivity;
+    scope: 'full' | 'activity' | 'downstream';
+    inputMode: 'replay' | 'current';
+    previewHash: string;
+    idempotencyKey: string;
+  }
+): Promise<System3LifecycleAttempt> {
+  return fetchJSON<System3LifecycleAttempt>(
+    `/api/system3/projects/${encodeURIComponent(projectId)}/attempts`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }
+  );
+}
+
+export function cleanupSystem3LifecycleAttempt(
+  projectId: string,
+  attemptId: string,
+  body: { expectedVersion: number; confirmation: 'cleanup_attempt'; force: boolean }
+): Promise<System3LifecycleAttempt> {
+  return fetchJSON<System3LifecycleAttempt>(
+    `/api/system3/projects/${encodeURIComponent(projectId)}/attempts/${encodeURIComponent(attemptId)}/cleanup`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+  );
+}
+
+export function continueSystem3LifecycleAttempt(
+  projectId: string,
+  attemptId: string,
+  body: { expectedVersion: number }
+): Promise<System3LifecycleAttempt> {
+  return fetchJSON<System3LifecycleAttempt>(
+    `/api/system3/projects/${encodeURIComponent(projectId)}/attempts/${encodeURIComponent(attemptId)}/continue`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+  );
+}
+
+export function cleanupAllSystem3LifecycleAttempts(
+  projectId: string,
+  body: { expectedVersion: number; confirmation: 'cleanup_all_attempts'; force: boolean }
+): Promise<System3LifecycleAttempt[]> {
+  return fetchJSON<{ attempts: System3LifecycleAttempt[] }>(
+    `/api/system3/projects/${encodeURIComponent(projectId)}/attempts/cleanup-all`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }
+  ).then(response => response.attempts);
 }
 
 // Providers

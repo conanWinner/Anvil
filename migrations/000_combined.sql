@@ -763,6 +763,7 @@ CREATE TABLE IF NOT EXISTS remote_agent_system3_decisions (
   why TEXT NOT NULL,
   recommendation TEXT NOT NULL,
   options JSONB NOT NULL,
+  binding JSONB,
   affected_phases JSONB NOT NULL,
   status VARCHAR(16) NOT NULL,
   answer TEXT,
@@ -869,6 +870,24 @@ CREATE TABLE IF NOT EXISTS remote_agent_system3_execution_plan_snapshots (
   plan JSONB NOT NULL,
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
+CREATE TABLE IF NOT EXISTS remote_agent_system3_workflow_bundle_snapshots (
+  id UUID PRIMARY KEY,
+  project_id UUID NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+  compilation_id UUID NOT NULL REFERENCES remote_agent_system3_compilations(id) ON DELETE CASCADE,
+  activity_id VARCHAR(8) NOT NULL CHECK (activity_id IN ('TW-06', 'TW-07', 'TW-09')),
+  schema_version INTEGER NOT NULL,
+  compiler_version VARCHAR(80) NOT NULL,
+  template_id VARCHAR(255) NOT NULL,
+  execution_mode VARCHAR(20) NOT NULL CHECK (execution_mode IN ('full', 'experiment', 'delivery')),
+  definition JSONB NOT NULL,
+  definition_hash VARCHAR(80) NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+  UNIQUE(compilation_id, activity_id)
+);
+CREATE INDEX IF NOT EXISTS idx_system3_workflow_bundle_snapshots_project
+  ON remote_agent_system3_workflow_bundle_snapshots(project_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_system3_workflow_bundle_snapshots_compilation
+  ON remote_agent_system3_workflow_bundle_snapshots(compilation_id, activity_id);
 CREATE TABLE IF NOT EXISTS remote_agent_system3_project_transitions (
   id UUID PRIMARY KEY,
   project_id UUID NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
@@ -918,6 +937,9 @@ CREATE TABLE IF NOT EXISTS remote_agent_system3_project_executions (
   approval_id UUID NOT NULL REFERENCES remote_agent_system3_approval_manifests(id) ON DELETE RESTRICT,
   workflow_run_id UUID NOT NULL UNIQUE REFERENCES remote_agent_workflow_runs(id) ON DELETE RESTRICT,
   definition_hash VARCHAR(80) NOT NULL,
+  bundle_snapshot_id UUID REFERENCES remote_agent_system3_workflow_bundle_snapshots(id) ON DELETE RESTRICT,
+  bundle_hash VARCHAR(80),
+  runtime_bindings JSONB,
   status VARCHAR(20) NOT NULL,
   error TEXT,
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
@@ -956,6 +978,7 @@ CREATE TABLE IF NOT EXISTS remote_agent_system3_project_operations (
   result JSONB,
   error TEXT,
   owner_instance_id TEXT,
+  owner_claim_token TEXT,
   heartbeat_at TIMESTAMPTZ,
   started_at TIMESTAMPTZ,
   finished_at TIMESTAMPTZ,
@@ -972,6 +995,8 @@ ALTER TABLE remote_agent_system3_project_operations
   ADD COLUMN IF NOT EXISTS project_version INTEGER;
 ALTER TABLE remote_agent_system3_project_operations
   ADD COLUMN IF NOT EXISTS owner_instance_id TEXT;
+ALTER TABLE remote_agent_system3_project_operations
+  ADD COLUMN IF NOT EXISTS owner_claim_token TEXT;
 ALTER TABLE remote_agent_system3_project_operations
   ADD COLUMN IF NOT EXISTS heartbeat_at TIMESTAMPTZ;
 ALTER TABLE remote_agent_system3_project_operations
@@ -1013,6 +1038,9 @@ CREATE TABLE IF NOT EXISTS remote_agent_system3_verifications (
   status VARCHAR(20) NOT NULL,
   validator_version VARCHAR(64) NOT NULL,
   basis_hash VARCHAR(80) NOT NULL,
+  bundle_snapshot_id UUID REFERENCES remote_agent_system3_workflow_bundle_snapshots(id) ON DELETE RESTRICT,
+  bundle_hash VARCHAR(80),
+  runtime_bindings JSONB,
   evidence_map JSONB,
   gate JSONB,
   error TEXT,
@@ -1045,6 +1073,9 @@ CREATE TABLE IF NOT EXISTS remote_agent_system3_delivery_manifests (
   package_filename TEXT NOT NULL,
   content_hash VARCHAR(80) NOT NULL,
   size_bytes BIGINT NOT NULL,
+  bundle_snapshot_id UUID REFERENCES remote_agent_system3_workflow_bundle_snapshots(id) ON DELETE RESTRICT,
+  bundle_hash VARCHAR(80),
+  runtime_bindings JSONB,
   manifest JSONB NOT NULL,
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
@@ -1167,6 +1198,41 @@ CREATE TABLE IF NOT EXISTS remote_agent_system3_understanding_input_snapshots (
 CREATE INDEX IF NOT EXISTS idx_system3_understanding_inputs_project
   ON remote_agent_system3_understanding_input_snapshots(project_id, created_at DESC);
 
+ALTER TABLE remote_agent_system3_understanding_input_snapshots
+  ADD COLUMN IF NOT EXISTS source_refs JSONB;
+ALTER TABLE remote_agent_system3_knowledge_snapshots
+  ADD COLUMN IF NOT EXISTS input_snapshot_id UUID
+    REFERENCES remote_agent_system3_understanding_input_snapshots(id) ON DELETE SET NULL;
+ALTER TABLE remote_agent_system3_knowledge_snapshots
+  ADD COLUMN IF NOT EXISTS schema_version INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE remote_agent_system3_knowledge_snapshots
+  ADD COLUMN IF NOT EXISTS lifecycle_status VARCHAR(16);
+ALTER TABLE remote_agent_system3_knowledge_snapshots
+  ADD COLUMN IF NOT EXISTS quality_status VARCHAR(32);
+ALTER TABLE remote_agent_system3_knowledge_snapshots
+  ADD COLUMN IF NOT EXISTS quality_report JSONB;
+ALTER TABLE remote_agent_system3_knowledge_snapshots
+  ADD COLUMN IF NOT EXISTS activated_at TIMESTAMP WITH TIME ZONE;
+ALTER TABLE remote_agent_system3_knowledge_snapshots
+  ADD COLUMN IF NOT EXISTS activated_by_user_id UUID
+    REFERENCES remote_agent_users(id) ON DELETE SET NULL;
+UPDATE remote_agent_system3_knowledge_snapshots snapshot
+SET lifecycle_status = CASE
+  WHEN snapshot.id = project.active_knowledge_snapshot_id THEN 'active'
+  ELSE 'superseded'
+END
+FROM remote_agent_system3_projects project
+WHERE project.id = snapshot.project_id
+  AND snapshot.lifecycle_status IS NULL;
+UPDATE remote_agent_system3_knowledge_snapshots snapshot
+SET input_snapshot_id = input.id
+FROM remote_agent_system3_understanding_input_snapshots input
+WHERE input.project_id = snapshot.project_id
+  AND input.knowledge_snapshot_id = snapshot.id
+  AND snapshot.input_snapshot_id IS NULL;
+CREATE INDEX IF NOT EXISTS idx_system3_snapshots_project_lifecycle
+  ON remote_agent_system3_knowledge_snapshots(project_id, lifecycle_status, created_at DESC);
+
 ALTER TABLE remote_agent_system3_artifact_versions ADD COLUMN IF NOT EXISTS activity_id VARCHAR(8);
 ALTER TABLE remote_agent_system3_artifact_versions ADD COLUMN IF NOT EXISTS workflow_run_id UUID;
 ALTER TABLE remote_agent_system3_artifact_versions ADD COLUMN IF NOT EXISTS workflow_node_id TEXT;
@@ -1193,6 +1259,41 @@ CREATE TABLE IF NOT EXISTS remote_agent_system3_source_intake_reports (
 );
 CREATE INDEX IF NOT EXISTS idx_system3_source_intake_reports_project
   ON remote_agent_system3_source_intake_reports(project_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS remote_agent_system3_lifecycle_attempts (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id UUID NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE RESTRICT,
+  sequence INTEGER NOT NULL,
+  base_attempt_id UUID REFERENCES remote_agent_system3_lifecycle_attempts(id) ON DELETE SET NULL,
+  start_activity_id VARCHAR(16) NOT NULL,
+  scope VARCHAR(16) NOT NULL,
+  input_mode VARCHAR(16) NOT NULL,
+  basis JSONB NOT NULL,
+  preview_hash TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  conversation_id UUID,
+  isolation_environment_id UUID,
+  branch_name TEXT,
+  working_path TEXT,
+  lifecycle_status VARCHAR(16) NOT NULL DEFAULT 'active',
+  run_status VARCHAR(16) NOT NULL DEFAULT 'preparing',
+  cleanup_status VARCHAR(16) NOT NULL DEFAULT 'not_started',
+  checkpoint_activity_id VARCHAR(16),
+  next_activity_id VARCHAR(16),
+  cleanup_manifest JSONB,
+  created_by_user_id UUID REFERENCES remote_agent_users(id) ON DELETE SET NULL,
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+  started_at TIMESTAMP WITH TIME ZONE,
+  completed_at TIMESTAMP WITH TIME ZONE,
+  cleaned_at TIMESTAMP WITH TIME ZONE,
+  UNIQUE(project_id, sequence),
+  UNIQUE(project_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_system3_lifecycle_attempts_project
+  ON remote_agent_system3_lifecycle_attempts(project_id, sequence DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_system3_lifecycle_attempts_one_active
+  ON remote_agent_system3_lifecycle_attempts(project_id)
+  WHERE lifecycle_status = 'active';
 
 -- ============================================================================
 -- Web auth (opt-in): role on the canonical user + Better Auth tables

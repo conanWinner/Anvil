@@ -4,11 +4,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   discardStagedSystem3Source,
+  persistSystem3BinaryArtifact,
   promoteSystem3Source,
   persistSystem3Artifact,
   readSystem3Artifact,
   readSystem3Source,
   stageSystem3Source,
+  streamSystem3Source,
   system3SourceVersionStorageKey,
 } from './source-storage';
 
@@ -128,6 +130,27 @@ describe('System 3 two-phase source storage', () => {
     );
   });
 
+  test('opens immutable source bytes as a stream for large-input readers', async () => {
+    const root = await testHome();
+    const artifactsRoot = join(root, 'workspaces/_local/project-1/artifacts');
+    const staged = await stageSystem3Source({
+      artifactsRoot,
+      operationId: 'operation-stream',
+      kind: 'dataset',
+      filename: 'data.csv',
+      bytes: new TextEncoder().encode('id,value\n1,a\n2,b\n'),
+    });
+    const stored = await promoteSystem3Source({ artifactsRoot, staged });
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of streamSystem3Source({
+      artifactsRoot,
+      storageKey: stored.storageKey,
+    })) {
+      chunks.push(chunk);
+    }
+    expect(Buffer.concat(chunks).toString('utf8')).toBe('id,value\n1,a\n2,b\n');
+  });
+
   test('reuses an identical immutable report but rejects different content at the same key', async () => {
     const root = await testHome();
     const artifactsRoot = join(root, 'workspaces/_local/project-1/artifacts');
@@ -159,5 +182,21 @@ describe('System 3 two-phase source storage', () => {
         body: { ...report, outcome: 'rejected' },
       })
     ).rejects.toThrow('different content');
+  });
+
+  test('places binary output for an isolated rerun below its attempt namespace', async () => {
+    const root = await testHome();
+    const artifactsRoot = join(root, 'workspaces/_local/project-1/artifacts');
+    const stored = await persistSystem3BinaryArtifact({
+      artifactsRoot,
+      storagePrefix: 'attempts/attempt-1',
+      category: 'execution',
+      filename: 'baseline.tar.gz',
+      bytes: new TextEncoder().encode('baseline'),
+    });
+    expect(stored.storageKey).toMatch(/^attempts\/attempt-1\/execution\/[a-f0-9]{19}\//);
+    expect(await readSystem3Artifact({ artifactsRoot, storageKey: stored.storageKey })).toEqual(
+      Buffer.from('baseline')
+    );
   });
 });

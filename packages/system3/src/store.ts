@@ -7,12 +7,30 @@ import type {
   System3Freshness,
   System3Phase,
   System3ProjectStage,
+  System3ReadinessEvaluation,
   System3SourceKind,
   System3SourceRole,
   System3SourceStorageStatus,
   System3ImpactManifest,
+  System3LifecycleAttemptBasis,
+  System3LifecycleAttemptCleanupStatus,
+  System3LifecycleAttemptInputMode,
+  System3LifecycleAttemptRunStatus,
+  System3LifecycleAttemptScope,
+  System3LifecycleAttemptStatus,
+  System3WorkflowBundleActivityId,
+  System3WorkflowBundleSnapshot,
 } from './contracts';
-import { system3ImpactManifestSchema } from './contracts';
+import type {
+  ExtractionQuality,
+  UnderstandingDecisionBinding,
+  UnderstandingReport,
+} from './understanding';
+import {
+  system3ImpactManifestSchema,
+  system3ReadinessContractBodySchema,
+  system3ReadinessEvaluationSchema,
+} from './contracts';
 import { affectedPhasesForSource, system3PhaseOrder, type System3PhaseId } from './invalidation';
 
 export interface System3Database {
@@ -43,6 +61,33 @@ export interface System3ProjectRecord {
   activeKnowledgeSnapshotId: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface System3LifecycleAttemptRecord {
+  id: string;
+  projectId: string;
+  sequence: number;
+  baseAttemptId: string | null;
+  startActivityId: string;
+  scope: System3LifecycleAttemptScope;
+  inputMode: System3LifecycleAttemptInputMode;
+  basis: System3LifecycleAttemptBasis;
+  previewHash: string;
+  conversationId: string | null;
+  isolationEnvironmentId: string | null;
+  branchName: string | null;
+  workingPath: string | null;
+  lifecycleStatus: System3LifecycleAttemptStatus;
+  runStatus: System3LifecycleAttemptRunStatus;
+  cleanupStatus: System3LifecycleAttemptCleanupStatus;
+  checkpointActivityId: string | null;
+  nextActivityId: string | null;
+  cleanupManifest: Record<string, unknown> | null;
+  createdBy: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  cleanedAt: string | null;
 }
 
 export interface System3SourceRecord {
@@ -132,6 +177,13 @@ export interface System3KnowledgeSnapshotRecord {
   analysis: BlueprintAnalysis;
   artifactKey: string;
   workflowRunId: string | null;
+  inputSnapshotId: string | null;
+  schemaVersion: number;
+  lifecycleStatus: 'candidate' | 'active' | 'superseded' | 'stale';
+  qualityStatus: ExtractionQuality['status'] | null;
+  qualityReport: ExtractionQuality | null;
+  activatedAt: string | null;
+  activatedBy: string | null;
   createdAt: string;
 }
 
@@ -144,6 +196,13 @@ export interface System3UnderstandingInputSnapshotRecord {
   workflowRunId: string | null;
   sourceIds: string[];
   sourceHashes: string[];
+  sourceRefs: {
+    sourceVersionId: string;
+    kind: System3SourceKind;
+    filename: string;
+    mediaType: string;
+    contentHash: string;
+  }[];
   parserVersion: string;
   extractionPolicyVersion: string;
   capabilityRegistryHash: string;
@@ -172,6 +231,7 @@ export interface System3DecisionRecord {
   why: string;
   recommendation: string;
   options: string[];
+  binding: UnderstandingDecisionBinding | null;
   affectedPhases: string[];
   status: 'pending' | 'answered';
   answer: string | null;
@@ -186,6 +246,11 @@ export interface System3CompilationRecord {
   plan: System3ExecutionPlan;
   definitionHash: string;
   capabilityRegistryHash: string;
+  createdAt: string;
+}
+
+/** Immutable executable definition pinned to one compilation and activity. */
+export interface System3WorkflowBundleSnapshotRecord extends System3WorkflowBundleSnapshot {
   createdAt: string;
 }
 
@@ -239,6 +304,7 @@ export type System3OperationType =
   | 'source_intake'
   | 'change_detection'
   | 'analyze'
+  | 'activate_understanding'
   | 'readiness'
   | 'compile'
   | 'execute'
@@ -251,6 +317,9 @@ export interface System3ExecutionRecord {
   approvalId: string;
   workflowRunId: string;
   definitionHash: string;
+  bundleSnapshotId?: string | null;
+  bundleHash?: string | null;
+  runtimeBindings?: Record<string, unknown> | null;
   status: System3ExecutionStatus;
   error: string | null;
   createdAt: string;
@@ -300,6 +369,9 @@ export interface System3VerificationRecord {
   status: System3ExecutionStatus;
   validatorVersion: string;
   basisHash: string;
+  bundleSnapshotId?: string | null;
+  bundleHash?: string | null;
+  runtimeBindings?: Record<string, unknown> | null;
   evidenceMap: Record<string, unknown> | null;
   gate: Record<string, unknown> | null;
   error: string | null;
@@ -316,6 +388,9 @@ export interface System3DeliveryRecord {
   packageFilename: string;
   contentHash: string;
   sizeBytes: number;
+  bundleSnapshotId?: string | null;
+  bundleHash?: string | null;
+  runtimeBindings?: Record<string, unknown> | null;
   manifest: Record<string, unknown>;
   createdAt: string;
 }
@@ -452,6 +527,13 @@ interface SnapshotRow {
   analysis: BlueprintAnalysis | string;
   artifact_key: string;
   workflow_run_id: string | null;
+  input_snapshot_id: string | null;
+  schema_version: number | string | null;
+  lifecycle_status: 'candidate' | 'active' | 'superseded' | 'stale' | null;
+  quality_status: ExtractionQuality['status'] | null;
+  quality_report: ExtractionQuality | string | null;
+  activated_at: Date | string | null;
+  activated_by_user_id: string | null;
   created_at: Date | string;
 }
 
@@ -463,6 +545,7 @@ interface UnderstandingInputSnapshotRow {
   workflow_run_id: string | null;
   source_ids: string[] | string;
   source_hashes: string[] | string;
+  source_refs: System3UnderstandingInputSnapshotRecord['sourceRefs'] | string | null;
   parser_version: string;
   extraction_policy_version: string;
   capability_registry_hash: string;
@@ -490,6 +573,7 @@ interface DecisionRow {
   why: string;
   recommendation: string;
   options: string[] | string;
+  binding: UnderstandingDecisionBinding | string | null;
   affected_phases: string[] | string;
   status: 'pending' | 'answered';
   answer: string | null;
@@ -504,6 +588,20 @@ interface CompilationRow {
   plan: System3ExecutionPlan | string;
   definition_hash: string;
   capability_registry_hash: string;
+  created_at: Date | string;
+}
+
+interface WorkflowBundleSnapshotRow {
+  id: string;
+  project_id: string;
+  compilation_id: string;
+  activity_id: System3WorkflowBundleActivityId;
+  schema_version: number | string;
+  compiler_version: string;
+  template_id: string;
+  execution_mode: 'full' | 'experiment' | 'delivery';
+  definition: System3WorkflowBundleSnapshot['definition'] | string;
+  definition_hash: string;
   created_at: Date | string;
 }
 
@@ -522,6 +620,9 @@ interface ExecutionRow {
   approval_id: string;
   workflow_run_id: string;
   definition_hash: string;
+  bundle_snapshot_id?: string | null;
+  bundle_hash?: string | null;
+  runtime_bindings?: Record<string, unknown> | string | null;
   status: System3ExecutionStatus;
   error: string | null;
   created_at: Date | string;
@@ -571,6 +672,9 @@ interface VerificationRow {
   status: System3ExecutionStatus;
   validator_version: string;
   basis_hash: string;
+  bundle_snapshot_id?: string | null;
+  bundle_hash?: string | null;
+  runtime_bindings?: Record<string, unknown> | string | null;
   evidence_map: Record<string, unknown> | string | null;
   gate: Record<string, unknown> | string | null;
   error: string | null;
@@ -587,6 +691,9 @@ interface DeliveryRow {
   package_filename: string;
   content_hash: string;
   size_bytes: number | string;
+  bundle_snapshot_id?: string | null;
+  bundle_hash?: string | null;
+  runtime_bindings?: Record<string, unknown> | string | null;
   manifest: Record<string, unknown> | string;
   created_at: Date | string;
 }
@@ -635,8 +742,41 @@ interface ArtifactVersionRow {
   created_at: Date | string;
 }
 
+interface LifecycleAttemptRow {
+  id: string;
+  project_id: string;
+  sequence: number | string;
+  base_attempt_id: string | null;
+  start_activity_id: string;
+  scope: System3LifecycleAttemptScope;
+  input_mode: System3LifecycleAttemptInputMode;
+  basis: System3LifecycleAttemptBasis | string;
+  preview_hash: string;
+  conversation_id: string | null;
+  isolation_environment_id: string | null;
+  branch_name: string | null;
+  working_path: string | null;
+  lifecycle_status: System3LifecycleAttemptStatus;
+  run_status: System3LifecycleAttemptRunStatus;
+  cleanup_status: System3LifecycleAttemptCleanupStatus;
+  checkpoint_activity_id: string | null;
+  next_activity_id: string | null;
+  cleanup_manifest: Record<string, unknown> | string | null;
+  created_by_user_id: string | null;
+  created_at: Date | string;
+  started_at: Date | string | null;
+  completed_at: Date | string | null;
+  cleaned_at: Date | string | null;
+}
+
 function iso(value: Date | string): string {
-  return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+  if (value instanceof Date) return value.toISOString();
+  // SQLite CURRENT_TIMESTAMP is UTC but omits both the T separator and zone.
+  // Parse that canonical storage form as UTC instead of the host's local zone.
+  const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(value)
+    ? `${value.replace(' ', 'T')}Z`
+    : value;
+  return new Date(normalized).toISOString();
 }
 
 function jsonObject<T>(value: T | string): T {
@@ -663,6 +803,9 @@ function precreatedSystem3Run(
     codebaseId: string;
     userId?: string;
     workingPath: string;
+    bundleSnapshotId?: string;
+    bundleHash?: string;
+    runtimeBindings?: Record<string, unknown>;
   },
   workflowRunId: string,
   kind: 'verification' | 'delivery'
@@ -683,6 +826,13 @@ function precreatedSystem3Run(
       system3ProjectId: input.projectId,
       system3ExecutionId: input.executionId,
       system3OperationType: kind,
+      ...(input.bundleSnapshotId
+        ? {
+            system3BundleSnapshotId: input.bundleSnapshotId,
+            system3BundleHash: input.bundleHash,
+            system3RuntimeBindings: input.runtimeBindings,
+          }
+        : {}),
     },
     started_at: now,
     completed_at: null,
@@ -743,6 +893,14 @@ function asSnapshot(row: SnapshotRow): System3KnowledgeSnapshotRecord {
     analysis: jsonObject<BlueprintAnalysis>(row.analysis),
     artifactKey: row.artifact_key,
     workflowRunId: row.workflow_run_id ?? null,
+    inputSnapshotId: row.input_snapshot_id ?? null,
+    schemaVersion: Number(row.schema_version ?? 1),
+    lifecycleStatus: row.lifecycle_status ?? 'superseded',
+    qualityStatus: row.quality_status ?? null,
+    qualityReport:
+      row.quality_report === null ? null : jsonObject<ExtractionQuality>(row.quality_report),
+    activatedAt: row.activated_at === null ? null : iso(row.activated_at),
+    activatedBy: row.activated_by_user_id ?? null,
     createdAt: iso(row.created_at),
   };
 }
@@ -758,6 +916,16 @@ function asUnderstandingInputSnapshot(
     workflowRunId: row.workflow_run_id,
     sourceIds: jsonObject<string[]>(row.source_ids),
     sourceHashes: jsonObject<string[]>(row.source_hashes),
+    sourceRefs:
+      row.source_refs === null
+        ? jsonObject<string[]>(row.source_ids).map((sourceVersionId, index) => ({
+            sourceVersionId,
+            kind: 'supporting_document' as const,
+            filename: 'Nguồn lịch sử',
+            mediaType: 'application/octet-stream',
+            contentHash: jsonObject<string[]>(row.source_hashes)[index] ?? 'sha256:legacy',
+          }))
+        : jsonObject<System3UnderstandingInputSnapshotRecord['sourceRefs']>(row.source_refs),
     parserVersion: row.parser_version,
     extractionPolicyVersion: row.extraction_policy_version,
     capabilityRegistryHash: row.capability_registry_hash,
@@ -789,6 +957,7 @@ function asDecision(row: DecisionRow): System3DecisionRecord {
     why: row.why,
     recommendation: row.recommendation,
     options: jsonObject<string[]>(row.options),
+    binding: row.binding === null ? null : jsonObject<UnderstandingDecisionBinding>(row.binding),
     affectedPhases: jsonObject<string[]>(row.affected_phases),
     status: row.status,
     answer: row.answer,
@@ -805,6 +974,24 @@ function asCompilation(row: CompilationRow): System3CompilationRecord {
     plan: jsonObject<System3ExecutionPlan>(row.plan),
     definitionHash: row.definition_hash,
     capabilityRegistryHash: row.capability_registry_hash,
+    createdAt: iso(row.created_at),
+  };
+}
+
+function asWorkflowBundleSnapshot(
+  row: WorkflowBundleSnapshotRow
+): System3WorkflowBundleSnapshotRecord {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    compilationId: row.compilation_id,
+    activityId: row.activity_id,
+    schemaVersion: Number(row.schema_version) as 3,
+    compilerVersion: row.compiler_version as 'system3-compiler@3',
+    templateId: row.template_id as 'customer-churn-reference@1',
+    executionMode: row.execution_mode,
+    definition: jsonObject<System3WorkflowBundleSnapshot['definition']>(row.definition),
+    definitionHash: row.definition_hash,
     createdAt: iso(row.created_at),
   };
 }
@@ -827,6 +1014,12 @@ function asExecution(row: ExecutionRow): System3ExecutionRecord {
     approvalId: row.approval_id,
     workflowRunId: row.workflow_run_id,
     definitionHash: row.definition_hash,
+    bundleSnapshotId: row.bundle_snapshot_id ?? null,
+    bundleHash: row.bundle_hash ?? null,
+    runtimeBindings:
+      row.runtime_bindings === null || row.runtime_bindings === undefined
+        ? null
+        : jsonObject<Record<string, unknown>>(row.runtime_bindings),
     status: row.status,
     error: row.error,
     createdAt: iso(row.created_at),
@@ -884,6 +1077,12 @@ function asVerification(row: VerificationRow): System3VerificationRecord {
     status: row.status,
     validatorVersion: row.validator_version,
     basisHash: row.basis_hash,
+    bundleSnapshotId: row.bundle_snapshot_id ?? null,
+    bundleHash: row.bundle_hash ?? null,
+    runtimeBindings:
+      row.runtime_bindings === null || row.runtime_bindings === undefined
+        ? null
+        : jsonObject<Record<string, unknown>>(row.runtime_bindings),
     evidenceMap:
       row.evidence_map === null ? null : jsonObject<Record<string, unknown>>(row.evidence_map),
     gate: row.gate === null ? null : jsonObject<Record<string, unknown>>(row.gate),
@@ -903,6 +1102,12 @@ function asDelivery(row: DeliveryRow): System3DeliveryRecord {
     packageFilename: row.package_filename,
     contentHash: row.content_hash,
     sizeBytes: Number(row.size_bytes),
+    bundleSnapshotId: row.bundle_snapshot_id ?? null,
+    bundleHash: row.bundle_hash ?? null,
+    runtimeBindings:
+      row.runtime_bindings === null || row.runtime_bindings === undefined
+        ? null
+        : jsonObject<Record<string, unknown>>(row.runtime_bindings),
     manifest: jsonObject<Record<string, unknown>>(row.manifest),
     createdAt: iso(row.created_at),
   };
@@ -967,6 +1172,38 @@ function asArtifactVersion(row: ArtifactVersionRow): System3ArtifactVersionRecor
   };
 }
 
+function asLifecycleAttempt(row: LifecycleAttemptRow): System3LifecycleAttemptRecord {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    sequence: Number(row.sequence),
+    baseAttemptId: row.base_attempt_id,
+    startActivityId: row.start_activity_id,
+    scope: row.scope,
+    inputMode: row.input_mode,
+    basis: jsonObject<System3LifecycleAttemptBasis>(row.basis),
+    previewHash: row.preview_hash,
+    conversationId: row.conversation_id,
+    isolationEnvironmentId: row.isolation_environment_id,
+    branchName: row.branch_name,
+    workingPath: row.working_path,
+    lifecycleStatus: row.lifecycle_status,
+    runStatus: row.run_status,
+    cleanupStatus: row.cleanup_status,
+    checkpointActivityId: row.checkpoint_activity_id,
+    nextActivityId: row.next_activity_id,
+    cleanupManifest:
+      row.cleanup_manifest === null
+        ? null
+        : jsonObject<Record<string, unknown>>(row.cleanup_manifest),
+    createdBy: row.created_by_user_id,
+    createdAt: iso(row.created_at),
+    startedAt: row.started_at === null ? null : iso(row.started_at),
+    completedAt: row.completed_at === null ? null : iso(row.completed_at),
+    cleanedAt: row.cleaned_at === null ? null : iso(row.cleaned_at),
+  };
+}
+
 function asSourceIntakeReport(row: SourceIntakeReportRow): System3SourceIntakeReportRecord {
   return {
     id: row.id,
@@ -980,6 +1217,16 @@ function asSourceIntakeReport(row: SourceIntakeReportRow): System3SourceIntakeRe
 }
 
 export class System3ConflictError extends Error {}
+
+const system3OperationHeartbeatStaleMs = 30_000;
+
+function hasResponsiveOperationOwner(row: OperationRow): boolean {
+  if (row.status !== 'running' || row.heartbeat_at === null) return false;
+  const heartbeatTime = new Date(iso(row.heartbeat_at)).getTime();
+  return (
+    Number.isFinite(heartbeatTime) && Date.now() - heartbeatTime <= system3OperationHeartbeatStaleMs
+  );
+}
 
 export class System3Store {
   private schemaReady: Promise<void> | undefined;
@@ -997,6 +1244,66 @@ export class System3Store {
       await query('SELECT id FROM remote_agent_system3_projects WHERE id = $1 FOR UPDATE', [
         projectId,
       ]);
+    }
+  }
+
+  private async requireProjectOperationClaim(
+    query: System3Query,
+    input: {
+      operationId: string;
+      projectId: string;
+      type: System3OperationType;
+      ownerClaimToken: string;
+    }
+  ): Promise<OperationRow> {
+    const updated = await query(
+      `UPDATE remote_agent_system3_project_operations
+       SET updated_at = updated_at
+       WHERE id = $1 AND project_id = $2 AND operation_type = $3
+         AND status = 'running' AND owner_claim_token = $4`,
+      [input.operationId, input.projectId, input.type, input.ownerClaimToken]
+    );
+    if (updated.rowCount !== 1) {
+      throw new System3ConflictError('Project operation claim is no longer current');
+    }
+    const result = await query(
+      `SELECT * FROM remote_agent_system3_project_operations
+       WHERE id = $1 AND project_id = $2 AND operation_type = $3
+         AND status = 'running' AND owner_claim_token = $4`,
+      [input.operationId, input.projectId, input.type, input.ownerClaimToken]
+    );
+    const operation = typedRows(result, value => value as OperationRow)[0];
+    if (!operation) throw new System3ConflictError('Project operation claim is no longer current');
+    return operation;
+  }
+
+  private async completeProjectOperationClaim(
+    query: System3Query,
+    input: {
+      operationId: string;
+      ownerClaimToken: string;
+      result: Record<string, unknown>;
+      workflowRunId?: string;
+      executionId?: string;
+    }
+  ): Promise<void> {
+    const updated = await query(
+      `UPDATE remote_agent_system3_project_operations
+       SET status = 'succeeded', result = $2, error = NULL,
+           workflow_run_id = COALESCE($3, workflow_run_id),
+           execution_id = COALESCE($4, execution_id), heartbeat_at = CURRENT_TIMESTAMP,
+           finished_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1 AND status = 'running' AND owner_claim_token = $5`,
+      [
+        input.operationId,
+        JSON.stringify(input.result),
+        input.workflowRunId ?? null,
+        input.executionId ?? null,
+        input.ownerClaimToken,
+      ]
+    );
+    if (updated.rowCount !== 1) {
+      throw new System3ConflictError('Project operation claim was lost before completion');
     }
   }
 
@@ -1102,6 +1409,40 @@ export class System3Store {
         created_at ${timeType} NOT NULL DEFAULT CURRENT_TIMESTAMP,
         updated_at ${timeType} NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
+      CREATE TABLE IF NOT EXISTS remote_agent_system3_lifecycle_attempts (
+        id ${idType} PRIMARY KEY,
+        project_id ${idType} NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE RESTRICT,
+        sequence INTEGER NOT NULL,
+        base_attempt_id ${idType} REFERENCES remote_agent_system3_lifecycle_attempts(id) ON DELETE SET NULL,
+        start_activity_id TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        input_mode TEXT NOT NULL,
+        basis ${jsonType} NOT NULL,
+        preview_hash TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        conversation_id ${idType},
+        isolation_environment_id ${idType},
+        branch_name TEXT,
+        working_path TEXT,
+        lifecycle_status TEXT NOT NULL DEFAULT 'active',
+        run_status TEXT NOT NULL DEFAULT 'preparing',
+        cleanup_status TEXT NOT NULL DEFAULT 'not_started',
+        checkpoint_activity_id TEXT,
+        next_activity_id TEXT,
+        cleanup_manifest ${jsonType},
+        created_by_user_id ${idType} REFERENCES remote_agent_users(id) ON DELETE SET NULL,
+        created_at ${timeType} NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        started_at ${timeType},
+        completed_at ${timeType},
+        cleaned_at ${timeType},
+        UNIQUE(project_id, sequence),
+        UNIQUE(project_id, idempotency_key)
+      );
+      CREATE INDEX IF NOT EXISTS idx_system3_lifecycle_attempts_project
+        ON remote_agent_system3_lifecycle_attempts(project_id, sequence DESC);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_system3_lifecycle_attempts_one_active
+        ON remote_agent_system3_lifecycle_attempts(project_id)
+        WHERE lifecycle_status = 'active';
       CREATE TABLE IF NOT EXISTS remote_agent_system3_sources (
         id ${idType} PRIMARY KEY,
         project_id ${idType} NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
@@ -1145,6 +1486,7 @@ export class System3Store {
         workflow_run_id ${idType} REFERENCES remote_agent_workflow_runs(id) ON DELETE SET NULL,
         source_ids ${jsonType} NOT NULL,
         source_hashes ${jsonType} NOT NULL,
+        source_refs ${jsonType},
         parser_version TEXT NOT NULL,
         extraction_policy_version TEXT NOT NULL,
         capability_registry_hash TEXT NOT NULL,
@@ -1159,6 +1501,13 @@ export class System3Store {
         analysis ${jsonType} NOT NULL,
         artifact_key TEXT NOT NULL,
         workflow_run_id ${idType} REFERENCES remote_agent_workflow_runs(id) ON DELETE SET NULL,
+        input_snapshot_id ${idType} REFERENCES remote_agent_system3_understanding_input_snapshots(id) ON DELETE SET NULL,
+        schema_version INTEGER NOT NULL DEFAULT 1,
+        lifecycle_status TEXT,
+        quality_status TEXT,
+        quality_report ${jsonType},
+        activated_at ${timeType},
+        activated_by_user_id ${idType} REFERENCES remote_agent_users(id) ON DELETE SET NULL,
         created_at ${timeType} NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
       CREATE TABLE IF NOT EXISTS remote_agent_system3_readiness_contracts (
@@ -1180,6 +1529,7 @@ export class System3Store {
         why TEXT NOT NULL,
         recommendation TEXT NOT NULL,
         options ${jsonType} NOT NULL,
+        binding ${jsonType},
         affected_phases ${jsonType} NOT NULL,
         status TEXT NOT NULL,
         answer TEXT,
@@ -1246,6 +1596,20 @@ export class System3Store {
         plan ${jsonType} NOT NULL,
         created_at ${timeType} NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
+      CREATE TABLE IF NOT EXISTS remote_agent_system3_workflow_bundle_snapshots (
+        id ${idType} PRIMARY KEY,
+        project_id ${idType} NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+        compilation_id ${idType} NOT NULL REFERENCES remote_agent_system3_compilations(id) ON DELETE CASCADE,
+        activity_id TEXT NOT NULL CHECK (activity_id IN ('TW-06', 'TW-07', 'TW-09')),
+        schema_version INTEGER NOT NULL,
+        compiler_version TEXT NOT NULL,
+        template_id TEXT NOT NULL,
+        execution_mode TEXT NOT NULL CHECK (execution_mode IN ('full', 'experiment', 'delivery')),
+        definition ${jsonType} NOT NULL,
+        definition_hash TEXT NOT NULL,
+        created_at ${timeType} NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(compilation_id, activity_id)
+      );
       CREATE TABLE IF NOT EXISTS remote_agent_system3_project_transitions (
         id ${idType} PRIMARY KEY,
         project_id ${idType} NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
@@ -1280,6 +1644,9 @@ export class System3Store {
         approval_id ${idType} NOT NULL REFERENCES remote_agent_system3_approval_manifests(id) ON DELETE RESTRICT,
         workflow_run_id ${idType} NOT NULL UNIQUE REFERENCES remote_agent_workflow_runs(id) ON DELETE RESTRICT,
         definition_hash TEXT NOT NULL,
+        bundle_snapshot_id ${idType} REFERENCES remote_agent_system3_workflow_bundle_snapshots(id) ON DELETE RESTRICT,
+        bundle_hash TEXT,
+        runtime_bindings ${jsonType},
         status TEXT NOT NULL,
         error TEXT,
         created_at ${timeType} NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -1335,6 +1702,9 @@ export class System3Store {
         status TEXT NOT NULL,
         validator_version TEXT NOT NULL,
         basis_hash TEXT NOT NULL,
+        bundle_snapshot_id ${idType} REFERENCES remote_agent_system3_workflow_bundle_snapshots(id) ON DELETE RESTRICT,
+        bundle_hash TEXT,
+        runtime_bindings ${jsonType},
         evidence_map ${jsonType},
         gate ${jsonType},
         error TEXT,
@@ -1363,6 +1733,9 @@ export class System3Store {
         package_filename TEXT NOT NULL,
         content_hash TEXT NOT NULL,
         size_bytes INTEGER NOT NULL,
+        bundle_snapshot_id ${idType} REFERENCES remote_agent_system3_workflow_bundle_snapshots(id) ON DELETE RESTRICT,
+        bundle_hash TEXT,
+        runtime_bindings ${jsonType},
         manifest ${jsonType} NOT NULL,
         created_at ${timeType} NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
@@ -1443,6 +1816,10 @@ export class System3Store {
         ON remote_agent_system3_decisions(project_id, status, created_at ASC);
       CREATE INDEX IF NOT EXISTS idx_system3_compilations_project
         ON remote_agent_system3_compilations(project_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_system3_workflow_bundle_snapshots_project
+        ON remote_agent_system3_workflow_bundle_snapshots(project_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_system3_workflow_bundle_snapshots_compilation
+        ON remote_agent_system3_workflow_bundle_snapshots(compilation_id, activity_id);
       CREATE INDEX IF NOT EXISTS idx_system3_workflow_versions_project
         ON remote_agent_system3_product_workflow_versions(project_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_system3_transitions_project
@@ -1470,6 +1847,148 @@ export class System3Store {
     `);
     await this.upgradeSourceIntakeSchema();
     await this.upgradeImpactManifestSchema();
+    await this.upgradeUnderstandingV2Schema();
+    await this.upgradeDecisionSchema();
+    await this.upgradeWorkflowBundleSchema();
+  }
+
+  private async upgradeWorkflowBundleSchema(): Promise<void> {
+    const idType = this.database.dialect === 'postgres' ? 'UUID' : 'TEXT';
+    const jsonType = this.database.dialect === 'postgres' ? 'JSONB' : 'TEXT';
+    const tables = [
+      'remote_agent_system3_project_executions',
+      'remote_agent_system3_verifications',
+      'remote_agent_system3_delivery_manifests',
+    ] as const;
+    if (this.database.dialect === 'postgres') {
+      for (const table of tables) {
+        await this.database.query(`
+          ALTER TABLE ${table}
+            ADD COLUMN IF NOT EXISTS bundle_snapshot_id ${idType}
+              REFERENCES remote_agent_system3_workflow_bundle_snapshots(id) ON DELETE RESTRICT;
+          ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS bundle_hash TEXT;
+          ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS runtime_bindings ${jsonType};
+        `);
+      }
+      return;
+    }
+    for (const table of tables) {
+      const columnsResult = await this.database.query(
+        `SELECT name FROM pragma_table_info('${table}')`
+      );
+      const columns = new Set(columnsResult.rows.map(value => (value as { name: string }).name));
+      if (!columns.has('bundle_snapshot_id')) {
+        await this.database.query(`ALTER TABLE ${table} ADD COLUMN bundle_snapshot_id ${idType}`);
+      }
+      if (!columns.has('bundle_hash')) {
+        await this.database.query(`ALTER TABLE ${table} ADD COLUMN bundle_hash TEXT`);
+      }
+      if (!columns.has('runtime_bindings')) {
+        await this.database.query(`ALTER TABLE ${table} ADD COLUMN runtime_bindings ${jsonType}`);
+      }
+    }
+  }
+
+  private async upgradeDecisionSchema(): Promise<void> {
+    if (this.database.dialect === 'postgres') {
+      await this.database.query(
+        'ALTER TABLE remote_agent_system3_decisions ADD COLUMN IF NOT EXISTS binding JSONB'
+      );
+      return;
+    }
+    const columnsResult = await this.database.query(
+      "SELECT name FROM pragma_table_info('remote_agent_system3_decisions')"
+    );
+    const columns = new Set(columnsResult.rows.map(value => (value as { name: string }).name));
+    if (!columns.has('binding')) {
+      await this.database.query(
+        'ALTER TABLE remote_agent_system3_decisions ADD COLUMN binding TEXT'
+      );
+    }
+  }
+
+  private async upgradeUnderstandingV2Schema(): Promise<void> {
+    if (this.database.dialect === 'postgres') {
+      await this.database.query(`
+        ALTER TABLE remote_agent_system3_understanding_input_snapshots ADD COLUMN IF NOT EXISTS source_refs JSONB;
+        ALTER TABLE remote_agent_system3_knowledge_snapshots ADD COLUMN IF NOT EXISTS input_snapshot_id UUID REFERENCES remote_agent_system3_understanding_input_snapshots(id) ON DELETE SET NULL;
+        ALTER TABLE remote_agent_system3_knowledge_snapshots ADD COLUMN IF NOT EXISTS schema_version INTEGER NOT NULL DEFAULT 1;
+        ALTER TABLE remote_agent_system3_knowledge_snapshots ADD COLUMN IF NOT EXISTS lifecycle_status TEXT;
+        ALTER TABLE remote_agent_system3_knowledge_snapshots ADD COLUMN IF NOT EXISTS quality_status TEXT;
+        ALTER TABLE remote_agent_system3_knowledge_snapshots ADD COLUMN IF NOT EXISTS quality_report JSONB;
+        ALTER TABLE remote_agent_system3_knowledge_snapshots ADD COLUMN IF NOT EXISTS activated_at TIMESTAMPTZ;
+        ALTER TABLE remote_agent_system3_knowledge_snapshots ADD COLUMN IF NOT EXISTS activated_by_user_id UUID REFERENCES remote_agent_users(id) ON DELETE SET NULL;
+        UPDATE remote_agent_system3_knowledge_snapshots snapshot
+        SET lifecycle_status = CASE
+          WHEN snapshot.id = project.active_knowledge_snapshot_id THEN 'active'
+          ELSE 'superseded'
+        END
+        FROM remote_agent_system3_projects project
+        WHERE project.id = snapshot.project_id AND snapshot.lifecycle_status IS NULL;
+        UPDATE remote_agent_system3_knowledge_snapshots snapshot
+        SET input_snapshot_id = input.id
+        FROM remote_agent_system3_understanding_input_snapshots input
+        WHERE input.project_id = snapshot.project_id
+          AND input.knowledge_snapshot_id = snapshot.id
+          AND snapshot.input_snapshot_id IS NULL;
+        CREATE INDEX IF NOT EXISTS idx_system3_snapshots_project_lifecycle
+          ON remote_agent_system3_knowledge_snapshots(project_id, lifecycle_status, created_at DESC);
+      `);
+      return;
+    }
+    const inputColumnsResult = await this.database.query(
+      "SELECT name FROM pragma_table_info('remote_agent_system3_understanding_input_snapshots')"
+    );
+    const inputColumns = new Set(
+      inputColumnsResult.rows.map(value => (value as { name: string }).name)
+    );
+    if (!inputColumns.has('source_refs')) {
+      await this.database.query(
+        'ALTER TABLE remote_agent_system3_understanding_input_snapshots ADD COLUMN source_refs TEXT'
+      );
+    }
+    const snapshotColumnsResult = await this.database.query(
+      "SELECT name FROM pragma_table_info('remote_agent_system3_knowledge_snapshots')"
+    );
+    const snapshotColumns = new Set(
+      snapshotColumnsResult.rows.map(value => (value as { name: string }).name)
+    );
+    for (const [column, definition] of [
+      ['input_snapshot_id', 'TEXT'],
+      ['schema_version', 'INTEGER NOT NULL DEFAULT 1'],
+      ['lifecycle_status', 'TEXT'],
+      ['quality_status', 'TEXT'],
+      ['quality_report', 'TEXT'],
+      ['activated_at', 'TEXT'],
+      ['activated_by_user_id', 'TEXT'],
+    ] as const) {
+      if (!snapshotColumns.has(column)) {
+        await this.database.query(
+          `ALTER TABLE remote_agent_system3_knowledge_snapshots ADD COLUMN ${column} ${definition}`
+        );
+      }
+    }
+    await this.database.query(
+      `UPDATE remote_agent_system3_knowledge_snapshots
+       SET lifecycle_status = CASE
+         WHEN id = (
+           SELECT active_knowledge_snapshot_id FROM remote_agent_system3_projects project
+           WHERE project.id = remote_agent_system3_knowledge_snapshots.project_id
+         ) THEN 'active' ELSE 'superseded' END
+       WHERE lifecycle_status IS NULL`
+    );
+    await this.database.query(
+      `UPDATE remote_agent_system3_knowledge_snapshots
+       SET input_snapshot_id = (
+         SELECT input.id FROM remote_agent_system3_understanding_input_snapshots input
+         WHERE input.project_id = remote_agent_system3_knowledge_snapshots.project_id
+           AND input.knowledge_snapshot_id = remote_agent_system3_knowledge_snapshots.id
+         ORDER BY input.created_at DESC LIMIT 1
+       ) WHERE input_snapshot_id IS NULL`
+    );
+    await this.database.query(
+      'CREATE INDEX IF NOT EXISTS idx_system3_snapshots_project_lifecycle ON remote_agent_system3_knowledge_snapshots(project_id, lifecycle_status, created_at DESC)'
+    );
   }
 
   private async upgradeImpactManifestSchema(): Promise<void> {
@@ -1808,11 +2327,20 @@ export class System3Store {
     createdBy?: string;
     origin: string;
     operationId: string;
+    ownerClaimToken?: string;
     expectedVersion: number;
   }): Promise<System3SourceIntakeStoreResult> {
     await this.ensureSchema();
     return this.database.withTransaction(async query => {
       await this.lockProject(query, input.projectId);
+      if (input.ownerClaimToken) {
+        await this.requireProjectOperationClaim(query, {
+          operationId: input.operationId,
+          projectId: input.projectId,
+          type: 'source_intake',
+          ownerClaimToken: input.ownerClaimToken,
+        });
+      }
       const preparedResult = await query(
         `SELECT * FROM remote_agent_system3_source_versions
          WHERE project_id = $1 AND operation_id = $2
@@ -1992,10 +2520,19 @@ export class System3Store {
     sourceVersionId: string;
     storageKey: string;
     operationId: string;
+    ownerClaimToken?: string;
   }): Promise<System3SourceRecord> {
     await this.ensureSchema();
     return this.database.withTransaction(async query => {
       await this.lockProject(query, input.projectId);
+      if (input.ownerClaimToken) {
+        await this.requireProjectOperationClaim(query, {
+          operationId: input.operationId,
+          projectId: input.projectId,
+          type: 'source_intake',
+          ownerClaimToken: input.ownerClaimToken,
+        });
+      }
       const sourceResult = await query(
         `SELECT * FROM remote_agent_system3_source_versions
          WHERE id = $1 AND project_id = $2 AND operation_id = $3`,
@@ -2120,9 +2657,18 @@ export class System3Store {
     sourceVersionId: string | null;
     artifactKey: string;
     report: System3SourceIntakeReport;
+    ownerClaimToken?: string;
   }): Promise<System3SourceIntakeReportRecord> {
     await this.ensureSchema();
     return this.database.withTransaction(async query => {
+      if (input.ownerClaimToken) {
+        await this.requireProjectOperationClaim(query, {
+          operationId: input.operationId,
+          projectId: input.projectId,
+          type: 'source_intake',
+          ownerClaimToken: input.ownerClaimToken,
+        });
+      }
       const existingResult = await query(
         `SELECT * FROM remote_agent_system3_source_intake_reports
          WHERE project_id = $1 AND operation_id = $2`,
@@ -2211,12 +2757,24 @@ export class System3Store {
     kind: System3SourceKind;
     affectedPhases?: readonly System3PhaseId[];
     operationId?: string;
+    ownerClaimToken?: string;
     previousSourceVersionId?: string | null;
     manifest?: System3ImpactManifest;
   }): Promise<System3ImpactManifestRecord> {
     await this.ensureSchema();
     return this.database.withTransaction(async query => {
       await this.lockProject(query, input.projectId);
+      if (input.ownerClaimToken !== undefined && input.operationId === undefined) {
+        throw new Error('Change Detection owner claim token requires an operation id');
+      }
+      if (input.operationId && input.ownerClaimToken) {
+        await this.requireProjectOperationClaim(query, {
+          operationId: input.operationId,
+          projectId: input.projectId,
+          type: 'change_detection',
+          ownerClaimToken: input.ownerClaimToken,
+        });
+      }
       const affectedPhases = input.affectedPhases
         ? system3PhaseOrder.filter(phase => input.affectedPhases?.includes(phase))
         : affectedPhasesForSource(input.kind);
@@ -2237,7 +2795,23 @@ export class System3Store {
         [input.projectId, input.sourceVersionId, basisHash, detectorVersion]
       );
       const existing = typedRows(existingResult, value => value as ImpactRow)[0];
-      if (existing) return asImpact(existing);
+      if (existing) {
+        const impact = asImpact(existing);
+        if (input.operationId && input.ownerClaimToken) {
+          await this.completeProjectOperationClaim(query, {
+            operationId: input.operationId,
+            ownerClaimToken: input.ownerClaimToken,
+            result: {
+              sourceVersionId: input.sourceVersionId,
+              impactManifestId: impact.id,
+              affectedPhases: impact.affectedPhases,
+              impactManifestHash: impact.manifestHash,
+              proposedRerun: input.manifest?.proposedRerun ?? null,
+            },
+          });
+        }
+        return impact;
+      }
       const id = randomUUID();
       const reason =
         input.manifest?.summary ??
@@ -2336,7 +2910,23 @@ export class System3Store {
         });
       }
       const row = typedRows(result, value => value as ImpactRow)[0];
-      if (row) return asImpact(row);
+      if (row) {
+        const impact = asImpact(row);
+        if (input.operationId && input.ownerClaimToken) {
+          await this.completeProjectOperationClaim(query, {
+            operationId: input.operationId,
+            ownerClaimToken: input.ownerClaimToken,
+            result: {
+              sourceVersionId: input.sourceVersionId,
+              impactManifestId: impact.id,
+              affectedPhases: impact.affectedPhases,
+              impactManifestHash: impact.manifestHash,
+              proposedRerun: input.manifest?.proposedRerun ?? null,
+            },
+          });
+        }
+        return impact;
+      }
       const racedResult = await query(
         `SELECT * FROM remote_agent_system3_impact_manifests
          WHERE project_id = $1 AND source_version_id = $2 AND basis_hash = $3 AND detector_version = $4`,
@@ -2344,7 +2934,21 @@ export class System3Store {
       );
       const raced = typedRows(racedResult, value => value as ImpactRow)[0];
       if (!raced) throw new Error('Impact manifest creation returned no row');
-      return asImpact(raced);
+      const impact = asImpact(raced);
+      if (input.operationId && input.ownerClaimToken) {
+        await this.completeProjectOperationClaim(query, {
+          operationId: input.operationId,
+          ownerClaimToken: input.ownerClaimToken,
+          result: {
+            sourceVersionId: input.sourceVersionId,
+            impactManifestId: impact.id,
+            affectedPhases: impact.affectedPhases,
+            impactManifestHash: impact.manifestHash,
+            proposedRerun: input.manifest?.proposedRerun ?? null,
+          },
+        });
+      }
+      return impact;
     });
   }
 
@@ -2376,6 +2980,7 @@ export class System3Store {
     operationId: string;
     sourceIds: string[];
     sourceHashes: string[];
+    sourceRefs?: System3UnderstandingInputSnapshotRecord['sourceRefs'];
     parserVersion: string;
     extractionPolicyVersion: string;
     capabilityRegistryHash: string;
@@ -2393,11 +2998,20 @@ export class System3Store {
     const existingRow = typedRows(existing, value => value as UnderstandingInputSnapshotRow)[0];
     if (existingRow) return asUnderstandingInputSnapshot(existingRow);
     const id = randomUUID();
+    const sourceRefs =
+      input.sourceRefs ??
+      input.sourceIds.map((sourceVersionId, index) => ({
+        sourceVersionId,
+        kind: 'supporting_document' as const,
+        filename: 'Nguồn lịch sử',
+        mediaType: 'application/octet-stream',
+        contentHash: input.sourceHashes[index] ?? 'sha256:legacy',
+      }));
     const inserted = await this.database.query(
       `INSERT INTO remote_agent_system3_understanding_input_snapshots
         (id, project_id, operation_id, source_ids, source_hashes, parser_version,
-         extraction_policy_version, capability_registry_hash, runtime_profile)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+         extraction_policy_version, capability_registry_hash, runtime_profile, source_refs)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
       [
         id,
         input.projectId,
@@ -2408,6 +3022,7 @@ export class System3Store {
         input.extractionPolicyVersion,
         input.capabilityRegistryHash,
         JSON.stringify(input.runtimeProfile),
+        JSON.stringify(sourceRefs),
       ]
     );
     const row = typedRows(inserted, value => value as UnderstandingInputSnapshotRow)[0];
@@ -2456,7 +3071,7 @@ export class System3Store {
     );
   }
 
-  async saveUnderstanding(input: {
+  async saveUnderstandingCandidate(input: {
     projectId: string;
     analysis: BlueprintAnalysis;
     artifactKey: string;
@@ -2464,9 +3079,24 @@ export class System3Store {
     expectedVersion: number;
     inputSnapshotId: string;
     sourceVersionIds: string[];
+    qualityReport: ExtractionQuality;
+    reportArtifacts: {
+      report: UnderstandingReport;
+      markdown: { artifactKey: string; contentHash: string; sizeBytes: number };
+      json: { artifactKey: string; contentHash: string; sizeBytes: number };
+    }[];
+    operation?: { id: string; ownerClaimToken: string };
   }): Promise<System3KnowledgeSnapshotRecord> {
     await this.ensureSchema();
     return this.database.withTransaction(async query => {
+      if (input.operation) {
+        await this.requireProjectOperationClaim(query, {
+          operationId: input.operation.id,
+          projectId: input.projectId,
+          type: 'analyze',
+          ownerClaimToken: input.operation.ownerClaimToken,
+        });
+      }
       const project = await query(
         'SELECT stage, version FROM remote_agent_system3_projects WHERE id = $1',
         [input.projectId]
@@ -2476,20 +3106,24 @@ export class System3Store {
         value => value as { stage: System3ProjectStage; version: number | string }
       )[0];
       if (!projectRow) throw new Error('System 3 project not found');
-      if (Number(projectRow.version) !== input.expectedVersion) {
-        throw new System3ConflictError('Project changed; refresh before analyzing');
-      }
+      const stale = Number(projectRow.version) !== input.expectedVersion;
       const id = randomUUID();
       const inserted = await query(
         `INSERT INTO remote_agent_system3_knowledge_snapshots
-          (id, project_id, analysis, artifact_key, workflow_run_id)
-         VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+          (id, project_id, analysis, artifact_key, workflow_run_id, input_snapshot_id,
+           schema_version, lifecycle_status, quality_status, quality_report)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
         [
           id,
           input.projectId,
           JSON.stringify(input.analysis),
           input.artifactKey,
           input.workflowRunId,
+          input.inputSnapshotId,
+          input.analysis.schemaVersion,
+          stale ? 'stale' : 'candidate',
+          input.qualityReport.status,
+          JSON.stringify(input.qualityReport),
         ]
       );
       for (const requirement of input.analysis.requirements) {
@@ -2547,12 +3181,6 @@ export class System3Store {
       const analysisBytes = Buffer.from(JSON.stringify(input.analysis));
       const knowledgeArtifactId = randomUUID();
       await query(
-        `UPDATE remote_agent_system3_artifact_versions
-         SET status = 'superseded', stale_reason = NULL
-         WHERE project_id = $1 AND artifact_kind = 'knowledge_snapshot' AND status = 'current'`,
-        [input.projectId]
-      );
-      await query(
         `INSERT INTO remote_agent_system3_artifact_versions
           (id, project_id, knowledge_snapshot_id, artifact_key, artifact_kind, version,
            content_hash, size_bytes, activity_id, workflow_run_id, display_name, summary,
@@ -2560,7 +3188,7 @@ export class System3Store {
            source_version_ids, parent_resource_ids)
          VALUES ($1, $2, $3, $4, 'knowledge_snapshot', 1, $5, $6, 'TW-02', $7,
                  'Bản hiểu dự án', 'Mục tiêu, yêu cầu, dữ liệu và vấn đề Anvil đã hiểu.',
-                 'application/json', 'system3.knowledge-snapshot', '1', 'user', 'current',
+                 'application/json', 'system3.knowledge-snapshot', $10, 'user', $11,
                  $8, $9)`,
         [
           knowledgeArtifactId,
@@ -2572,8 +3200,61 @@ export class System3Store {
           input.workflowRunId,
           JSON.stringify(input.sourceVersionIds),
           JSON.stringify([input.inputSnapshotId]),
+          input.analysis.schemaVersion.toString(),
+          stale ? 'stale' : 'candidate',
         ]
       );
+      for (const artifact of input.reportArtifacts) {
+        const reportId = randomUUID();
+        await query(
+          `INSERT INTO remote_agent_system3_artifact_versions
+            (id, project_id, knowledge_snapshot_id, artifact_key, artifact_kind, version,
+             content_hash, size_bytes, activity_id, workflow_run_id, display_name, summary,
+             media_type, schema_id, schema_version, visibility, status,
+             source_version_ids, parent_resource_ids)
+           VALUES ($1, $2, $3, $4, 'understanding_report', 1, $5, $6, 'TW-02', $7,
+                   $8, $9, 'text/markdown', $10, '1', 'user', $11, $12, $13)`,
+          [
+            reportId,
+            input.projectId,
+            id,
+            artifact.markdown.artifactKey,
+            artifact.markdown.contentHash,
+            artifact.markdown.sizeBytes,
+            input.workflowRunId,
+            artifact.report.title,
+            `Báo cáo ${artifact.report.title.toLocaleLowerCase('vi')}.`,
+            `system3.understanding-report.${artifact.report.id}`,
+            stale ? 'stale' : 'candidate',
+            JSON.stringify(input.sourceVersionIds),
+            JSON.stringify([id]),
+          ]
+        );
+        await query(
+          `INSERT INTO remote_agent_system3_artifact_versions
+            (id, project_id, knowledge_snapshot_id, artifact_key, artifact_kind, version,
+             content_hash, size_bytes, activity_id, workflow_run_id, display_name, summary,
+             media_type, schema_id, schema_version, visibility, status,
+             source_version_ids, parent_resource_ids)
+           VALUES ($1, $2, $3, $4, 'understanding_report', 1, $5, $6, 'TW-02', $7,
+                   $8, $9, 'application/json', $10, '1', 'technical', $11, $12, $13)`,
+          [
+            randomUUID(),
+            input.projectId,
+            id,
+            artifact.json.artifactKey,
+            artifact.json.contentHash,
+            artifact.json.sizeBytes,
+            input.workflowRunId,
+            `${artifact.report.title} — dữ liệu kỹ thuật`,
+            'Dữ liệu có cấu trúc dùng để tạo báo cáo dễ đọc.',
+            `system3.understanding-report.${artifact.report.id}`,
+            stale ? 'stale' : 'candidate',
+            JSON.stringify(input.sourceVersionIds),
+            JSON.stringify([id, reportId]),
+          ]
+        );
+      }
       for (const sourceVersionId of input.sourceVersionIds) {
         await query(
           `INSERT INTO remote_agent_system3_dependency_edges
@@ -2602,52 +3283,324 @@ export class System3Store {
           ]
         );
       }
-      await query(
-        'DELETE FROM remote_agent_system3_decisions WHERE project_id = $1 AND status = $2',
-        [input.projectId, 'pending']
-      );
-      for (const review of input.analysis.manualReviews) {
+      for (const review of input.qualityReport.issues.filter(issue => issue.requiresDecision)) {
+        const binding = review.decisionBinding ?? null;
+        const options =
+          binding?.kind === 'dataset_target_column'
+            ? binding.allowedValues
+            : ['Đã xem xét và xác nhận'];
         await query(
           `INSERT INTO remote_agent_system3_decisions
-            (id, project_id, knowledge_snapshot_id, title, question, why, recommendation, options, affected_phases, status)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending')`,
+            (id, project_id, knowledge_snapshot_id, title, question, why, recommendation, options, binding, affected_phases, status)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending')`,
           [
             randomUUID(),
             input.projectId,
             id,
-            'Cần xác nhận phạm vi',
-            review.text,
-            'Blueprint đánh dấu đây là manual review; hệ thống không tự suy đoán.',
-            'Xác nhận theo đề xuất trong blueprint hoặc ghi rõ phạm vi thay thế.',
-            JSON.stringify(['Dùng đề xuất', 'Tự nhập quyết định']),
+            review.title,
+            review.detail,
+            'Bản hiểu nháp có một điểm quan trọng mà Anvil không được tự quyết định.',
+            binding?.kind === 'dataset_target_column'
+              ? 'Chọn đúng một cột có trong Dataset đã liên kết.'
+              : 'Xác nhận rằng bạn đã xem xét nội dung cần quyết định.',
+            JSON.stringify(options),
+            binding === null ? null : JSON.stringify(binding),
             JSON.stringify(['readiness']),
           ]
         );
       }
-      const attention: System3Attention =
-        input.analysis.manualReviews.length > 0 ? 'decision_required' : 'none';
-      const stage: System3ProjectStage =
-        input.analysis.manualReviews.length > 0 ? 'understanding' : 'workflow_design';
+      if (!stale) {
+        const attention: System3Attention =
+          input.qualityReport.status === 'decision_required'
+            ? 'decision_required'
+            : input.qualityReport.status === 'passed'
+              ? 'none'
+              : 'input_required';
+        await this.transitionProject(query, {
+          projectId: input.projectId,
+          fromStage: projectRow.stage,
+          toStage: 'understanding',
+          attention,
+          freshness: 'current',
+          workflowRunId: input.workflowRunId,
+          entityType: 'knowledge_snapshot',
+          entityId: id,
+          reason: 'Understanding candidate created',
+          metadata: { qualityStatus: input.qualityReport.status },
+        });
+      }
+      const row = typedRows(inserted, value => value as SnapshotRow)[0];
+      if (!row) throw new Error('Knowledge snapshot creation returned no row');
+      const snapshot = asSnapshot(row);
+      if (input.operation) {
+        const completedInput = await query(
+          `UPDATE remote_agent_system3_understanding_input_snapshots
+           SET knowledge_snapshot_id = $1, workflow_run_id = $2
+           WHERE id = $3 AND project_id = $4 AND knowledge_snapshot_id IS NULL`,
+          [snapshot.id, input.workflowRunId, input.inputSnapshotId, input.projectId]
+        );
+        if (completedInput.rowCount !== 1) {
+          const existingInput = await query(
+            `SELECT id FROM remote_agent_system3_understanding_input_snapshots
+             WHERE id = $1 AND project_id = $2
+               AND knowledge_snapshot_id = $3 AND workflow_run_id = $4`,
+            [input.inputSnapshotId, input.projectId, snapshot.id, input.workflowRunId]
+          );
+          if (existingInput.rowCount === 0) {
+            throw new System3ConflictError(
+              'Understanding Input Snapshot was already completed differently'
+            );
+          }
+        }
+        await this.completeProjectOperationClaim(query, {
+          operationId: input.operation.id,
+          ownerClaimToken: input.operation.ownerClaimToken,
+          workflowRunId: input.workflowRunId,
+          result: {
+            snapshotId: snapshot.id,
+            workflowRunId: input.workflowRunId,
+            lifecycleStatus: snapshot.lifecycleStatus,
+            qualityStatus: snapshot.qualityStatus,
+          },
+        });
+      }
+      return snapshot;
+    });
+  }
+
+  /** Legacy compatibility for callers that still expect immediate publication. */
+  async saveUnderstanding(input: {
+    projectId: string;
+    analysis: BlueprintAnalysis;
+    artifactKey: string;
+    workflowRunId: string;
+    expectedVersion: number;
+    inputSnapshotId: string;
+    sourceVersionIds: string[];
+  }): Promise<System3KnowledgeSnapshotRecord> {
+    const quality: ExtractionQuality =
+      input.analysis.schemaVersion === 2
+        ? input.analysis.extractionQuality
+        : {
+            status: input.analysis.manualReviews.length > 0 ? 'decision_required' : 'passed',
+            parserVersion: 'legacy',
+            extractionPolicyVersion: 'legacy',
+            headingAliasVersion: 'legacy',
+            totalComponents: 0,
+            extractedComponents: 0,
+            ignoredComponents: 0,
+            unsupportedComponents: 0,
+            unclassifiedComponents: 0,
+            missingChapters: [],
+            issues: input.analysis.manualReviews.map(review => ({
+              id: review.id,
+              kind: 'manual_review',
+              severity: 'warning',
+              title: 'Cần người dùng xác nhận',
+              detail: review.text,
+              requiresDecision: true,
+              sourcePointers: [],
+            })),
+            coverage: [],
+          };
+    const candidate = await this.saveUnderstandingCandidate({
+      ...input,
+      qualityReport: quality,
+      reportArtifacts: [],
+    });
+    return this.activateUnderstandingCandidate({
+      projectId: input.projectId,
+      snapshotId: candidate.id,
+      expectedVersion: input.expectedVersion + 1,
+      actorId: null,
+    });
+  }
+
+  async getUnderstandingSnapshot(
+    projectId: string,
+    snapshotId: string
+  ): Promise<System3KnowledgeSnapshotRecord | null> {
+    await this.ensureSchema();
+    const result = await this.database.query(
+      `SELECT * FROM remote_agent_system3_knowledge_snapshots
+       WHERE id = $1 AND project_id = $2`,
+      [snapshotId, projectId]
+    );
+    const row = typedRows(result, value => value as SnapshotRow)[0];
+    return row ? asSnapshot(row) : null;
+  }
+
+  async activateUnderstandingCandidate(input: {
+    projectId: string;
+    snapshotId: string;
+    expectedVersion: number;
+    actorId: string | null;
+    operation?: { id: string; ownerClaimToken: string };
+  }): Promise<System3KnowledgeSnapshotRecord> {
+    await this.ensureSchema();
+    const activation = await this.database.withTransaction(async query => {
+      await this.lockProject(query, input.projectId);
+      if (input.operation) {
+        await this.requireProjectOperationClaim(query, {
+          operationId: input.operation.id,
+          projectId: input.projectId,
+          type: 'activate_understanding',
+          ownerClaimToken: input.operation.ownerClaimToken,
+        });
+      }
+      const projectResult = await query(
+        'SELECT * FROM remote_agent_system3_projects WHERE id = $1',
+        [input.projectId]
+      );
+      const project = typedRows(projectResult, value => value as ProjectRow)[0];
+      if (!project) throw new Error('System 3 project not found');
+      if (Number(project.version) !== input.expectedVersion) {
+        throw new System3ConflictError('Project changed; refresh before activating understanding');
+      }
+      const snapshotResult = await query(
+        `SELECT * FROM remote_agent_system3_knowledge_snapshots
+         WHERE id = $1 AND project_id = $2`,
+        [input.snapshotId, input.projectId]
+      );
+      const row = typedRows(snapshotResult, value => value as SnapshotRow)[0];
+      if (!row) throw new Error('Understanding candidate not found');
+      if (row.lifecycle_status === 'active') {
+        const snapshot = asSnapshot(row);
+        if (input.operation) {
+          await this.completeProjectOperationClaim(query, {
+            operationId: input.operation.id,
+            ownerClaimToken: input.operation.ownerClaimToken,
+            result: { snapshotId: snapshot.id },
+          });
+        }
+        return snapshot;
+      }
+      if (row.lifecycle_status !== 'candidate') {
+        throw new System3ConflictError('Only a current Understanding candidate can be activated');
+      }
+      if (!['passed', 'decision_required'].includes(row.quality_status ?? '')) {
+        throw new System3ConflictError('Understanding quality does not allow activation');
+      }
+      const pending = await query(
+        `SELECT COUNT(*) AS count FROM remote_agent_system3_decisions
+         WHERE project_id = $1 AND knowledge_snapshot_id = $2 AND status = 'pending'`,
+        [input.projectId, input.snapshotId]
+      );
+      const pendingCount = Number(
+        typedRows(pending, value => value as { count: number | string })[0]?.count ?? 0
+      );
+      if (pendingCount > 0) {
+        throw new System3ConflictError('Resolve the candidate decisions before activation');
+      }
+      const inputResult = await query(
+        `SELECT source_ids FROM remote_agent_system3_understanding_input_snapshots
+         WHERE id = $1 AND project_id = $2`,
+        [row.input_snapshot_id, input.projectId]
+      );
+      const inputRow = typedRows(
+        inputResult,
+        value => value as { source_ids: string[] | string }
+      )[0];
+      if (!inputRow) throw new System3ConflictError('Candidate Input Snapshot is missing');
+      const sourceIds = jsonObject<string[]>(inputRow.source_ids);
+      if (sourceIds.length > 0) {
+        const placeholders = sourceIds.map((_, index) => `$${String(index + 2)}`).join(', ');
+        const currentResult = await query(
+          `SELECT version.id FROM remote_agent_system3_source_versions version
+           WHERE version.project_id = $1 AND version.id IN (${placeholders})
+             AND version.storage_status = 'ready'
+             AND NOT EXISTS (
+               SELECT 1 FROM remote_agent_system3_source_versions newer
+               WHERE newer.source_id = version.source_id
+                 AND newer.storage_status = 'ready'
+                 AND newer.lineage_version > version.lineage_version
+             )`,
+          [input.projectId, ...sourceIds]
+        );
+        if (currentResult.rowCount !== sourceIds.length) {
+          await query(
+            `UPDATE remote_agent_system3_knowledge_snapshots
+             SET lifecycle_status = 'stale' WHERE id = $1`,
+            [input.snapshotId]
+          );
+          await query(
+            `UPDATE remote_agent_system3_artifact_versions
+             SET status = 'stale', stale_reason = 'Nguồn đã thay đổi trước khi kích hoạt.'
+             WHERE knowledge_snapshot_id = $1`,
+            [input.snapshotId]
+          );
+          return null;
+        }
+      }
+      const previousId = project.active_knowledge_snapshot_id;
+      if (previousId) {
+        await query(
+          `UPDATE remote_agent_system3_knowledge_snapshots
+           SET lifecycle_status = 'superseded' WHERE id = $1 AND project_id = $2`,
+          [previousId, input.projectId]
+        );
+        await query(
+          `UPDATE remote_agent_system3_artifact_versions
+           SET status = 'superseded', stale_reason = NULL
+           WHERE knowledge_snapshot_id = $1 AND project_id = $2`,
+          [previousId, input.projectId]
+        );
+      }
+      const activated = await query(
+        `UPDATE remote_agent_system3_knowledge_snapshots
+         SET lifecycle_status = 'active', activated_at = CURRENT_TIMESTAMP,
+             activated_by_user_id = $1
+         WHERE id = $2 AND project_id = $3`,
+        [input.actorId, input.snapshotId, input.projectId]
+      );
+      if (activated.rowCount !== 1) throw new Error('Understanding activation updated no row');
+      await query(
+        `UPDATE remote_agent_system3_artifact_versions
+         SET status = 'current', stale_reason = NULL
+         WHERE knowledge_snapshot_id = $1 AND project_id = $2`,
+        [input.snapshotId, input.projectId]
+      );
       await query(
         `UPDATE remote_agent_system3_projects
          SET active_knowledge_snapshot_id = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
-        [id, input.projectId]
+        [input.snapshotId, input.projectId]
       );
       await this.transitionProject(query, {
         projectId: input.projectId,
-        fromStage: projectRow.stage,
-        toStage: stage,
-        attention,
+        fromStage: project.stage,
+        toStage: 'workflow_design',
+        attention: 'none',
         freshness: 'current',
-        workflowRunId: input.workflowRunId,
+        actorId: input.actorId,
+        workflowRunId: row.workflow_run_id,
         entityType: 'knowledge_snapshot',
-        entityId: id,
-        reason: 'Understanding snapshot created',
+        entityId: input.snapshotId,
+        reason: 'Understanding candidate activated',
+        metadata: { previousKnowledgeSnapshotId: previousId },
       });
-      const row = typedRows(inserted, value => value as SnapshotRow)[0];
-      if (!row) throw new Error('Knowledge snapshot creation returned no row');
-      return asSnapshot(row);
+      const activatedResult = await query(
+        `SELECT * FROM remote_agent_system3_knowledge_snapshots
+         WHERE id = $1 AND project_id = $2`,
+        [input.snapshotId, input.projectId]
+      );
+      const activatedRow = typedRows(activatedResult, value => value as SnapshotRow)[0];
+      if (!activatedRow) throw new Error('Understanding activation returned no row');
+      const snapshot = asSnapshot(activatedRow);
+      if (input.operation) {
+        await this.completeProjectOperationClaim(query, {
+          operationId: input.operation.id,
+          ownerClaimToken: input.operation.ownerClaimToken,
+          result: { snapshotId: snapshot.id },
+        });
+      }
+      return snapshot;
     });
+    if (activation === null) {
+      throw new System3ConflictError(
+        'Project sources changed; create a new Understanding candidate before activation'
+      );
+    }
+    return activation;
   }
 
   async getActiveUnderstanding(projectId: string): Promise<System3KnowledgeSnapshotRecord | null> {
@@ -2679,9 +3632,23 @@ export class System3Store {
     contract: Record<string, unknown>;
     artifactKey: string;
     expectedVersion: number;
+    operation?: {
+      id: string;
+      ownerClaimToken: string;
+      result: Record<string, unknown>;
+    };
   }): Promise<System3ReadinessContractRecord> {
     await this.ensureSchema();
     return this.database.withTransaction(async query => {
+      await this.lockProject(query, input.projectId);
+      if (input.operation) {
+        await this.requireProjectOperationClaim(query, {
+          operationId: input.operation.id,
+          projectId: input.projectId,
+          type: 'readiness',
+          ownerClaimToken: input.operation.ownerClaimToken,
+        });
+      }
       const projectResult = await query(
         'SELECT * FROM remote_agent_system3_projects WHERE id = $1',
         [input.projectId]
@@ -2694,16 +3661,43 @@ export class System3Store {
       if (project.active_knowledge_snapshot_id !== input.knowledgeSnapshotId) {
         throw new System3ConflictError('Knowledge snapshot changed; rerun readiness');
       }
+      if (project.freshness !== 'current') {
+        throw new System3ConflictError('Project inputs changed; rerun readiness');
+      }
+      const contract = system3ReadinessContractBodySchema.parse(input.contract);
+      if (
+        contract.knowledgeSnapshotId !== input.knowledgeSnapshotId ||
+        contract.projectVersion !== input.expectedVersion
+      ) {
+        throw new System3ConflictError(
+          'Readiness contract basis does not match the active project'
+        );
+      }
       const pending = await query(
-        "SELECT COUNT(*) AS count FROM remote_agent_system3_decisions WHERE project_id = $1 AND status = 'pending'",
-        [input.projectId]
+        `SELECT COUNT(*) AS count FROM remote_agent_system3_decisions
+         WHERE project_id = $1 AND knowledge_snapshot_id = $2 AND status = 'pending'`,
+        [input.projectId, input.knowledgeSnapshotId]
       );
       const pendingCount = Number(
         typedRows(pending, value => value as { count: number | string })[0]?.count ?? 0
       );
       if (pendingCount > 0)
         throw new System3ConflictError('Resolve all decisions before readiness');
-      const serialized = JSON.stringify(input.contract);
+      const dataset = await query(
+        `SELECT version.id FROM remote_agent_system3_source_versions version
+         WHERE version.id = $1 AND version.project_id = $2 AND version.kind = 'dataset'
+           AND version.role = 'primary' AND version.storage_status = 'ready'
+           AND NOT EXISTS (
+             SELECT 1 FROM remote_agent_system3_source_versions newer
+             WHERE newer.project_id = version.project_id AND newer.source_id = version.source_id
+               AND newer.storage_status = 'ready' AND newer.lineage_version > version.lineage_version
+           )`,
+        [contract.datasetSourceVersionId, input.projectId]
+      );
+      if (dataset.rowCount !== 1) {
+        throw new System3ConflictError('Pinned Dataset Source Version changed; rerun readiness');
+      }
+      const serialized = JSON.stringify(contract);
       const id = randomUUID();
       const inserted = await query(
         `INSERT INTO remote_agent_system3_readiness_contracts
@@ -2732,7 +3726,16 @@ export class System3Store {
       });
       const row = typedRows(inserted, value => value as ReadinessContractRow)[0];
       if (!row) throw new Error('Readiness contract creation returned no row');
-      return asReadinessContract(row);
+      const readiness = asReadinessContract(row);
+      if (input.operation) {
+        await this.completeProjectOperationClaim(query, {
+          operationId: input.operation.id,
+          ownerClaimToken: input.operation.ownerClaimToken,
+          workflowRunId: input.workflowRunId,
+          result: { ...input.operation.result, readinessContractId: readiness.id },
+        });
+      }
+      return readiness;
     });
   }
 
@@ -2749,11 +3752,16 @@ export class System3Store {
     return row ? asReadinessContract(row) : null;
   }
 
-  async listDecisions(projectId: string): Promise<System3DecisionRecord[]> {
+  async listDecisions(
+    projectId: string,
+    knowledgeSnapshotId?: string
+  ): Promise<System3DecisionRecord[]> {
     await this.ensureSchema();
     const result = await this.database.query(
-      'SELECT * FROM remote_agent_system3_decisions WHERE project_id = $1 ORDER BY created_at ASC',
-      [projectId]
+      `SELECT * FROM remote_agent_system3_decisions
+       WHERE project_id = $1${knowledgeSnapshotId ? ' AND knowledge_snapshot_id = $2' : ''}
+       ORDER BY created_at ASC`,
+      knowledgeSnapshotId ? [projectId, knowledgeSnapshotId] : [projectId]
     );
     return typedRows(result, value => asDecision(value as DecisionRow));
   }
@@ -2766,6 +3774,7 @@ export class System3Store {
   }): Promise<void> {
     await this.ensureSchema();
     await this.database.withTransaction(async query => {
+      await this.lockProject(query, input.projectId);
       const project = await query('SELECT * FROM remote_agent_system3_projects WHERE id = $1', [
         input.projectId,
       ]);
@@ -2773,6 +3782,45 @@ export class System3Store {
       if (!row) throw new Error('System 3 project not found');
       if (Number(row.version) !== input.expectedVersion)
         throw new System3ConflictError('Project changed; refresh before responding');
+      const existingDecisionResult = await query(
+        `SELECT decision.binding, decision.knowledge_snapshot_id, snapshot.lifecycle_status
+         FROM remote_agent_system3_decisions decision
+         JOIN remote_agent_system3_knowledge_snapshots snapshot
+           ON snapshot.id = decision.knowledge_snapshot_id
+         WHERE decision.id = $1 AND decision.project_id = $2 AND decision.status = 'pending'`,
+        [input.decisionId, input.projectId]
+      );
+      const existingDecision = typedRows(
+        existingDecisionResult,
+        value =>
+          value as Pick<DecisionRow, 'binding' | 'knowledge_snapshot_id'> & {
+            lifecycle_status: 'candidate' | 'active' | 'superseded' | 'stale';
+          }
+      )[0];
+      if (!existingDecision) throw new Error('Pending decision not found');
+      if (
+        existingDecision.lifecycle_status !== 'candidate' &&
+        !(
+          existingDecision.lifecycle_status === 'active' &&
+          existingDecision.knowledge_snapshot_id === row.active_knowledge_snapshot_id
+        )
+      ) {
+        throw new System3ConflictError(
+          'Decision belongs to a stale or superseded Knowledge Snapshot'
+        );
+      }
+      const binding =
+        existingDecision.binding === null
+          ? null
+          : jsonObject<UnderstandingDecisionBinding>(existingDecision.binding);
+      if (
+        binding?.kind === 'dataset_target_column' &&
+        !binding.allowedValues.includes(input.answer)
+      ) {
+        throw new System3ConflictError(
+          'Selected target column is not present in the linked Dataset'
+        );
+      }
       const decision = await query(
         `UPDATE remote_agent_system3_decisions SET status = 'answered', answer = $1, updated_at = CURRENT_TIMESTAMP
          WHERE id = $2 AND project_id = $3 AND status = 'pending'`,
@@ -2787,15 +3835,19 @@ export class System3Store {
         [input.projectId, input.decisionId]
       );
       const pending = await query(
-        "SELECT COUNT(*) AS count FROM remote_agent_system3_decisions WHERE project_id = $1 AND status = 'pending'",
-        [input.projectId]
+        `SELECT COUNT(*) AS count FROM remote_agent_system3_decisions
+         WHERE project_id = $1 AND knowledge_snapshot_id = $2 AND status = 'pending'`,
+        [input.projectId, existingDecision.knowledge_snapshot_id]
       );
       const pendingRow = typedRows(pending, value => value as { count: number | string })[0];
       const hasPending = Number(pendingRow?.count ?? 0) > 0;
       await this.transitionProject(query, {
         projectId: input.projectId,
         fromStage: row.stage,
-        toStage: hasPending ? 'understanding' : 'workflow_design',
+        toStage:
+          existingDecision.lifecycle_status === 'active' && !hasPending
+            ? 'workflow_design'
+            : 'understanding',
         attention: hasPending ? 'decision_required' : 'none',
         entityType: 'decision',
         entityId: input.decisionId,
@@ -2811,12 +3863,55 @@ export class System3Store {
     plan: System3ExecutionPlan;
     definitionHash: string;
     capabilityRegistryHash: string;
+    workflowBundleSnapshots: readonly System3WorkflowBundleSnapshot[];
     impactManifestId?: string;
     impactManifestIds?: readonly string[];
     expectedVersion: number;
+    operation?: { id: string; ownerClaimToken: string };
   }): Promise<System3CompilationRecord> {
     await this.ensureSchema();
     return this.database.withTransaction(async query => {
+      if (input.operation) {
+        await this.requireProjectOperationClaim(query, {
+          operationId: input.operation.id,
+          projectId: input.projectId,
+          type: 'compile',
+          ownerClaimToken: input.operation.ownerClaimToken,
+        });
+      }
+      const workflowBundleSnapshots = input.workflowBundleSnapshots;
+      const bundleActivities = new Set(
+        workflowBundleSnapshots.map(snapshot => snapshot.activityId)
+      );
+      const expectedBundleActivities: readonly System3WorkflowBundleActivityId[] = [
+        'TW-06',
+        'TW-07',
+        'TW-09',
+      ];
+      const hasCanonicalBundleSet =
+        workflowBundleSnapshots.length === expectedBundleActivities.length &&
+        expectedBundleActivities.every(activity => bundleActivities.has(activity));
+      if (
+        (input.plan.schemaVersion === 3 || workflowBundleSnapshots.length > 0) &&
+        !hasCanonicalBundleSet
+      ) {
+        throw new System3ConflictError(
+          'Compilation v3 requires exactly one workflow bundle snapshot for TW-06, TW-07 and TW-09'
+        );
+      }
+      if (
+        workflowBundleSnapshots.some(
+          snapshot =>
+            snapshot.projectId !== input.projectId ||
+            snapshot.compilationId !== input.id ||
+            snapshot.schemaVersion !== 3 ||
+            snapshot.compilerVersion !== 'system3-compiler@3'
+        )
+      ) {
+        throw new System3ConflictError(
+          'Workflow bundle snapshot lineage does not match compilation'
+        );
+      }
       const project = await query('SELECT * FROM remote_agent_system3_projects WHERE id = $1', [
         input.projectId,
       ]);
@@ -2920,6 +4015,26 @@ export class System3Store {
           JSON.stringify(input.plan),
         ]
       );
+      for (const snapshot of workflowBundleSnapshots) {
+        await query(
+          `INSERT INTO remote_agent_system3_workflow_bundle_snapshots
+            (id, project_id, compilation_id, activity_id, schema_version, compiler_version,
+             template_id, execution_mode, definition, definition_hash)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+          [
+            snapshot.id,
+            snapshot.projectId,
+            snapshot.compilationId,
+            snapshot.activityId,
+            snapshot.schemaVersion,
+            snapshot.compilerVersion,
+            snapshot.templateId,
+            snapshot.executionMode,
+            JSON.stringify(snapshot.definition),
+            snapshot.definitionHash,
+          ]
+        );
+      }
       await this.transitionProject(query, {
         projectId: input.projectId,
         fromStage: projectRow.stage,
@@ -2950,7 +4065,18 @@ export class System3Store {
       }
       const row = typedRows(inserted, value => value as CompilationRow)[0];
       if (!row) throw new Error('Compilation creation returned no row');
-      return asCompilation(row);
+      const compilation = asCompilation(row);
+      if (input.operation) {
+        await this.completeProjectOperationClaim(query, {
+          operationId: input.operation.id,
+          ownerClaimToken: input.operation.ownerClaimToken,
+          result: {
+            compilationId: compilation.id,
+            definitionHash: compilation.definitionHash,
+          },
+        });
+      }
+      return compilation;
     });
   }
 
@@ -2965,6 +4091,20 @@ export class System3Store {
     return row ? asCompilation(row) : null;
   }
 
+  async getCompilation(
+    projectId: string,
+    compilationId: string
+  ): Promise<System3CompilationRecord | null> {
+    await this.ensureSchema();
+    const result = await this.database.query(
+      `SELECT * FROM remote_agent_system3_compilations
+       WHERE id = $1 AND project_id = $2`,
+      [compilationId, projectId]
+    );
+    const row = typedRows(result, value => value as CompilationRow)[0];
+    return row ? asCompilation(row) : null;
+  }
+
   async listCompilations(projectId: string): Promise<System3CompilationRecord[]> {
     await this.ensureSchema();
     const result = await this.database.query(
@@ -2973,6 +4113,35 @@ export class System3Store {
       [projectId]
     );
     return typedRows(result, value => asCompilation(value as CompilationRow));
+  }
+
+  async getWorkflowBundleSnapshot(input: {
+    projectId: string;
+    compilationId: string;
+    activityId: System3WorkflowBundleActivityId;
+  }): Promise<System3WorkflowBundleSnapshotRecord | null> {
+    await this.ensureSchema();
+    const result = await this.database.query(
+      `SELECT * FROM remote_agent_system3_workflow_bundle_snapshots
+       WHERE project_id = $1 AND compilation_id = $2 AND activity_id = $3`,
+      [input.projectId, input.compilationId, input.activityId]
+    );
+    const row = typedRows(result, value => value as WorkflowBundleSnapshotRow)[0];
+    return row ? asWorkflowBundleSnapshot(row) : null;
+  }
+
+  async listWorkflowBundleSnapshots(input: {
+    projectId: string;
+    compilationId: string;
+  }): Promise<System3WorkflowBundleSnapshotRecord[]> {
+    await this.ensureSchema();
+    const result = await this.database.query(
+      `SELECT * FROM remote_agent_system3_workflow_bundle_snapshots
+       WHERE project_id = $1 AND compilation_id = $2
+       ORDER BY activity_id ASC`,
+      [input.projectId, input.compilationId]
+    );
+    return typedRows(result, value => asWorkflowBundleSnapshot(value as WorkflowBundleSnapshotRow));
   }
 
   async listWorkflowVersions(projectId: string): Promise<System3WorkflowVersionRecord[]> {
@@ -3135,6 +4304,17 @@ export class System3Store {
     return row ? asApproval(row) : null;
   }
 
+  async getApproval(projectId: string, approvalId: string): Promise<System3ApprovalRecord | null> {
+    await this.ensureSchema();
+    const result = await this.database.query(
+      `SELECT * FROM remote_agent_system3_approval_manifests
+       WHERE id = $1 AND project_id = $2`,
+      [approvalId, projectId]
+    );
+    const row = typedRows(result, value => value as ApprovalRow)[0];
+    return row ? asApproval(row) : null;
+  }
+
   async getApprovalByIdempotencyKey(
     projectId: string,
     idempotencyKey: string
@@ -3160,9 +4340,13 @@ export class System3Store {
   }
 
   async beginExecution(input: {
+    executionId: string;
     projectId: string;
     approvalId: string;
     definitionHash: string;
+    bundleSnapshotId: string;
+    bundleHash: string;
+    runtimeBindings: Record<string, unknown>;
     expectedVersion: number;
     idempotencyKey: string;
     conversationId: string;
@@ -3183,6 +4367,9 @@ export class System3Store {
           canonicalJson({
             approvalId: input.approvalId,
             definitionHash: input.definitionHash,
+            bundleSnapshotId: input.bundleSnapshotId,
+            bundleHash: input.bundleHash,
+            runtimeBindings: input.runtimeBindings,
             expectedVersion: input.expectedVersion,
           })
         )
@@ -3191,6 +4378,9 @@ export class System3Store {
         `SELECT operation.*, execution.workflow_run_id AS execution_workflow_run_id,
                 execution.approval_id,
                 execution.definition_hash, execution.status AS execution_status,
+                execution.bundle_snapshot_id AS execution_bundle_snapshot_id,
+                execution.bundle_hash AS execution_bundle_hash,
+                execution.runtime_bindings AS execution_runtime_bindings,
                 execution.error AS execution_error, execution.created_at AS execution_created_at,
                 execution.updated_at AS execution_updated_at
          FROM remote_agent_system3_project_operations operation
@@ -3206,6 +4396,9 @@ export class System3Store {
             execution_workflow_run_id: string;
             approval_id: string;
             definition_hash: string;
+            execution_bundle_snapshot_id: string | null;
+            execution_bundle_hash: string | null;
+            execution_runtime_bindings: Record<string, unknown> | string | null;
             execution_status: System3ExecutionStatus;
             execution_error: string | null;
             execution_created_at: Date | string;
@@ -3227,6 +4420,9 @@ export class System3Store {
           approval_id: existing.approval_id,
           workflow_run_id: existing.execution_workflow_run_id,
           definition_hash: existing.definition_hash,
+          bundle_snapshot_id: existing.execution_bundle_snapshot_id,
+          bundle_hash: existing.execution_bundle_hash,
+          runtime_bindings: existing.execution_runtime_bindings,
           status: existing.execution_status,
           error: existing.execution_error,
           created_at: existing.execution_created_at,
@@ -3273,13 +4469,16 @@ export class System3Store {
         [input.approvalId, input.projectId]
       );
       if (approvalResult.rowCount === 0) throw new Error('Approval manifest not found');
-      const executionId = randomUUID();
+      const executionId = input.executionId;
       const operationId = randomUUID();
       const workflowRunId = randomUUID();
       const metadata = {
         system3ProjectId: input.projectId,
         system3ExecutionId: executionId,
         definitionHash: input.definitionHash,
+        system3BundleSnapshotId: input.bundleSnapshotId,
+        system3BundleHash: input.bundleHash,
+        system3RuntimeBindings: input.runtimeBindings,
       };
       const workflowResult = await query(
         `INSERT INTO remote_agent_workflow_runs
@@ -3298,9 +4497,19 @@ export class System3Store {
       );
       const executionResult = await query(
         `INSERT INTO remote_agent_system3_project_executions
-          (id, project_id, approval_id, workflow_run_id, definition_hash, status)
-         VALUES ($1, $2, $3, $4, $5, 'accepted') RETURNING *`,
-        [executionId, input.projectId, input.approvalId, workflowRunId, input.definitionHash]
+          (id, project_id, approval_id, workflow_run_id, definition_hash, bundle_snapshot_id,
+           bundle_hash, runtime_bindings, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'accepted') RETURNING *`,
+        [
+          executionId,
+          input.projectId,
+          input.approvalId,
+          workflowRunId,
+          input.definitionHash,
+          input.bundleSnapshotId,
+          input.bundleHash,
+          JSON.stringify(input.runtimeBindings),
+        ]
       );
       const operationResult = await query(
         `INSERT INTO remote_agent_system3_project_operations
@@ -3388,6 +4597,8 @@ export class System3Store {
   }
 
   async completeBaselineExecution(input: {
+    operationId: string;
+    ownerClaimToken: string;
     executionId: string;
     projectId: string;
     artifact: Omit<
@@ -3417,6 +4628,12 @@ export class System3Store {
   }): Promise<System3ArtifactVersionRecord> {
     await this.ensureSchema();
     return this.database.withTransaction(async query => {
+      const operation = await this.requireProjectOperationClaim(query, {
+        operationId: input.operationId,
+        projectId: input.projectId,
+        type: 'execute',
+        ownerClaimToken: input.ownerClaimToken,
+      });
       const artifactId = randomUUID();
       const basisResult = await query(
         `SELECT input.source_ids, execution.approval_id
@@ -3490,25 +4707,27 @@ export class System3Store {
          SET status = 'completed', error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
         [input.executionId]
       );
-      const operationResult = await query(
-        `SELECT * FROM remote_agent_system3_project_operations
-         WHERE execution_id = $1 AND operation_type = 'execute'`,
-        [input.executionId]
-      );
-      const operation = typedRows(operationResult, value => value as OperationRow)[0];
-      await query(
+      const completed = await query(
         `UPDATE remote_agent_system3_project_operations
          SET status = 'succeeded', result = $1, error = NULL, heartbeat_at = CURRENT_TIMESTAMP,
              finished_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-         WHERE execution_id = $2 AND operation_type = 'execute'`,
-        [JSON.stringify({ executionId: input.executionId, artifactId }), input.executionId]
+         WHERE id = $2 AND operation_type = 'execute' AND status = 'running'
+           AND owner_claim_token = $3`,
+        [
+          JSON.stringify({ executionId: input.executionId, artifactId }),
+          input.operationId,
+          input.ownerClaimToken,
+        ]
       );
+      if (completed.rowCount !== 1) {
+        throw new System3ConflictError('Execution claim was lost before artifact commit');
+      }
       await this.transitionProject(query, {
         projectId: input.projectId,
         toStage: 'verifying',
         attention: 'none',
-        operationId: operation?.id ?? null,
-        workflowRunId: operation?.workflow_run_id ?? null,
+        operationId: operation.id,
+        workflowRunId: operation.workflow_run_id,
         entityType: 'execution',
         entityId: input.executionId,
         reason: 'Baseline execution completed; verification required',
@@ -3533,10 +4752,14 @@ export class System3Store {
   }
 
   async beginVerification(input: {
+    verificationId: string;
     projectId: string;
     executionId: string;
     inputArtifactId: string;
     basisHash: string;
+    bundleSnapshotId: string;
+    bundleHash: string;
+    runtimeBindings: Record<string, unknown>;
     expectedVersion: number;
     idempotencyKey: string;
     conversationId: string;
@@ -3558,6 +4781,9 @@ export class System3Store {
             executionId: input.executionId,
             inputArtifactId: input.inputArtifactId,
             basisHash: input.basisHash,
+            bundleSnapshotId: input.bundleSnapshotId,
+            bundleHash: input.bundleHash,
+            runtimeBindings: input.runtimeBindings,
             expectedVersion: input.expectedVersion,
           })
         )
@@ -3568,6 +4794,9 @@ export class System3Store {
                 verification.workflow_run_id AS verification_workflow_run_id,
                 verification.input_artifact_id, verification.status AS verification_status,
                 verification.validator_version, verification.basis_hash,
+                verification.bundle_snapshot_id AS verification_bundle_snapshot_id,
+                verification.bundle_hash AS verification_bundle_hash,
+                verification.runtime_bindings AS verification_runtime_bindings,
                 verification.evidence_map, verification.gate,
                 verification.error AS verification_error,
                 verification.created_at AS verification_created_at,
@@ -3590,6 +4819,9 @@ export class System3Store {
             verification_status: System3ExecutionStatus;
             validator_version: string;
             basis_hash: string;
+            verification_bundle_snapshot_id: string | null;
+            verification_bundle_hash: string | null;
+            verification_runtime_bindings: Record<string, unknown> | string | null;
             evidence_map: Record<string, unknown> | string | null;
             gate: Record<string, unknown> | string | null;
             verification_error: string | null;
@@ -3612,6 +4844,9 @@ export class System3Store {
           status: existing.verification_status,
           validator_version: existing.validator_version,
           basis_hash: existing.basis_hash,
+          bundle_snapshot_id: existing.verification_bundle_snapshot_id,
+          bundle_hash: existing.verification_bundle_hash,
+          runtime_bindings: existing.verification_runtime_bindings,
           evidence_map: existing.evidence_map,
           gate: existing.gate,
           error: existing.verification_error,
@@ -3656,7 +4891,7 @@ export class System3Store {
       if (artifactRow?.content_hash !== input.basisHash) {
         throw new System3ConflictError('Baseline artifact basis is stale or tampered');
       }
-      const verificationId = randomUUID();
+      const verificationId = input.verificationId;
       const workflowRunId = randomUUID();
       const operationId = randomUUID();
       const workflowRun = precreatedSystem3Run(input, workflowRunId, 'verification');
@@ -3678,8 +4913,8 @@ export class System3Store {
       const verificationResult = await query(
         `INSERT INTO remote_agent_system3_verifications
           (id, project_id, execution_id, workflow_run_id, input_artifact_id, status,
-           validator_version, basis_hash)
-         VALUES ($1, $2, $3, $4, $5, 'accepted', 'system3-validator@1', $6) RETURNING *`,
+           validator_version, basis_hash, bundle_snapshot_id, bundle_hash, runtime_bindings)
+         VALUES ($1, $2, $3, $4, $5, 'accepted', 'system3-validator@1', $6, $7, $8, $9) RETURNING *`,
         [
           verificationId,
           input.projectId,
@@ -3687,6 +4922,9 @@ export class System3Store {
           workflowRunId,
           input.inputArtifactId,
           input.basisHash,
+          input.bundleSnapshotId,
+          input.bundleHash,
+          JSON.stringify(input.runtimeBindings),
         ]
       );
       const operationResult = await query(
@@ -3741,6 +4979,8 @@ export class System3Store {
   }
 
   async completeVerification(input: {
+    operationId: string;
+    ownerClaimToken: string;
     verificationId: string;
     projectId: string;
     executionId: string;
@@ -3759,6 +4999,12 @@ export class System3Store {
   }): Promise<void> {
     await this.ensureSchema();
     await this.database.withTransaction(async query => {
+      const operation = await this.requireProjectOperationClaim(query, {
+        operationId: input.operationId,
+        projectId: input.projectId,
+        type: 'verify',
+        ownerClaimToken: input.ownerClaimToken,
+      });
       const verificationResult = await query(
         'SELECT * FROM remote_agent_system3_verifications WHERE id = $1 AND project_id = $2',
         [input.verificationId, input.projectId]
@@ -3791,24 +5037,26 @@ export class System3Store {
              updated_at = CURRENT_TIMESTAMP WHERE id = $3`,
         [JSON.stringify(input.evidenceMap), JSON.stringify(input.gate), input.verificationId]
       );
-      const operationResult = await query(
-        `SELECT * FROM remote_agent_system3_project_operations
-         WHERE workflow_run_id = $1 AND operation_type = 'verify'`,
-        [verification.workflow_run_id]
-      );
-      const operation = typedRows(operationResult, value => value as OperationRow)[0];
-      await query(
+      const completed = await query(
         `UPDATE remote_agent_system3_project_operations
          SET status = 'succeeded', result = $1, error = NULL, heartbeat_at = CURRENT_TIMESTAMP,
              finished_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-         WHERE workflow_run_id = $2 AND operation_type = 'verify'`,
-        [JSON.stringify({ verificationId: input.verificationId }), verification.workflow_run_id]
+         WHERE id = $2 AND operation_type = 'verify' AND status = 'running'
+           AND owner_claim_token = $3`,
+        [
+          JSON.stringify({ verificationId: input.verificationId }),
+          input.operationId,
+          input.ownerClaimToken,
+        ]
       );
+      if (completed.rowCount !== 1) {
+        throw new System3ConflictError('Verification claim was lost before evidence commit');
+      }
       await this.transitionProject(query, {
         projectId: input.projectId,
         toStage: 'delivery',
         attention: 'none',
-        operationId: operation?.id ?? null,
+        operationId: operation.id,
         workflowRunId: verification.workflow_run_id,
         entityType: 'verification',
         entityId: input.verificationId,
@@ -3817,45 +5065,60 @@ export class System3Store {
     });
   }
 
-  async failVerification(verificationId: string, projectId: string, error: string): Promise<void> {
+  async failVerification(input: {
+    operationId: string;
+    ownerClaimToken: string;
+    verificationId: string;
+    projectId: string;
+    error: string;
+  }): Promise<boolean> {
     await this.ensureSchema();
-    await this.database.withTransaction(async query => {
+    return this.database.withTransaction(async query => {
+      let operation: OperationRow;
+      try {
+        operation = await this.requireProjectOperationClaim(query, {
+          operationId: input.operationId,
+          projectId: input.projectId,
+          type: 'verify',
+          ownerClaimToken: input.ownerClaimToken,
+        });
+      } catch (error) {
+        if (error instanceof System3ConflictError) return false;
+        throw error;
+      }
       const verificationResult = await query(
         'SELECT * FROM remote_agent_system3_verifications WHERE id = $1',
-        [verificationId]
+        [input.verificationId]
       );
       const verification = typedRows(verificationResult, value => value as VerificationRow)[0];
-      if (!verification) return;
+      if (!verification) return false;
       await query(
         `UPDATE remote_agent_system3_verifications
          SET status = 'failed', error = $1, updated_at = CURRENT_TIMESTAMP
          WHERE id = $2`,
-        [error, verificationId]
+        [input.error, input.verificationId]
       );
-      const operationResult = await query(
-        `SELECT * FROM remote_agent_system3_project_operations
-         WHERE workflow_run_id = $1 AND operation_type = 'verify'`,
-        [verification.workflow_run_id]
-      );
-      const operation = typedRows(operationResult, value => value as OperationRow)[0];
-      await query(
+      const failed = await query(
         `UPDATE remote_agent_system3_project_operations
          SET status = 'failed', error = $1, finished_at = CURRENT_TIMESTAMP,
              heartbeat_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-         WHERE workflow_run_id = $2 AND operation_type = 'verify'`,
-        [error, verification.workflow_run_id]
+         WHERE id = $2 AND operation_type = 'verify' AND status = 'running'
+           AND owner_claim_token = $3`,
+        [input.error, input.operationId, input.ownerClaimToken]
       );
+      if (failed.rowCount !== 1) return false;
       await this.transitionProject(query, {
-        projectId,
+        projectId: input.projectId,
         toStage: 'verifying',
         attention: 'failed',
-        operationId: operation?.id ?? null,
+        operationId: operation.id,
         workflowRunId: verification.workflow_run_id,
         entityType: 'verification',
-        entityId: verificationId,
+        entityId: input.verificationId,
         reason: 'Verification failed',
-        metadata: { error },
+        metadata: { error: input.error },
       });
+      return true;
     });
   }
 
@@ -3891,9 +5154,13 @@ export class System3Store {
   }
 
   async beginDelivery(input: {
+    deliveryId: string;
     projectId: string;
     executionId: string;
     verificationId: string;
+    bundleSnapshotId: string;
+    bundleHash: string;
+    runtimeBindings: Record<string, unknown>;
     expectedVersion: number;
     idempotencyKey: string;
     conversationId: string;
@@ -3913,6 +5180,9 @@ export class System3Store {
           canonicalJson({
             executionId: input.executionId,
             verificationId: input.verificationId,
+            bundleSnapshotId: input.bundleSnapshotId,
+            bundleHash: input.bundleHash,
+            runtimeBindings: input.runtimeBindings,
             expectedVersion: input.expectedVersion,
           })
         )
@@ -3975,7 +5245,11 @@ export class System3Store {
           input.conversationId,
           input.codebaseId,
           workflowRun.user_message,
-          JSON.stringify({ ...workflowRun.metadata, system3VerificationId: input.verificationId }),
+          JSON.stringify({
+            ...workflowRun.metadata,
+            system3VerificationId: input.verificationId,
+            system3DeliveryId: input.deliveryId,
+          }),
           input.workingPath,
           input.userId ?? null,
         ]
@@ -4015,17 +5289,35 @@ export class System3Store {
   }
 
   async completeDelivery(input: {
+    deliveryId: string;
     operationId: string;
+    ownerClaimToken: string;
     projectId: string;
     executionId: string;
     verificationId: string;
+    bundleSnapshotId: string;
+    bundleHash: string;
+    runtimeBindings: Record<string, unknown>;
     delivery: Omit<
       System3DeliveryRecord,
-      'id' | 'projectId' | 'executionId' | 'verificationId' | 'createdAt'
+      | 'id'
+      | 'projectId'
+      | 'executionId'
+      | 'verificationId'
+      | 'bundleSnapshotId'
+      | 'bundleHash'
+      | 'runtimeBindings'
+      | 'createdAt'
     >;
   }): Promise<System3DeliveryRecord> {
     await this.ensureSchema();
     return this.database.withTransaction(async query => {
+      const operation = await this.requireProjectOperationClaim(query, {
+        operationId: input.operationId,
+        projectId: input.projectId,
+        type: 'delivery',
+        ownerClaimToken: input.ownerClaimToken,
+      });
       const basisResult = await query(
         `SELECT input.source_ids
          FROM remote_agent_system3_project_executions execution
@@ -4038,20 +5330,13 @@ export class System3Store {
       const basis = typedRows(basisResult, value => value as { source_ids: string[] | string })[0];
       if (!basis) throw new Error('Delivery input basis is missing');
       const sourceVersionIds = jsonObject<string[]>(basis.source_ids);
-      const operationResult = await query(
-        `SELECT * FROM remote_agent_system3_project_operations
-         WHERE id = $1 AND project_id = $2 AND operation_type = 'delivery'`,
-        [input.operationId, input.projectId]
-      );
-      const operation = typedRows(operationResult, value => value as OperationRow)[0];
-      if (!operation) throw new Error('Delivery operation not found');
       const inserted = await query(
         `INSERT INTO remote_agent_system3_delivery_manifests
           (id, project_id, execution_id, verification_id, package_storage_key, package_filename,
-           content_hash, size_bytes, manifest)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+           content_hash, size_bytes, bundle_snapshot_id, bundle_hash, runtime_bindings, manifest)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
         [
-          randomUUID(),
+          input.deliveryId,
           input.projectId,
           input.executionId,
           input.verificationId,
@@ -4059,6 +5344,9 @@ export class System3Store {
           input.delivery.packageFilename,
           input.delivery.contentHash,
           input.delivery.sizeBytes,
+          input.bundleSnapshotId,
+          input.bundleHash,
+          JSON.stringify(input.runtimeBindings),
           JSON.stringify(input.delivery.manifest),
         ]
       );
@@ -4107,15 +5395,20 @@ export class System3Store {
           ]
         );
       }
-      await query(
+      const completed = await query(
         `UPDATE remote_agent_system3_project_operations
          SET status = 'succeeded', result = $1, error = NULL, heartbeat_at = CURRENT_TIMESTAMP,
-             finished_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+             finished_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+         WHERE id = $2 AND status = 'running' AND owner_claim_token = $3`,
         [
           JSON.stringify({ deliveryId: typedRows(inserted, value => value as DeliveryRow)[0]?.id }),
           input.operationId,
+          input.ownerClaimToken,
         ]
       );
+      if (completed.rowCount !== 1) {
+        throw new System3ConflictError('Delivery claim was lost before manifest commit');
+      }
       await this.transitionProject(query, {
         projectId: input.projectId,
         toStage: 'delivered',
@@ -4132,37 +5425,53 @@ export class System3Store {
     });
   }
 
-  async failDelivery(operationId: string, projectId: string, error: string): Promise<void> {
+  async failDelivery(input: {
+    operationId: string;
+    ownerClaimToken: string;
+    projectId: string;
+    error: string;
+  }): Promise<boolean> {
     await this.ensureSchema();
-    await this.database.withTransaction(async query => {
-      const existing = await query(
-        "SELECT * FROM remote_agent_system3_project_operations WHERE id = $1 AND operation_type = 'delivery'",
-        [operationId]
-      );
-      const operation = typedRows(existing, value => value as OperationRow)[0];
-      if (!operation) return;
-      await query(
+    return this.database.withTransaction(async query => {
+      let operation: OperationRow;
+      try {
+        operation = await this.requireProjectOperationClaim(query, {
+          operationId: input.operationId,
+          projectId: input.projectId,
+          type: 'delivery',
+          ownerClaimToken: input.ownerClaimToken,
+        });
+      } catch (error) {
+        if (error instanceof System3ConflictError) return false;
+        throw error;
+      }
+      const failed = await query(
         `UPDATE remote_agent_system3_project_operations
          SET status = 'failed', error = $1, heartbeat_at = CURRENT_TIMESTAMP,
              finished_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-         WHERE id = $2 AND operation_type = 'delivery'`,
-        [error, operationId]
+         WHERE id = $2 AND operation_type = 'delivery' AND status = 'running'
+           AND owner_claim_token = $3`,
+        [input.error, input.operationId, input.ownerClaimToken]
       );
+      if (failed.rowCount !== 1) return false;
       await this.transitionProject(query, {
-        projectId,
+        projectId: input.projectId,
         toStage: 'delivery',
         attention: 'failed',
-        operationId,
+        operationId: input.operationId,
         workflowRunId: operation.workflow_run_id,
         entityType: 'delivery',
-        entityId: operationId,
+        entityId: input.operationId,
         reason: 'Delivery failed',
-        metadata: { error },
+        metadata: { error: input.error },
       });
+      return true;
     });
   }
 
   async completeExecution(input: {
+    operationId: string;
+    ownerClaimToken: string;
     executionId: string;
     projectId: string;
     delivery: Omit<System3DeliveryRecord, 'id' | 'projectId' | 'executionId' | 'createdAt'>;
@@ -4170,6 +5479,12 @@ export class System3Store {
   }): Promise<void> {
     await this.ensureSchema();
     await this.database.withTransaction(async query => {
+      const operationClaim = await this.requireProjectOperationClaim(query, {
+        operationId: input.operationId,
+        projectId: input.projectId,
+        type: 'execute',
+        ownerClaimToken: input.ownerClaimToken,
+      });
       for (const evidence of input.evidence) {
         const evidenceId = randomUUID();
         await query(
@@ -4257,27 +5572,23 @@ export class System3Store {
          SET status = 'completed', error = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
         [input.executionId]
       );
-      await query(
+      const completed = await query(
         `UPDATE remote_agent_system3_project_operations
          SET status = 'succeeded', error = NULL, heartbeat_at = CURRENT_TIMESTAMP,
              finished_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-         WHERE execution_id = $1`,
-        [input.executionId]
+         WHERE id = $1 AND operation_type = 'execute' AND status = 'running'
+           AND owner_claim_token = $2`,
+        [input.operationId, input.ownerClaimToken]
       );
-      const operation = await query(
-        'SELECT id, workflow_run_id FROM remote_agent_system3_project_operations WHERE execution_id = $1',
-        [input.executionId]
-      );
-      const operationRow = typedRows(
-        operation,
-        value => value as { id: string; workflow_run_id: string | null }
-      )[0];
+      if (completed.rowCount !== 1) {
+        throw new System3ConflictError('Execution claim was lost before completion');
+      }
       await this.transitionProject(query, {
         projectId: input.projectId,
         toStage: 'delivered',
         attention: 'none',
-        operationId: operationRow?.id ?? null,
-        workflowRunId: operationRow?.workflow_run_id ?? null,
+        operationId: operationClaim.id,
+        workflowRunId: operationClaim.workflow_run_id,
         entityType: 'execution',
         entityId: input.executionId,
         reason: 'Execution, verification, and delivery completed',
@@ -4285,40 +5596,54 @@ export class System3Store {
     });
   }
 
-  async failExecution(executionId: string, projectId: string, error: string): Promise<void> {
+  async failExecution(input: {
+    operationId: string;
+    ownerClaimToken: string;
+    executionId: string;
+    projectId: string;
+    error: string;
+  }): Promise<boolean> {
     await this.ensureSchema();
-    await this.database.withTransaction(async query => {
+    return this.database.withTransaction(async query => {
+      let operation: OperationRow;
+      try {
+        operation = await this.requireProjectOperationClaim(query, {
+          operationId: input.operationId,
+          projectId: input.projectId,
+          type: 'execute',
+          ownerClaimToken: input.ownerClaimToken,
+        });
+      } catch (error) {
+        if (error instanceof System3ConflictError) return false;
+        throw error;
+      }
       await query(
         `UPDATE remote_agent_system3_project_executions
-         SET status = 'failed', error = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
-        [error, executionId]
+         SET status = 'failed', error = $1, updated_at = CURRENT_TIMESTAMP
+         WHERE id = $2 AND status IN ('accepted', 'running')`,
+        [input.error, input.executionId]
       );
-      await query(
+      const failed = await query(
         `UPDATE remote_agent_system3_project_operations
          SET status = 'failed', error = $1, heartbeat_at = CURRENT_TIMESTAMP,
              finished_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-         WHERE execution_id = $2`,
-        [error, executionId]
+         WHERE id = $2 AND operation_type = 'execute' AND status = 'running'
+           AND owner_claim_token = $3`,
+        [input.error, input.operationId, input.ownerClaimToken]
       );
-      const operation = await query(
-        'SELECT id, workflow_run_id FROM remote_agent_system3_project_operations WHERE execution_id = $1',
-        [executionId]
-      );
-      const operationRow = typedRows(
-        operation,
-        value => value as { id: string; workflow_run_id: string | null }
-      )[0];
+      if (failed.rowCount !== 1) return false;
       await this.transitionProject(query, {
-        projectId,
+        projectId: input.projectId,
         toStage: 'approved',
         attention: 'failed',
-        operationId: operationRow?.id ?? null,
-        workflowRunId: operationRow?.workflow_run_id ?? null,
+        operationId: operation.id,
+        workflowRunId: operation.workflow_run_id,
         entityType: 'execution',
-        entityId: executionId,
+        entityId: input.executionId,
         reason: 'Execution failed',
-        metadata: { error },
+        metadata: { error: input.error },
       });
+      return true;
     });
   }
 
@@ -4332,26 +5657,43 @@ export class System3Store {
       );
       const row = typedRows(result, value => value as OperationRow)[0];
       if (!row) throw new Error('System 3 operation not found');
-      if (row.status === 'abandoned') return asOperation(row);
-      if (row.status !== 'accepted' && row.status !== 'running') {
-        throw new System3ConflictError(`Operation with status '${row.status}' cannot be abandoned`);
+      await this.lockProject(query, row.project_id);
+      const lockedResult = await query(
+        `SELECT * FROM remote_agent_system3_project_operations WHERE id = $1${
+          this.database.dialect === 'postgres' ? ' FOR UPDATE' : ''
+        }`,
+        [operationId]
+      );
+      const lockedRow = typedRows(lockedResult, value => value as OperationRow)[0];
+      if (!lockedRow) throw new Error('System 3 operation not found');
+      const current = lockedRow;
+      if (current.status === 'abandoned') return asOperation(current);
+      if (current.status !== 'accepted' && current.status !== 'running') {
+        throw new System3ConflictError(
+          `Operation with status '${current.status}' cannot be abandoned`
+        );
+      }
+      if (hasResponsiveOperationOwner(current)) {
+        throw new System3ConflictError(
+          'Operation owner is still responsive; wait before abandoning the operation'
+        );
       }
 
       const reason = 'User abandoned the operation after its owning process became unknown';
-      if (row.workflow_run_id !== null) {
+      if (current.workflow_run_id !== null) {
         await query(
           `UPDATE remote_agent_workflow_runs
            SET status = 'cancelled', completed_at = CURRENT_TIMESTAMP
            WHERE id = $1 AND status NOT IN ('completed', 'cancelled')`,
-          [row.workflow_run_id]
+          [current.workflow_run_id]
         );
       }
-      if (row.execution_id !== null) {
+      if (current.execution_id !== null) {
         await query(
           `UPDATE remote_agent_system3_project_executions
            SET status = 'failed', error = $1, updated_at = CURRENT_TIMESTAMP
            WHERE id = $2 AND status IN ('accepted', 'running')`,
-          [reason, row.execution_id]
+          [reason, current.execution_id]
         );
       }
       await query(
@@ -4363,23 +5705,23 @@ export class System3Store {
         [reason, operationId]
       );
       await this.transitionProject(query, {
-        projectId: row.project_id,
+        projectId: current.project_id,
         toStage:
           typedRows(
             await query('SELECT stage FROM remote_agent_system3_projects WHERE id = $1', [
-              row.project_id,
+              current.project_id,
             ]),
             value => value as { stage: System3ProjectStage }
           )[0]?.stage ?? 'draft',
         attention: 'failed',
-        operationId: row.id,
-        workflowRunId: row.workflow_run_id,
-        entityType: row.execution_id === null ? 'operation' : 'execution',
-        entityId: row.execution_id ?? row.id,
+        operationId: current.id,
+        workflowRunId: current.workflow_run_id,
+        entityType: current.execution_id === null ? 'operation' : 'execution',
+        entityId: current.execution_id ?? current.id,
         reason: 'User abandoned unknown operation',
       });
       return asOperation({
-        ...row,
+        ...current,
         status: 'abandoned',
         error: reason,
         finished_at: new Date(),
@@ -4462,16 +5804,43 @@ export class System3Store {
     });
   }
 
+  async getProjectOperationReplay(input: {
+    projectId: string;
+    type: System3OperationType;
+    idempotencyKey: string;
+    request: Record<string, unknown>;
+  }): Promise<System3OperationRecord | null> {
+    await this.ensureSchema();
+    const result = await this.database.query(
+      `SELECT * FROM remote_agent_system3_project_operations
+       WHERE project_id = $1 AND operation_type = $2 AND idempotency_key = $3`,
+      [input.projectId, input.type, input.idempotencyKey]
+    );
+    const row = typedRows(result, value => value as OperationRow)[0];
+    if (!row) return null;
+    const fingerprint = `sha256:${createHash('sha256')
+      .update(canonicalJson(input.request))
+      .digest('hex')}`;
+    if (row.request_fingerprint !== fingerprint) {
+      throw new System3ConflictError(
+        'Idempotency-Key was already used for a different operation request'
+      );
+    }
+    return asOperation(row);
+  }
+
   async markProjectOperationRunning(input: {
     operationId: string;
     ownerInstanceId: string;
     workflowRunId?: string;
     executionId?: string;
-  }): Promise<void> {
+  }): Promise<string> {
     await this.ensureSchema();
-    await this.database.query(
+    const ownerClaimToken = randomUUID();
+    const updated = await this.database.query(
       `UPDATE remote_agent_system3_project_operations
-       SET status = 'running', owner_instance_id = $2, heartbeat_at = CURRENT_TIMESTAMP,
+       SET status = 'running', owner_instance_id = $2, owner_claim_token = $5,
+           heartbeat_at = CURRENT_TIMESTAMP,
            started_at = COALESCE(started_at, CURRENT_TIMESTAMP),
            workflow_run_id = COALESCE($3, workflow_run_id),
            execution_id = COALESCE($4, execution_id),
@@ -4482,8 +5851,15 @@ export class System3Store {
         input.ownerInstanceId,
         input.workflowRunId ?? null,
         input.executionId ?? null,
+        ownerClaimToken,
       ]
     );
+    if (updated.rowCount !== 1) {
+      throw new System3ConflictError(
+        'Project operation was already claimed or is no longer active'
+      );
+    }
+    return ownerClaimToken;
   }
 
   async retryFailedProjectOperation(operationId: string): Promise<System3OperationRecord> {
@@ -4504,7 +5880,8 @@ export class System3Store {
       const updatedResult = await query(
         `UPDATE remote_agent_system3_project_operations
          SET status = 'accepted', error = NULL, owner_instance_id = NULL,
-             heartbeat_at = NULL, finished_at = NULL, updated_at = CURRENT_TIMESTAMP
+             owner_claim_token = NULL, heartbeat_at = NULL, finished_at = NULL,
+             updated_at = CURRENT_TIMESTAMP
          WHERE id = $1 AND status = 'failed'`,
         [operationId]
       );
@@ -4533,15 +5910,30 @@ export class System3Store {
       );
       const current = typedRows(currentResult, value => value as OperationRow)[0];
       if (!current) throw new Error('System 3 operation not found');
-      if (current.status === 'succeeded' || current.status === 'abandoned') {
+      await this.lockProject(query, current.project_id);
+      const lockedResult = await query(
+        `SELECT * FROM remote_agent_system3_project_operations WHERE id = $1${
+          this.database.dialect === 'postgres' ? ' FOR UPDATE' : ''
+        }`,
+        [operationId]
+      );
+      const lockedCurrent = typedRows(lockedResult, value => value as OperationRow)[0];
+      if (!lockedCurrent) throw new Error('System 3 operation not found');
+      if (lockedCurrent.status === 'succeeded' || lockedCurrent.status === 'abandoned') {
         throw new System3ConflictError(
-          `Operation with status '${current.status}' cannot be resumed`
+          `Operation with status '${lockedCurrent.status}' cannot be resumed`
+        );
+      }
+      if (hasResponsiveOperationOwner(lockedCurrent)) {
+        throw new System3ConflictError(
+          'Operation owner is still responsive; explicit takeover is not available yet'
         );
       }
       const updatedResult = await query(
         `UPDATE remote_agent_system3_project_operations
          SET status = 'accepted', error = NULL, owner_instance_id = NULL,
-             heartbeat_at = NULL, finished_at = NULL, updated_at = CURRENT_TIMESTAMP
+             owner_claim_token = NULL, heartbeat_at = NULL, finished_at = NULL,
+             updated_at = CURRENT_TIMESTAMP
          WHERE id = $1 AND status IN ('accepted', 'running', 'failed')`,
         [operationId]
       );
@@ -4556,60 +5948,80 @@ export class System3Store {
     });
   }
 
-  async heartbeatProjectOperation(operationId: string, ownerInstanceId: string): Promise<void> {
+  async heartbeatProjectOperation(
+    operationId: string,
+    ownerInstanceId: string,
+    ownerClaimToken: string
+  ): Promise<boolean> {
     await this.ensureSchema();
-    await this.database.query(
+    const updated = await this.database.query(
       `UPDATE remote_agent_system3_project_operations
        SET heartbeat_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-       WHERE id = $1 AND owner_instance_id = $2 AND status = 'running'`,
-      [operationId, ownerInstanceId]
+       WHERE id = $1 AND owner_instance_id = $2 AND owner_claim_token = $3
+         AND status = 'running'`,
+      [operationId, ownerInstanceId, ownerClaimToken]
     );
+    return updated.rowCount === 1;
   }
 
   async recordProjectOperationProgress(
     operationId: string,
+    ownerClaimToken: string,
     result: Record<string, unknown>
   ): Promise<void> {
     await this.ensureSchema();
-    await this.database.query(
+    const updated = await this.database.query(
       `UPDATE remote_agent_system3_project_operations
        SET result = $2, heartbeat_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-       WHERE id = $1 AND status IN ('accepted', 'running')`,
-      [operationId, JSON.stringify(result)]
+       WHERE id = $1 AND status = 'running' AND owner_claim_token = $3`,
+      [operationId, JSON.stringify(result), ownerClaimToken]
     );
+    if (updated.rowCount !== 1) {
+      throw new System3ConflictError('Project operation claim was lost before progress commit');
+    }
   }
 
   async completeProjectOperation(
     operationId: string,
+    ownerClaimToken: string,
     result: Record<string, unknown>,
     links?: { workflowRunId?: string; executionId?: string }
   ): Promise<void> {
     await this.ensureSchema();
-    await this.database.query(
+    const updated = await this.database.query(
       `UPDATE remote_agent_system3_project_operations
        SET status = 'succeeded', result = $2, error = NULL,
            workflow_run_id = COALESCE($3, workflow_run_id),
            execution_id = COALESCE($4, execution_id), heartbeat_at = CURRENT_TIMESTAMP,
            finished_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-       WHERE id = $1 AND status IN ('accepted', 'running')`,
+       WHERE id = $1 AND status = 'running' AND owner_claim_token = $5`,
       [
         operationId,
         JSON.stringify(result),
         links?.workflowRunId ?? null,
         links?.executionId ?? null,
+        ownerClaimToken,
       ]
     );
+    if (updated.rowCount !== 1) {
+      throw new System3ConflictError('Project operation claim was lost before completion');
+    }
   }
 
-  async failProjectOperation(operationId: string, error: string): Promise<void> {
+  async failProjectOperation(
+    operationId: string,
+    ownerClaimToken: string,
+    error: string
+  ): Promise<boolean> {
     await this.ensureSchema();
-    await this.database.query(
+    const updated = await this.database.query(
       `UPDATE remote_agent_system3_project_operations
        SET status = 'failed', error = $2, heartbeat_at = CURRENT_TIMESTAMP,
            finished_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-       WHERE id = $1 AND status IN ('accepted', 'running')`,
-      [operationId, error]
+       WHERE id = $1 AND status = 'running' AND owner_claim_token = $3`,
+      [operationId, error, ownerClaimToken]
     );
+    return updated.rowCount === 1;
   }
 
   async getExecutionByIdempotencyKey(
@@ -4760,6 +6172,233 @@ export class System3Store {
     return typedRows(result, value => asImpact(value as ImpactRow));
   }
 
+  async listLifecycleAttempts(projectId: string): Promise<System3LifecycleAttemptRecord[]> {
+    await this.ensureSchema();
+    const result = await this.database.query(
+      `SELECT * FROM remote_agent_system3_lifecycle_attempts
+       WHERE project_id = $1 ORDER BY sequence DESC`,
+      [projectId]
+    );
+    return typedRows(result, value => asLifecycleAttempt(value as LifecycleAttemptRow));
+  }
+
+  async getLifecycleAttempt(
+    projectId: string,
+    attemptId: string
+  ): Promise<System3LifecycleAttemptRecord | null> {
+    await this.ensureSchema();
+    const result = await this.database.query(
+      `SELECT * FROM remote_agent_system3_lifecycle_attempts
+       WHERE project_id = $1 AND id = $2`,
+      [projectId, attemptId]
+    );
+    const row = typedRows(result, value => value as LifecycleAttemptRow)[0];
+    return row ? asLifecycleAttempt(row) : null;
+  }
+
+  async getActiveLifecycleAttempt(
+    projectId: string
+  ): Promise<System3LifecycleAttemptRecord | null> {
+    await this.ensureSchema();
+    const result = await this.database.query(
+      `SELECT * FROM remote_agent_system3_lifecycle_attempts
+       WHERE project_id = $1 AND lifecycle_status = 'active'
+       ORDER BY sequence DESC LIMIT 1`,
+      [projectId]
+    );
+    const row = typedRows(result, value => value as LifecycleAttemptRow)[0];
+    return row ? asLifecycleAttempt(row) : null;
+  }
+
+  async hasCurrentLifecycleAttemptPayload(projectId: string, attemptId: string): Promise<boolean> {
+    await this.ensureSchema();
+    const storagePrefix = `attempts/${attemptId}/%`;
+    const result = await this.database.query(
+      `SELECT 1 AS found
+       FROM remote_agent_system3_artifact_versions
+       WHERE project_id = $1 AND artifact_key LIKE $2 AND status = 'current'
+       LIMIT 1`,
+      [projectId, storagePrefix]
+    );
+    return typedRows(result, value => value as { found: number | string }).length > 0;
+  }
+
+  async createLifecycleAttempt(input: {
+    projectId: string;
+    baseAttemptId?: string | null;
+    startActivityId: string;
+    scope: System3LifecycleAttemptScope;
+    inputMode: System3LifecycleAttemptInputMode;
+    basis: System3LifecycleAttemptBasis;
+    previewHash: string;
+    idempotencyKey: string;
+    expectedVersion: number;
+    createdBy?: string | null;
+  }): Promise<System3LifecycleAttemptRecord> {
+    await this.ensureSchema();
+    return this.database.withTransaction(async query => {
+      await this.lockProject(query, input.projectId);
+      const idempotentResult = await query(
+        `SELECT * FROM remote_agent_system3_lifecycle_attempts
+         WHERE project_id = $1 AND idempotency_key = $2`,
+        [input.projectId, input.idempotencyKey]
+      );
+      const idempotent = typedRows(idempotentResult, value => value as LifecycleAttemptRow)[0];
+      if (idempotent) {
+        if (idempotent.preview_hash !== input.previewHash) {
+          throw new System3ConflictError(
+            'Idempotency key was already used for a different Lifecycle Attempt'
+          );
+        }
+        return asLifecycleAttempt(idempotent);
+      }
+      const projectResult = await query(
+        'SELECT version FROM remote_agent_system3_projects WHERE id = $1',
+        [input.projectId]
+      );
+      const project = typedRows(projectResult, value => value as { version: number | string })[0];
+      if (!project) throw new System3ConflictError('Project no longer exists');
+      if (Number(project.version) !== input.expectedVersion) {
+        throw new System3ConflictError('Project changed; preview the Lifecycle Attempt again');
+      }
+      const activeResult = await query(
+        `SELECT id, run_status FROM remote_agent_system3_lifecycle_attempts
+         WHERE project_id = $1 AND lifecycle_status = 'active'`,
+        [input.projectId]
+      );
+      const active = typedRows(
+        activeResult,
+        value => value as { id: string; run_status: System3LifecycleAttemptRunStatus }
+      )[0];
+      if (active && ['preparing', 'running', 'waiting', 'unknown'].includes(active.run_status)) {
+        throw new System3ConflictError(
+          'An active Lifecycle Attempt must be resolved before starting another'
+        );
+      }
+      if (active) {
+        await query(
+          `UPDATE remote_agent_system3_lifecycle_attempts
+           SET lifecycle_status = 'superseded' WHERE id = $1`,
+          [active.id]
+        );
+      }
+      const sequenceResult = await query(
+        `SELECT COALESCE(MAX(sequence), 0) + 1 AS next_sequence
+         FROM remote_agent_system3_lifecycle_attempts WHERE project_id = $1`,
+        [input.projectId]
+      );
+      const sequence = Number(
+        typedRows(sequenceResult, value => value as { next_sequence: number | string })[0]
+          ?.next_sequence ?? 1
+      );
+      const id = randomUUID();
+      const created = await query(
+        `INSERT INTO remote_agent_system3_lifecycle_attempts
+          (id, project_id, sequence, base_attempt_id, start_activity_id, scope, input_mode,
+           basis, preview_hash, idempotency_key, created_by_user_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+         RETURNING *`,
+        [
+          id,
+          input.projectId,
+          sequence,
+          input.baseAttemptId ?? null,
+          input.startActivityId,
+          input.scope,
+          input.inputMode,
+          JSON.stringify(input.basis),
+          input.previewHash,
+          input.idempotencyKey,
+          input.createdBy ?? null,
+        ]
+      );
+      const row = typedRows(created, value => value as LifecycleAttemptRow)[0];
+      if (!row) throw new Error('Lifecycle Attempt creation returned no row');
+      return asLifecycleAttempt(row);
+    });
+  }
+
+  async updateLifecycleAttempt(
+    projectId: string,
+    attemptId: string,
+    patch: Partial<
+      Pick<
+        System3LifecycleAttemptRecord,
+        | 'conversationId'
+        | 'isolationEnvironmentId'
+        | 'branchName'
+        | 'workingPath'
+        | 'runStatus'
+        | 'cleanupStatus'
+        | 'checkpointActivityId'
+        | 'nextActivityId'
+        | 'cleanupManifest'
+      >
+    >
+  ): Promise<System3LifecycleAttemptRecord> {
+    await this.ensureSchema();
+    return this.database.withTransaction(async query => {
+      await this.lockProject(query, projectId);
+      const currentResult = await query(
+        `SELECT * FROM remote_agent_system3_lifecycle_attempts
+         WHERE project_id = $1 AND id = $2`,
+        [projectId, attemptId]
+      );
+      const currentRow = typedRows(currentResult, value => value as LifecycleAttemptRow)[0];
+      if (!currentRow) throw new System3ConflictError('Lifecycle Attempt not found');
+      const existing = asLifecycleAttempt(currentRow);
+      const nowTerminal = patch.runStatus === 'completed' || patch.runStatus === 'failed';
+      const cleaned = patch.cleanupStatus === 'completed';
+      const updated = await query(
+        `UPDATE remote_agent_system3_lifecycle_attempts
+         SET conversation_id = COALESCE($1, conversation_id),
+             isolation_environment_id = COALESCE($2, isolation_environment_id),
+             branch_name = COALESCE($3, branch_name),
+             working_path = COALESCE($4, working_path),
+             run_status = COALESCE($5, run_status),
+             cleanup_status = COALESCE($6, cleanup_status),
+             checkpoint_activity_id = $7,
+             next_activity_id = $8,
+             cleanup_manifest = COALESCE($9, cleanup_manifest),
+             started_at = CASE WHEN $5 = 'running' AND started_at IS NULL THEN CURRENT_TIMESTAMP ELSE started_at END,
+             completed_at = CASE WHEN $10 THEN CURRENT_TIMESTAMP ELSE completed_at END,
+             cleaned_at = CASE WHEN $11 THEN CURRENT_TIMESTAMP ELSE cleaned_at END,
+             lifecycle_status = CASE WHEN $11 THEN 'cleaned' ELSE lifecycle_status END
+         WHERE id = $12 AND project_id = $13`,
+        [
+          patch.conversationId ?? null,
+          patch.isolationEnvironmentId ?? null,
+          patch.branchName ?? null,
+          patch.workingPath ?? null,
+          patch.runStatus ?? null,
+          patch.cleanupStatus ?? null,
+          Object.prototype.hasOwnProperty.call(patch, 'checkpointActivityId')
+            ? (patch.checkpointActivityId ?? null)
+            : existing.checkpointActivityId,
+          Object.prototype.hasOwnProperty.call(patch, 'nextActivityId')
+            ? (patch.nextActivityId ?? null)
+            : existing.nextActivityId,
+          patch.cleanupManifest === undefined ? null : JSON.stringify(patch.cleanupManifest),
+          nowTerminal,
+          cleaned,
+          attemptId,
+          projectId,
+        ]
+      );
+      if (updated.rowCount !== 1) {
+        throw new System3ConflictError('Lifecycle Attempt was changed by another process');
+      }
+      const refreshed = await query(
+        `SELECT * FROM remote_agent_system3_lifecycle_attempts
+         WHERE project_id = $1 AND id = $2`,
+        [projectId, attemptId]
+      );
+      const row = typedRows(refreshed, value => value as LifecycleAttemptRow)[0];
+      if (!row) throw new System3ConflictError('Lifecycle Attempt was changed by another process');
+      return asLifecycleAttempt(row);
+    });
+  }
+
   async getTraceabilitySummary(projectId: string): Promise<System3TraceabilitySummary> {
     await this.ensureSchema();
     const tableNames = [
@@ -4799,6 +6438,7 @@ export class System3Store {
     analysis: BlueprintAnalysis | null;
     decisions: System3DecisionRecord[];
     readiness: System3ReadinessContractRecord | null;
+    readinessEvaluation: System3ReadinessEvaluation | null;
     compilation: System3CompilationRecord | null;
     approval: System3ApprovalRecord | null;
     execution: System3ExecutionRecord | null;
@@ -4820,6 +6460,7 @@ export class System3Store {
       execution,
       verification,
       impacts,
+      operations,
     ] = await Promise.all([
       this.listSources(projectId),
       this.getActiveUnderstanding(projectId),
@@ -4830,7 +6471,41 @@ export class System3Store {
       this.getLatestExecution(projectId),
       this.getLatestVerification(projectId),
       this.listImpactManifests(projectId),
+      this.listOperations(projectId),
     ]);
+    const activeDecisions = snapshot
+      ? decisions.filter(decision => decision.knowledgeSnapshotId === snapshot.id)
+      : [];
+    const activeReadiness =
+      readiness?.knowledgeSnapshotId === project.activeKnowledgeSnapshotId &&
+      project.freshness === 'current'
+        ? readiness
+        : null;
+    const operationEvaluation = operations
+      .filter(
+        operation =>
+          operation.type === 'readiness' &&
+          operation.status === 'succeeded' &&
+          operation.projectVersion === project.version
+      )
+      .map(operation => system3ReadinessEvaluationSchema.safeParse(operation.result?.evaluation))
+      .find(result => result.success);
+    const contractBody = activeReadiness
+      ? system3ReadinessContractBodySchema.safeParse(activeReadiness.contract)
+      : null;
+    const readinessEvaluation = contractBody?.success
+      ? system3ReadinessEvaluationSchema.parse({
+          schemaVersion: 1,
+          status: 'passed',
+          knowledgeSnapshotId: contractBody.data.knowledgeSnapshotId,
+          projectVersion: contractBody.data.projectVersion,
+          checks: contractBody.data.checks,
+          blockerReasons: [],
+          nextAction: 'continue_compile',
+        })
+      : operationEvaluation?.success
+        ? operationEvaluation.data
+        : null;
     const activeCompilation =
       project.freshness === 'current' &&
       compilation?.knowledgeSnapshotId === project.activeKnowledgeSnapshotId
@@ -4856,12 +6531,9 @@ export class System3Store {
       project,
       sources,
       analysis: snapshot?.analysis ?? null,
-      decisions,
-      readiness:
-        readiness?.knowledgeSnapshotId === project.activeKnowledgeSnapshotId &&
-        project.freshness === 'current'
-          ? readiness
-          : null,
+      decisions: activeDecisions,
+      readiness: activeReadiness,
+      readinessEvaluation,
       compilation: activeCompilation,
       approval: activeApproval,
       execution: activeExecution,

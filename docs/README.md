@@ -8,6 +8,8 @@ Thư mục `docs/` được chia theo mục đích đọc để người dùng k
 2. Mở [10 Lifecycle Activity](lifecycle_activity/README.md) khi muốn biết một hoạt động cụ thể đang làm gì.
 3. Chỉ mở [Tài liệu kỹ thuật](technical/README.md) khi cần thiết kế API, cơ sở dữ liệu, UI, retry, bảo mật hoặc kiểm thử.
 
+Để tiếp tục hoàn thiện sản phẩm từ checkout đã kiểm tra ngày 07/09/2026, đọc [Báo cáo hiện trạng](technical/08-product-readiness-audit.md) rồi [Execution Brief và task](technical/09-product-readiness-execution-brief.md). Đây là mốc kiểm chứng có ngày và baseline cụ thể, không thay thế tài liệu thiết kế.
+
 ## Cấu trúc thư mục
 
 ```text
@@ -34,7 +36,10 @@ docs/
 │   ├── 04-understanding-ui-and-api.md
 │   ├── 05-reliability-security-and-llm.md
 │   ├── 06-implementation-and-testing.md
-│   └── 07-system3-lifecycle-ui.md
+│   ├── 07-system3-lifecycle-ui.md
+│   ├── 08-product-readiness-audit.md
+│   ├── 09-product-readiness-execution-brief.md
+│   └── 10-approved-workflow-bundle-binding-spec.md
 └── system_2/
     └── DESIGN_B_2.md                 Blueprint ví dụ đến từ System 2
 ```

@@ -19,6 +19,12 @@ function getLog(): ReturnType<typeof createLogger> {
 
 export class SqliteAdapter implements IDatabase {
   private db: Database;
+  /**
+   * bun:sqlite uses one connection per adapter. Keep asynchronous transactions
+   * exclusive so a callback which awaits cannot be interleaved by another
+   * BEGIN on the same connection.
+   */
+  private transactionQueue: Promise<void> = Promise.resolve();
   readonly dialect = 'sqlite' as const;
   readonly sql: SqlDialect = sqliteDialect;
 
@@ -100,18 +106,28 @@ export class SqliteAdapter implements IDatabase {
   async withTransaction<T>(
     fn: (query: <U>(sql: string, params?: unknown[]) => Promise<QueryResult<U>>) => Promise<T>
   ): Promise<T> {
-    await this.query('BEGIN');
+    const releaseTransactionSlot = await this.acquireTransactionSlot();
+    let transactionStarted = false;
     try {
+      // Acquire the write reservation before the callback reads state. This
+      // serializes check-then-write transactions across SQLite connections,
+      // not only through this adapter's in-process queue.
+      await this.query('BEGIN IMMEDIATE');
+      transactionStarted = true;
       const result = await fn(this.query.bind(this));
       await this.query('COMMIT');
       return result;
     } catch (e) {
-      try {
-        await this.query('ROLLBACK');
-      } catch (rollbackError) {
-        getLog().error({ err: rollbackError as Error }, 'db.sqlite_transaction_rollback_failed');
+      if (transactionStarted) {
+        try {
+          await this.query('ROLLBACK');
+        } catch (rollbackError) {
+          getLog().error({ err: rollbackError as Error }, 'db.sqlite_transaction_rollback_failed');
+        }
       }
       throw e;
+    } finally {
+      releaseTransactionSlot();
     }
   }
 
@@ -146,6 +162,16 @@ export class SqliteAdapter implements IDatabase {
       placeholderOrder.length > 0 ? placeholderOrder.map(idx => params[idx - 1]) : params;
 
     return { sql: convertedSql, params: reordered };
+  }
+
+  private async acquireTransactionSlot(): Promise<() => void> {
+    const previousTransaction = this.transactionQueue;
+    let releaseTransactionSlot: (() => void) | undefined;
+    this.transactionQueue = new Promise<void>(resolve => {
+      releaseTransactionSlot = resolve;
+    });
+    await previousTransaction;
+    return () => releaseTransactionSlot?.();
   }
 
   /**
@@ -461,6 +487,30 @@ export class SqliteAdapter implements IDatabase {
           'ALTER TABLE remote_agent_system3_knowledge_snapshots ADD COLUMN workflow_run_id TEXT REFERENCES remote_agent_workflow_runs(id) ON DELETE SET NULL'
         );
       }
+      const names = new Set(cols.map(column => column.name));
+      for (const [column, definition] of [
+        ['input_snapshot_id', 'TEXT'],
+        ['schema_version', 'INTEGER NOT NULL DEFAULT 1'],
+        ['lifecycle_status', 'TEXT'],
+        ['quality_status', 'TEXT'],
+        ['quality_report', 'TEXT'],
+        ['activated_at', 'TEXT'],
+        ['activated_by_user_id', 'TEXT'],
+      ] as const) {
+        if (!names.has(column)) {
+          this.db.run(
+            `ALTER TABLE remote_agent_system3_knowledge_snapshots ADD COLUMN ${column} ${definition}`
+          );
+        }
+      }
+      const inputCols = this.db
+        .prepare("PRAGMA table_info('remote_agent_system3_understanding_input_snapshots')")
+        .all() as { name: string }[];
+      if (!inputCols.some(column => column.name === 'source_refs')) {
+        this.db.run(
+          'ALTER TABLE remote_agent_system3_understanding_input_snapshots ADD COLUMN source_refs TEXT'
+        );
+      }
     } catch (e: unknown) {
       getLog().warn({ err: e as Error }, 'db.sqlite_migration_system3_snapshot_columns_failed');
     }
@@ -566,6 +616,11 @@ export class SqliteAdapter implements IDatabase {
       if (!colNames.has('owner_instance_id')) {
         this.db.run(
           'ALTER TABLE remote_agent_system3_project_operations ADD COLUMN owner_instance_id TEXT'
+        );
+      }
+      if (!colNames.has('owner_claim_token')) {
+        this.db.run(
+          'ALTER TABLE remote_agent_system3_project_operations ADD COLUMN owner_claim_token TEXT'
         );
       }
       if (!colNames.has('heartbeat_at')) {
@@ -1089,6 +1144,13 @@ export class SqliteAdapter implements IDatabase {
         analysis TEXT NOT NULL,
         artifact_key TEXT NOT NULL,
         workflow_run_id TEXT REFERENCES remote_agent_workflow_runs(id) ON DELETE SET NULL,
+        input_snapshot_id TEXT,
+        schema_version INTEGER NOT NULL DEFAULT 1,
+        lifecycle_status TEXT,
+        quality_status TEXT,
+        quality_report TEXT,
+        activated_at TEXT,
+        activated_by_user_id TEXT REFERENCES remote_agent_users(id) ON DELETE SET NULL,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
       CREATE TABLE IF NOT EXISTS remote_agent_system3_readiness_contracts (
@@ -1101,6 +1163,40 @@ export class SqliteAdapter implements IDatabase {
         artifact_key TEXT NOT NULL,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
+      CREATE TABLE IF NOT EXISTS remote_agent_system3_lifecycle_attempts (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE RESTRICT,
+        sequence INTEGER NOT NULL,
+        base_attempt_id TEXT REFERENCES remote_agent_system3_lifecycle_attempts(id) ON DELETE SET NULL,
+        start_activity_id TEXT NOT NULL,
+        scope TEXT NOT NULL,
+        input_mode TEXT NOT NULL,
+        basis TEXT NOT NULL,
+        preview_hash TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        conversation_id TEXT,
+        isolation_environment_id TEXT,
+        branch_name TEXT,
+        working_path TEXT,
+        lifecycle_status TEXT NOT NULL DEFAULT 'active',
+        run_status TEXT NOT NULL DEFAULT 'preparing',
+        cleanup_status TEXT NOT NULL DEFAULT 'not_started',
+        checkpoint_activity_id TEXT,
+        next_activity_id TEXT,
+        cleanup_manifest TEXT,
+        created_by_user_id TEXT REFERENCES remote_agent_users(id) ON DELETE SET NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        started_at TEXT,
+        completed_at TEXT,
+        cleaned_at TEXT,
+        UNIQUE(project_id, sequence),
+        UNIQUE(project_id, idempotency_key)
+      );
+      CREATE INDEX IF NOT EXISTS idx_system3_lifecycle_attempts_project
+        ON remote_agent_system3_lifecycle_attempts(project_id, sequence DESC);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_system3_lifecycle_attempts_one_active
+        ON remote_agent_system3_lifecycle_attempts(project_id)
+        WHERE lifecycle_status = 'active';
       CREATE TABLE IF NOT EXISTS remote_agent_system3_decisions (
         id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
@@ -1175,6 +1271,24 @@ export class SqliteAdapter implements IDatabase {
         compilation_id TEXT NOT NULL UNIQUE REFERENCES remote_agent_system3_compilations(id) ON DELETE CASCADE,
         definition_hash TEXT NOT NULL, plan TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
+      CREATE TABLE IF NOT EXISTS remote_agent_system3_workflow_bundle_snapshots (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
+        compilation_id TEXT NOT NULL REFERENCES remote_agent_system3_compilations(id) ON DELETE CASCADE,
+        activity_id TEXT NOT NULL CHECK (activity_id IN ('TW-06', 'TW-07', 'TW-09')),
+        schema_version INTEGER NOT NULL,
+        compiler_version TEXT NOT NULL,
+        template_id TEXT NOT NULL,
+        execution_mode TEXT NOT NULL CHECK (execution_mode IN ('full', 'experiment', 'delivery')),
+        definition TEXT NOT NULL,
+        definition_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(compilation_id, activity_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_system3_workflow_bundle_snapshots_project
+        ON remote_agent_system3_workflow_bundle_snapshots(project_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_system3_workflow_bundle_snapshots_compilation
+        ON remote_agent_system3_workflow_bundle_snapshots(compilation_id, activity_id);
       CREATE TABLE IF NOT EXISTS remote_agent_system3_project_transitions (
         id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES remote_agent_system3_projects(id) ON DELETE CASCADE,
         from_stage TEXT, to_stage TEXT NOT NULL,
@@ -1206,6 +1320,9 @@ export class SqliteAdapter implements IDatabase {
         approval_id TEXT NOT NULL REFERENCES remote_agent_system3_approval_manifests(id) ON DELETE RESTRICT,
         workflow_run_id TEXT NOT NULL UNIQUE REFERENCES remote_agent_workflow_runs(id) ON DELETE RESTRICT,
         definition_hash TEXT NOT NULL,
+        bundle_snapshot_id TEXT REFERENCES remote_agent_system3_workflow_bundle_snapshots(id) ON DELETE RESTRICT,
+        bundle_hash TEXT,
+        runtime_bindings TEXT,
         status TEXT NOT NULL,
         error TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -1240,6 +1357,7 @@ export class SqliteAdapter implements IDatabase {
         result TEXT,
         error TEXT,
         owner_instance_id TEXT,
+        owner_claim_token TEXT,
         heartbeat_at TEXT,
         started_at TEXT,
         finished_at TEXT,
@@ -1255,6 +1373,7 @@ export class SqliteAdapter implements IDatabase {
         workflow_run_id TEXT REFERENCES remote_agent_workflow_runs(id) ON DELETE SET NULL,
         source_ids TEXT NOT NULL,
         source_hashes TEXT NOT NULL,
+        source_refs TEXT,
         parser_version TEXT NOT NULL,
         extraction_policy_version TEXT NOT NULL,
         capability_registry_hash TEXT NOT NULL,
@@ -1287,6 +1406,9 @@ export class SqliteAdapter implements IDatabase {
         status TEXT NOT NULL,
         validator_version TEXT NOT NULL,
         basis_hash TEXT NOT NULL,
+        bundle_snapshot_id TEXT REFERENCES remote_agent_system3_workflow_bundle_snapshots(id) ON DELETE RESTRICT,
+        bundle_hash TEXT,
+        runtime_bindings TEXT,
         evidence_map TEXT,
         gate TEXT,
         error TEXT,
@@ -1317,6 +1439,9 @@ export class SqliteAdapter implements IDatabase {
         package_filename TEXT NOT NULL,
         content_hash TEXT NOT NULL,
         size_bytes INTEGER NOT NULL,
+        bundle_snapshot_id TEXT REFERENCES remote_agent_system3_workflow_bundle_snapshots(id) ON DELETE RESTRICT,
+        bundle_hash TEXT,
+        runtime_bindings TEXT,
         manifest TEXT NOT NULL,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );

@@ -74,6 +74,26 @@ describe('System 3 Source Intake validation', () => {
     }
   });
 
+  test('uses the shared CSV contract for BOM, quotes, multiline fields and row width', () => {
+    expect(() =>
+      validateSystem3Source({
+        kind: 'dataset',
+        filename: 'edge.csv',
+        bytes: bytes('\uFEFF"customer,id",target,note\n1,yes,"first\nline"\n2,,""\n'),
+      })
+    ).not.toThrow();
+
+    for (const body of [
+      'id,target,target\n1,yes,no\n',
+      'id,target\n1\n',
+      'id,target\n1,"unterminated\n',
+    ]) {
+      expect(() =>
+        validateSystem3Source({ kind: 'dataset', filename: 'invalid.csv', bytes: bytes(body) })
+      ).toThrow(System3SourceValidationError);
+    }
+  });
+
   test('rejects files larger than the source-kind policy', () => {
     const oversized = new Uint8Array(SYSTEM3_SOURCE_POLICIES.constraints.maxBytes + 1);
     try {

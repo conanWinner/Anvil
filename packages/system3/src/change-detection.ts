@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { analyzeBlueprintMarkdown } from './blueprint';
+import { parseSystem3CsvText } from './csv-contract';
 import type { System3LifecycleActivityId, System3ResourceType } from './activity-resources';
 import {
   system3ImpactChangeSchema,
@@ -311,40 +312,12 @@ function detectBlueprint(
   }
 }
 
-function parseCsv(text: string): string[][] {
-  const rows: string[][] = [];
-  let row: string[] = [];
-  let field = '';
-  let quoted = false;
-  for (let index = 0; index < text.length; index += 1) {
-    const char = text[index] ?? '';
-    if (char === '"') {
-      if (quoted && text[index + 1] === '"') {
-        field += '"';
-        index += 1;
-      } else quoted = !quoted;
-    } else if (char === ',' && !quoted) {
-      row.push(field.trim());
-      field = '';
-    } else if ((char === '\n' || char === '\r') && !quoted) {
-      if (char === '\r' && text[index + 1] === '\n') index += 1;
-      row.push(field.trim());
-      if (row.some(value => value.length > 0)) rows.push(row);
-      row = [];
-      field = '';
-    } else field += char;
-  }
-  if (field.length > 0 || row.length > 0) rows.push([...row, field.trim()]);
-  if (quoted) throw new Error('CSV contains an unterminated quoted field');
-  return rows;
-}
-
 function datasetFingerprint(text: string): {
   columns: string[];
   rowCount: number;
   rowFingerprint: string;
 } {
-  const rows = parseCsv(text);
+  const rows = parseSystem3CsvText(text);
   const columns = rows[0] ?? [];
   if (columns.length === 0) throw new Error('CSV has no header');
   const rowHashes = rows
@@ -697,9 +670,9 @@ function proposedRerun(
     return {
       mode: 'scoped',
       activityIds: [...activities],
-      executableScope: 'full',
+      executableScope: 'experiment',
       reason:
-        'Thay đổi thuộc phần dữ liệu và thử nghiệm, nhưng cách thực hiện hiện tại cần làm lại đầy đủ để tạo hồ sơ dữ liệu an toàn.',
+        'Chỉ số dòng dữ liệu thay đổi; giữ lại mã đã duyệt, áp dụng đúng Source Version mới rồi chạy lại dữ liệu, thử nghiệm và xác minh.',
     };
   }
   return {

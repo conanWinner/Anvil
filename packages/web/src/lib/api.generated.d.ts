@@ -2508,6 +2508,780 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/system3/projects/{id}/attempts/preview': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Preview a new immutable System 3 Lifecycle Attempt */
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: {
+        content: {
+          'application/json': {
+            expectedVersion: number;
+            /** Format: uuid */
+            baseAttemptId?: string | null;
+            /** @enum {string} */
+            startActivityId:
+              | 'OP-00'
+              | 'OP-01'
+              | 'TW-02'
+              | 'TW-03'
+              | 'OP-04'
+              | 'OP-05'
+              | 'TW-06'
+              | 'TW-07'
+              | 'OP-08'
+              | 'TW-09';
+            /** @enum {string} */
+            scope: 'full' | 'activity' | 'downstream';
+            /** @enum {string} */
+            inputMode: 'replay' | 'current';
+          };
+        };
+      };
+      responses: {
+        /** @description Attempt preview */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['System3LifecycleAttemptPreview'];
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/projects/{id}/attempts': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** List System 3 Lifecycle Attempts */
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Lifecycle Attempts */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': {
+              attempts: components['schemas']['System3LifecycleAttempt'][];
+            };
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    put?: never;
+    /** Create a System 3 Lifecycle Attempt */
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: {
+        content: {
+          'application/json': {
+            expectedVersion: number;
+            /** Format: uuid */
+            baseAttemptId?: string | null;
+            /** @enum {string} */
+            startActivityId:
+              | 'OP-00'
+              | 'OP-01'
+              | 'TW-02'
+              | 'TW-03'
+              | 'OP-04'
+              | 'OP-05'
+              | 'TW-06'
+              | 'TW-07'
+              | 'OP-08'
+              | 'TW-09';
+            /** @enum {string} */
+            scope: 'full' | 'activity' | 'downstream';
+            /** @enum {string} */
+            inputMode: 'replay' | 'current';
+            previewHash: string;
+            idempotencyKey: string;
+          };
+        };
+      };
+      responses: {
+        /** @description Lifecycle Attempt */
+        201: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['System3LifecycleAttempt'];
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/projects/{id}/attempts/cleanup-all': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Clean generated payload for every terminal System 3 Lifecycle Attempt */
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: {
+        content: {
+          'application/json': {
+            expectedVersion: number;
+            /** @enum {string} */
+            confirmation: 'cleanup_all_attempts';
+            /** @default false */
+            force?: boolean;
+          };
+        };
+      };
+      responses: {
+        /** @description Cleaned Lifecycle Attempts */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': {
+              attempts: components['schemas']['System3LifecycleAttempt'][];
+            };
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/projects/{id}/attempts/{attemptId}': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get a System 3 Lifecycle Attempt */
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+          attemptId: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Lifecycle Attempt */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['System3LifecycleAttempt'];
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/projects/{id}/attempts/{attemptId}/continue': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Advance a waiting System 3 Lifecycle Attempt to its next activity */
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+          attemptId: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: {
+        content: {
+          'application/json': {
+            expectedVersion: number;
+          };
+        };
+      };
+      responses: {
+        /** @description Advanced Lifecycle Attempt */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['System3LifecycleAttempt'];
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/projects/{id}/attempts/{attemptId}/cleanup': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Clean generated payload for a terminal System 3 Lifecycle Attempt */
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+          attemptId: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: {
+        content: {
+          'application/json': {
+            expectedVersion: number;
+            /** @enum {string} */
+            confirmation: 'cleanup_attempt';
+            /** @default false */
+            force?: boolean;
+          };
+        };
+      };
+      responses: {
+        /** @description Cleaned Lifecycle Attempt */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['System3LifecycleAttempt'];
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/system3/projects/{id}/flow': {
     parameters: {
       query?: never;
@@ -4230,6 +5004,7 @@ export interface paths {
                   | 'dependency_graph_snapshot'
                   | 'input_snapshot'
                   | 'knowledge_snapshot'
+                  | 'understanding_report'
                   | 'decision'
                   | 'readiness_contract'
                   | 'execution_plan'
@@ -4258,7 +5033,7 @@ export interface paths {
                 title: string;
                 summary: string;
                 /** @enum {string} */
-                status: 'pending' | 'current' | 'stale' | 'superseded' | 'failed';
+                status: 'pending' | 'candidate' | 'current' | 'stale' | 'superseded' | 'failed';
                 version: number | null;
                 /** Format: date-time */
                 createdAt: string | null;
@@ -4286,6 +5061,7 @@ export interface paths {
                   | 'dependency_graph_snapshot'
                   | 'input_snapshot'
                   | 'knowledge_snapshot'
+                  | 'understanding_report'
                   | 'decision'
                   | 'readiness_contract'
                   | 'execution_plan'
@@ -4314,7 +5090,7 @@ export interface paths {
                 title: string;
                 summary: string;
                 /** @enum {string} */
-                status: 'pending' | 'current' | 'stale' | 'superseded' | 'failed';
+                status: 'pending' | 'candidate' | 'current' | 'stale' | 'superseded' | 'failed';
                 version: number | null;
                 /** Format: date-time */
                 createdAt: string | null;
@@ -4342,6 +5118,7 @@ export interface paths {
                   | 'dependency_graph_snapshot'
                   | 'input_snapshot'
                   | 'knowledge_snapshot'
+                  | 'understanding_report'
                   | 'decision'
                   | 'readiness_contract'
                   | 'execution_plan'
@@ -4370,7 +5147,7 @@ export interface paths {
                 title: string;
                 summary: string;
                 /** @enum {string} */
-                status: 'pending' | 'current' | 'stale' | 'superseded' | 'failed';
+                status: 'pending' | 'candidate' | 'current' | 'stale' | 'superseded' | 'failed';
                 version: number | null;
                 /** Format: date-time */
                 createdAt: string | null;
@@ -4398,6 +5175,7 @@ export interface paths {
                   | 'dependency_graph_snapshot'
                   | 'input_snapshot'
                   | 'knowledge_snapshot'
+                  | 'understanding_report'
                   | 'decision'
                   | 'readiness_contract'
                   | 'execution_plan'
@@ -4426,7 +5204,7 @@ export interface paths {
                 title: string;
                 summary: string;
                 /** @enum {string} */
-                status: 'pending' | 'current' | 'stale' | 'superseded' | 'failed';
+                status: 'pending' | 'candidate' | 'current' | 'stale' | 'superseded' | 'failed';
                 version: number | null;
                 /** Format: date-time */
                 createdAt: string | null;
@@ -4461,6 +5239,7 @@ export interface paths {
                     | 'dependency_graph_snapshot'
                     | 'input_snapshot'
                     | 'knowledge_snapshot'
+                    | 'understanding_report'
                     | 'decision'
                     | 'readiness_contract'
                     | 'execution_plan'
@@ -4489,7 +5268,7 @@ export interface paths {
                   title: string;
                   summary: string;
                   /** @enum {string} */
-                  status: 'pending' | 'current' | 'stale' | 'superseded' | 'failed';
+                  status: 'pending' | 'candidate' | 'current' | 'stale' | 'superseded' | 'failed';
                   version: number | null;
                   /** Format: date-time */
                   createdAt: string | null;
@@ -4605,6 +5384,7 @@ export interface paths {
             | 'dependency_graph_snapshot'
             | 'input_snapshot'
             | 'knowledge_snapshot'
+            | 'understanding_report'
             | 'decision'
             | 'readiness_contract'
             | 'execution_plan'
@@ -4639,6 +5419,7 @@ export interface paths {
                   | 'dependency_graph_snapshot'
                   | 'input_snapshot'
                   | 'knowledge_snapshot'
+                  | 'understanding_report'
                   | 'decision'
                   | 'readiness_contract'
                   | 'execution_plan'
@@ -4667,7 +5448,7 @@ export interface paths {
                 title: string;
                 summary: string;
                 /** @enum {string} */
-                status: 'pending' | 'current' | 'stale' | 'superseded' | 'failed';
+                status: 'pending' | 'candidate' | 'current' | 'stale' | 'superseded' | 'failed';
                 version: number | null;
                 /** Format: date-time */
                 createdAt: string | null;
@@ -4712,6 +5493,24 @@ export interface paths {
                     /** @enum {string} */
                     kind: 'markdown';
                     markdown: string;
+                  }
+                | {
+                    /** @enum {string} */
+                    kind: 'citations';
+                    title: string;
+                    items: {
+                      label: string;
+                      filename: string;
+                      sourceVersionId: string;
+                      startLine: number | null;
+                      endLine: number | null;
+                      headingPath: string[];
+                      excerpt: string | null;
+                      /** @enum {string} */
+                      status: 'verified' | 'unavailable';
+                      reason: string | null;
+                      truncated: boolean;
+                    }[];
                   }
                 | {
                     /** @enum {string} */
@@ -4871,6 +5670,7 @@ export interface paths {
             | 'dependency_graph_snapshot'
             | 'input_snapshot'
             | 'knowledge_snapshot'
+            | 'understanding_report'
             | 'decision'
             | 'readiness_contract'
             | 'execution_plan'
@@ -5085,7 +5885,92 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    get?: never;
+    /** List Project Understanding snapshots */
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Project Understanding snapshot history */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['System3KnowledgeSnapshot'][];
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
     put?: never;
     /** Analyze sources into Project Understanding */
     post: {
@@ -5112,6 +5997,315 @@ export interface paths {
             'application/json': {
               operation: components['schemas']['System3Operation'];
             };
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/projects/{id}/phases/understanding/view': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get the active and candidate Project Understanding state */
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Project Understanding view */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['System3UnderstandingView'];
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/projects/{id}/knowledge-snapshots/{snapshotId}': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Get one Project Understanding snapshot */
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+          snapshotId: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Project Understanding snapshot */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['System3KnowledgeSnapshot'];
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  '/api/system3/projects/{id}/knowledge-snapshots/{snapshotId}/activate': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Activate a reviewed Project Understanding candidate */
+    post: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          id: string;
+          snapshotId: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: {
+        content: {
+          'application/json': components['schemas']['ActivateSystem3UnderstandingBody'];
+        };
+      };
+      responses: {
+        /** @description Activated Project Understanding snapshot */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['System3KnowledgeSnapshot'];
           };
         };
         /** @description Bad request */
@@ -8749,48 +9943,688 @@ export interface components {
       /** @default true */
       createManagedCodebase: boolean;
     };
+    System3LifecycleAttemptPreview: {
+      basis: {
+        /** @enum {number} */
+        schemaVersion: 1;
+        sourceVersionIds: string[];
+        sourceHashes: string[];
+        /** Format: uuid */
+        knowledgeSnapshotId: string | null;
+        /** Format: uuid */
+        readinessContractId: string | null;
+        /** Format: uuid */
+        compilationId: string | null;
+        /** Format: uuid */
+        approvalId: string | null;
+        /** Format: uuid */
+        executionId: string | null;
+        /** Format: uuid */
+        verificationId: string | null;
+        baseCommitSha: string | null;
+        resources: {
+          [key: string]: unknown;
+        };
+      };
+      previewHash: string;
+      branchHint: string;
+      activities: (
+        | 'OP-00'
+        | 'OP-01'
+        | 'TW-02'
+        | 'TW-03'
+        | 'OP-04'
+        | 'OP-05'
+        | 'TW-06'
+        | 'TW-07'
+        | 'OP-08'
+        | 'TW-09'
+      )[];
+      checkpoints: (
+        | 'OP-00'
+        | 'OP-01'
+        | 'TW-02'
+        | 'TW-03'
+        | 'OP-04'
+        | 'OP-05'
+        | 'TW-06'
+        | 'TW-07'
+        | 'OP-08'
+        | 'TW-09'
+      )[];
+      warnings: string[];
+      blockingReasons: string[];
+      canStart: boolean;
+    };
+    System3LifecycleAttempt: {
+      /** Format: uuid */
+      id: string;
+      /** Format: uuid */
+      projectId: string;
+      sequence: number;
+      /** Format: uuid */
+      baseAttemptId: string | null;
+      /** @enum {string} */
+      startActivityId:
+        | 'OP-00'
+        | 'OP-01'
+        | 'TW-02'
+        | 'TW-03'
+        | 'OP-04'
+        | 'OP-05'
+        | 'TW-06'
+        | 'TW-07'
+        | 'OP-08'
+        | 'TW-09';
+      /** @enum {string} */
+      scope: 'full' | 'activity' | 'downstream';
+      /** @enum {string} */
+      inputMode: 'replay' | 'current';
+      basis: {
+        /** @enum {number} */
+        schemaVersion: 1;
+        sourceVersionIds: string[];
+        sourceHashes: string[];
+        /** Format: uuid */
+        knowledgeSnapshotId: string | null;
+        /** Format: uuid */
+        readinessContractId: string | null;
+        /** Format: uuid */
+        compilationId: string | null;
+        /** Format: uuid */
+        approvalId: string | null;
+        /** Format: uuid */
+        executionId: string | null;
+        /** Format: uuid */
+        verificationId: string | null;
+        baseCommitSha: string | null;
+        resources: {
+          [key: string]: unknown;
+        };
+      };
+      previewHash: string;
+      /** Format: uuid */
+      conversationId: string | null;
+      /** Format: uuid */
+      isolationEnvironmentId: string | null;
+      branchName: string | null;
+      workingPath: string | null;
+      /** @enum {string} */
+      lifecycleStatus: 'active' | 'superseded' | 'cleaned';
+      /** @enum {string} */
+      runStatus: 'preparing' | 'running' | 'waiting' | 'completed' | 'failed' | 'unknown';
+      /** @enum {string} */
+      cleanupStatus: 'not_started' | 'running' | 'partial' | 'completed' | 'failed';
+      /** @enum {string|null} */
+      checkpointActivityId:
+        | 'OP-00'
+        | 'OP-01'
+        | 'TW-02'
+        | 'TW-03'
+        | 'OP-04'
+        | 'OP-05'
+        | 'TW-06'
+        | 'TW-07'
+        | 'OP-08'
+        | 'TW-09'
+        | null;
+      /** @enum {string|null} */
+      nextActivityId:
+        | 'OP-00'
+        | 'OP-01'
+        | 'TW-02'
+        | 'TW-03'
+        | 'OP-04'
+        | 'OP-05'
+        | 'TW-06'
+        | 'TW-07'
+        | 'OP-08'
+        | 'TW-09'
+        | null;
+      cleanupManifest: {
+        [key: string]: unknown;
+      } | null;
+      createdBy: string | null;
+      /** Format: date-time */
+      createdAt: string;
+      /** Format: date-time */
+      startedAt: string | null;
+      /** Format: date-time */
+      completedAt: string | null;
+      /** Format: date-time */
+      cleanedAt: string | null;
+    };
     System3ProjectFlow: {
       project: components['schemas']['System3Project'];
       sources: components['schemas']['System3Source'][];
-      analysis: {
-        /** @enum {number} */
-        schemaVersion: 1;
-        businessGoal: string | null;
-        technicalObjective: string | null;
-        targetDefinition: string | null;
-        runtime: {
-          cpuOnly: boolean;
-          ramGb: number | null;
-        };
-        requirements: {
-          id: string;
-          kind: string;
-          priority: string | null;
-          source: string | null;
-          statement: string;
-          acceptanceCriterion: string;
-          sourcePointer: string;
-        }[];
-        modules: string[];
-        manualReviews: {
-          id: string;
-          text: string;
-          sourcePointer: string;
-        }[];
-        dataset: {
-          filename: string;
-          rowCount: number;
-          columnCount: number;
-          columns: string[];
-          targetColumn: string | null;
-          targetExists: boolean;
-          targetDistribution: {
-            [key: string]: number;
-          };
-        } | null;
-      } | null;
+      analysis:
+        | {
+            /** @enum {number} */
+            schemaVersion: 1;
+            businessGoal: string | null;
+            technicalObjective: string | null;
+            targetDefinition: string | null;
+            runtime: {
+              cpuOnly: boolean;
+              ramGb: number | null;
+            };
+            requirements: {
+              id: string;
+              kind: string;
+              priority: string | null;
+              source: string | null;
+              statement: string;
+              acceptanceCriterion: string;
+              sourcePointer: string;
+            }[];
+            modules: string[];
+            manualReviews: {
+              id: string;
+              text: string;
+              sourcePointer: string;
+            }[];
+            dataset: {
+              filename: string;
+              rowCount: number;
+              columnCount: number;
+              columns: string[];
+              targetColumn: string | null;
+              targetExists: boolean;
+              targetDistribution: {
+                [key: string]: number;
+              };
+            } | null;
+          }
+        | {
+            /** @enum {number} */
+            schemaVersion: 2;
+            businessGoal: string | null;
+            technicalObjective: string | null;
+            targetDefinition: string | null;
+            runtime: {
+              cpuOnly: boolean;
+              ramGb: number | null;
+            };
+            requirements: {
+              id: string;
+              kind: string;
+              priority: string | null;
+              source: string | null;
+              statement: string;
+              acceptanceCriterion: string;
+              sourcePointer: string;
+              sourcePointers: {
+                sourceVersionId: string;
+                filename: string;
+                headingPath: string[];
+                startLine: number | null;
+                endLine: number | null;
+                jsonPointer: string | null;
+                page: number | null;
+                boundingBox: {
+                  x: number;
+                  y: number;
+                  width: number;
+                  height: number;
+                } | null;
+                excerptHash: string;
+              }[];
+            }[];
+            modules: string[];
+            manualReviews: {
+              id: string;
+              text: string;
+              sourcePointer: string;
+              sourcePointers: {
+                sourceVersionId: string;
+                filename: string;
+                headingPath: string[];
+                startLine: number | null;
+                endLine: number | null;
+                jsonPointer: string | null;
+                page: number | null;
+                boundingBox: {
+                  x: number;
+                  y: number;
+                  width: number;
+                  height: number;
+                } | null;
+                excerptHash: string;
+              }[];
+            }[];
+            dataset: {
+              filename: string;
+              rowCount: number;
+              columnCount: number;
+              columns: string[];
+              targetColumn: string | null;
+              targetExists: boolean;
+              targetDistribution: {
+                [key: string]: number;
+              };
+            } | null;
+            problemProfile: {
+              businessGoal: {
+                value: string;
+                /** @enum {string} */
+                status:
+                  | 'confirmed'
+                  | 'declared_unverified'
+                  | 'assumption'
+                  | 'conflict'
+                  | 'missing'
+                  | 'blocked'
+                  | 'stale';
+                sourcePointers: {
+                  sourceVersionId: string;
+                  filename: string;
+                  headingPath: string[];
+                  startLine: number | null;
+                  endLine: number | null;
+                  jsonPointer: string | null;
+                  page: number | null;
+                  boundingBox: {
+                    x: number;
+                    y: number;
+                    width: number;
+                    height: number;
+                  } | null;
+                  excerptHash: string;
+                }[];
+              } | null;
+              technicalObjective: {
+                value: string;
+                /** @enum {string} */
+                status:
+                  | 'confirmed'
+                  | 'declared_unverified'
+                  | 'assumption'
+                  | 'conflict'
+                  | 'missing'
+                  | 'blocked'
+                  | 'stale';
+                sourcePointers: {
+                  sourceVersionId: string;
+                  filename: string;
+                  headingPath: string[];
+                  startLine: number | null;
+                  endLine: number | null;
+                  jsonPointer: string | null;
+                  page: number | null;
+                  boundingBox: {
+                    x: number;
+                    y: number;
+                    width: number;
+                    height: number;
+                  } | null;
+                  excerptHash: string;
+                }[];
+              } | null;
+              successCriteria: {
+                value: string;
+                /** @enum {string} */
+                status:
+                  | 'confirmed'
+                  | 'declared_unverified'
+                  | 'assumption'
+                  | 'conflict'
+                  | 'missing'
+                  | 'blocked'
+                  | 'stale';
+                sourcePointers: {
+                  sourceVersionId: string;
+                  filename: string;
+                  headingPath: string[];
+                  startLine: number | null;
+                  endLine: number | null;
+                  jsonPointer: string | null;
+                  page: number | null;
+                  boundingBox: {
+                    x: number;
+                    y: number;
+                    width: number;
+                    height: number;
+                  } | null;
+                  excerptHash: string;
+                }[];
+              }[];
+              constraints: {
+                value: string;
+                /** @enum {string} */
+                status:
+                  | 'confirmed'
+                  | 'declared_unverified'
+                  | 'assumption'
+                  | 'conflict'
+                  | 'missing'
+                  | 'blocked'
+                  | 'stale';
+                sourcePointers: {
+                  sourceVersionId: string;
+                  filename: string;
+                  headingPath: string[];
+                  startLine: number | null;
+                  endLine: number | null;
+                  jsonPointer: string | null;
+                  page: number | null;
+                  boundingBox: {
+                    x: number;
+                    y: number;
+                    width: number;
+                    height: number;
+                  } | null;
+                  excerptHash: string;
+                }[];
+              }[];
+            };
+            datasetUnderstanding: {
+              /** @enum {string} */
+              availability: 'not_linked' | 'linked' | 'inaccessible';
+              declaration: {
+                /** @enum {string} */
+                availability: 'declared_unverified';
+                unitOfAnalysis: string | null;
+                targetColumn: string | null;
+                targetDefinition: string | null;
+                expectedColumns: string[];
+                constraints: string[];
+                sourcePointers: {
+                  sourceVersionId: string;
+                  filename: string;
+                  headingPath: string[];
+                  startLine: number | null;
+                  endLine: number | null;
+                  jsonPointer: string | null;
+                  page: number | null;
+                  boundingBox: {
+                    x: number;
+                    y: number;
+                    width: number;
+                    height: number;
+                  } | null;
+                  excerptHash: string;
+                }[];
+              } | null;
+              profile: {
+                filename: string;
+                sourceVersionId: string;
+                rowCount: number;
+                columnCount: number;
+                columns: {
+                  name: string;
+                  /** @enum {string} */
+                  inferredType: 'empty' | 'boolean' | 'integer' | 'number' | 'datetime' | 'string';
+                  missingCount: number;
+                  distinctCount: number;
+                }[];
+                targetColumn: string | null;
+                targetExists: boolean;
+                targetDistribution: {
+                  [key: string]: number;
+                };
+                targetOtherCount: number;
+                duplicateRowCount: number;
+                invalidRowCount: number;
+                rowFingerprint?: string;
+                limits?: {
+                  maxRows: number;
+                  maxColumns: number;
+                  maxRecordBytes: number;
+                  maxDistinctValuesPerColumn: number;
+                  maxTrackedDistinctValues: number;
+                };
+              } | null;
+              /** @enum {string} */
+              comparisonStatus: 'not_checked' | 'matched' | 'mismatch';
+              issues: {
+                id: string;
+                /** @enum {string} */
+                kind:
+                  | 'manual_review'
+                  | 'missing_required_field'
+                  | 'conflict'
+                  | 'invalid_reference'
+                  | 'duplicate_identifier'
+                  | 'unsupported_content'
+                  | 'unclassified_content'
+                  | 'dataset_mismatch'
+                  | 'semantic_assistance';
+                /** @enum {string} */
+                severity: 'warning' | 'revision_required' | 'blocking';
+                title: string;
+                detail: string;
+                requiresDecision: boolean;
+                decisionBinding?:
+                  | {
+                      /** @enum {string} */
+                      kind: 'dataset_target_column';
+                      allowedValues: string[];
+                    }
+                  | unknown;
+                sourcePointers: {
+                  sourceVersionId: string;
+                  filename: string;
+                  headingPath: string[];
+                  startLine: number | null;
+                  endLine: number | null;
+                  jsonPointer: string | null;
+                  page: number | null;
+                  boundingBox: {
+                    x: number;
+                    y: number;
+                    width: number;
+                    height: number;
+                  } | null;
+                  excerptHash: string;
+                }[];
+              }[];
+            };
+            pipeline: {
+              id: string;
+              name: string;
+              inputs: string[];
+              outputs: string[];
+              requirementIds: string[];
+              sourcePointers: {
+                sourceVersionId: string;
+                filename: string;
+                headingPath: string[];
+                startLine: number | null;
+                endLine: number | null;
+                jsonPointer: string | null;
+                page: number | null;
+                boundingBox: {
+                  x: number;
+                  y: number;
+                  width: number;
+                  height: number;
+                } | null;
+                excerptHash: string;
+              }[];
+            }[];
+            technologyStack: {
+              name: string;
+              purpose: string | null;
+              category: string | null;
+              rationale: string | null;
+              tradeoffs: string[];
+              requirementIds: string[];
+              sourcePointers: {
+                sourceVersionId: string;
+                filename: string;
+                headingPath: string[];
+                startLine: number | null;
+                endLine: number | null;
+                jsonPointer: string | null;
+                page: number | null;
+                boundingBox: {
+                  x: number;
+                  y: number;
+                  width: number;
+                  height: number;
+                } | null;
+                excerptHash: string;
+              }[];
+            }[];
+            moduleDesign: {
+              id: string;
+              name: string;
+              responsibility: string | null;
+              inputs: string[];
+              outputs: string[];
+              requirementIds: string[];
+              dependencies: string[];
+              sourcePointers: {
+                sourceVersionId: string;
+                filename: string;
+                headingPath: string[];
+                startLine: number | null;
+                endLine: number | null;
+                jsonPointer: string | null;
+                page: number | null;
+                boundingBox: {
+                  x: number;
+                  y: number;
+                  width: number;
+                  height: number;
+                } | null;
+                excerptHash: string;
+              }[];
+            }[];
+            executionBlueprint: {
+              id: string | null;
+              /** @enum {string} */
+              kind: 'folder' | 'file' | 'class' | 'function' | 'configuration' | 'unknown';
+              name: string;
+              parameters: string[];
+              returns: string[];
+              moduleIds: string[];
+              requirementIds: string[];
+              sourcePointers: {
+                sourceVersionId: string;
+                filename: string;
+                headingPath: string[];
+                startLine: number | null;
+                endLine: number | null;
+                jsonPointer: string | null;
+                page: number | null;
+                boundingBox: {
+                  x: number;
+                  y: number;
+                  width: number;
+                  height: number;
+                } | null;
+                excerptHash: string;
+              }[];
+            }[];
+            extractionQuality: {
+              /** @enum {string} */
+              status: 'passed' | 'decision_required' | 'revision_required' | 'blocked';
+              parserVersion: string;
+              extractionPolicyVersion: string;
+              headingAliasVersion: string;
+              totalComponents: number;
+              extractedComponents: number;
+              ignoredComponents: number;
+              unsupportedComponents: number;
+              unclassifiedComponents: number;
+              missingChapters: (
+                | 'problem_profile'
+                | 'requirements_contract'
+                | 'high_level_pipeline'
+                | 'technology_stack'
+                | 'modular_design'
+                | 'execution_blueprint'
+              )[];
+              issues: {
+                id: string;
+                /** @enum {string} */
+                kind:
+                  | 'manual_review'
+                  | 'missing_required_field'
+                  | 'conflict'
+                  | 'invalid_reference'
+                  | 'duplicate_identifier'
+                  | 'unsupported_content'
+                  | 'unclassified_content'
+                  | 'dataset_mismatch'
+                  | 'semantic_assistance';
+                /** @enum {string} */
+                severity: 'warning' | 'revision_required' | 'blocking';
+                title: string;
+                detail: string;
+                requiresDecision: boolean;
+                decisionBinding?:
+                  | {
+                      /** @enum {string} */
+                      kind: 'dataset_target_column';
+                      allowedValues: string[];
+                    }
+                  | unknown;
+                sourcePointers: {
+                  sourceVersionId: string;
+                  filename: string;
+                  headingPath: string[];
+                  startLine: number | null;
+                  endLine: number | null;
+                  jsonPointer: string | null;
+                  page: number | null;
+                  boundingBox: {
+                    x: number;
+                    y: number;
+                    width: number;
+                    height: number;
+                  } | null;
+                  excerptHash: string;
+                }[];
+              }[];
+              coverage: {
+                componentId: string;
+                /** @enum {string} */
+                kind:
+                  | 'heading'
+                  | 'paragraph'
+                  | 'list'
+                  | 'table'
+                  | 'code'
+                  | 'blockquote'
+                  | 'unsupported';
+                /** @enum {string|null} */
+                chapter:
+                  | 'problem_profile'
+                  | 'requirements_contract'
+                  | 'high_level_pipeline'
+                  | 'technology_stack'
+                  | 'modular_design'
+                  | 'execution_blueprint'
+                  | null;
+                headingPath: string[];
+                /** @enum {string} */
+                status: 'extracted' | 'ignored_with_reason' | 'unsupported' | 'unclassified';
+                reason: string;
+                sourcePointer: {
+                  sourceVersionId: string;
+                  filename: string;
+                  headingPath: string[];
+                  startLine: number | null;
+                  endLine: number | null;
+                  jsonPointer: string | null;
+                  page: number | null;
+                  boundingBox: {
+                    x: number;
+                    y: number;
+                    width: number;
+                    height: number;
+                  } | null;
+                  excerptHash: string;
+                };
+              }[];
+            };
+          }
+        | unknown;
       decisions: components['schemas']['System3Decision'][];
       readiness: components['schemas']['System3ReadinessContract'];
+      readinessEvaluation: components['schemas']['System3ReadinessEvaluation'];
       compilation: {
         /** Format: uuid */
         id: string;
@@ -8990,6 +10824,7 @@ export interface components {
               | 'dependency_graph_snapshot'
               | 'input_snapshot'
               | 'knowledge_snapshot'
+              | 'understanding_report'
               | 'decision'
               | 'readiness_contract'
               | 'execution_plan'
@@ -9026,6 +10861,7 @@ export interface components {
               | 'dependency_graph_snapshot'
               | 'input_snapshot'
               | 'knowledge_snapshot'
+              | 'understanding_report'
               | 'decision'
               | 'readiness_contract'
               | 'execution_plan'
@@ -9190,6 +11026,13 @@ export interface components {
       why: string;
       recommendation: string;
       options: string[];
+      binding:
+        | {
+            /** @enum {string} */
+            kind: 'dataset_target_column';
+            allowedValues: string[];
+          }
+        | unknown;
       affectedPhases: string[];
       /** @enum {string} */
       status: 'pending' | 'answered';
@@ -9215,6 +11058,38 @@ export interface components {
       artifactKey: string;
       /** Format: date-time */
       createdAt: string;
+    } | null;
+    System3ReadinessEvaluation: {
+      /** @enum {number} */
+      schemaVersion: 1;
+      /** @enum {string} */
+      status: 'passed' | 'decision_required' | 'data_required' | 'blocked';
+      /** Format: uuid */
+      knowledgeSnapshotId: string;
+      projectVersion: number;
+      checks: {
+        id: string;
+        label: string;
+        /** @enum {string} */
+        status: 'passed' | 'failed';
+        message: string;
+        /** @enum {string|null} */
+        nextAction:
+          | 'continue_compile'
+          | 'answer_decisions'
+          | 'link_dataset'
+          | 'review_understanding'
+          | 'configure_runtime'
+          | null;
+      }[];
+      blockerReasons: string[];
+      /** @enum {string} */
+      nextAction:
+        | 'continue_compile'
+        | 'answer_decisions'
+        | 'link_dataset'
+        | 'review_understanding'
+        | 'configure_runtime';
     } | null;
     System3SourceIntakeReportView: {
       /** Format: uuid */
@@ -9320,6 +11195,7 @@ export interface components {
         | 'source_intake'
         | 'change_detection'
         | 'analyze'
+        | 'activate_understanding'
         | 'readiness'
         | 'compile'
         | 'execute'
@@ -9388,6 +11264,12 @@ export interface components {
       approvalId: string;
       workflowRunId: string;
       definitionHash: string;
+      /** Format: uuid */
+      bundleSnapshotId: string | null;
+      bundleHash: string | null;
+      runtimeBindings: {
+        [key: string]: unknown;
+      } | null;
       /** @enum {string} */
       status: 'accepted' | 'running' | 'completed' | 'failed';
       error: string | null;
@@ -9557,6 +11439,12 @@ export interface components {
       status: 'accepted' | 'running' | 'completed' | 'failed';
       validatorVersion: string;
       basisHash: string;
+      /** Format: uuid */
+      bundleSnapshotId: string | null;
+      bundleHash: string | null;
+      runtimeBindings: {
+        [key: string]: unknown;
+      } | null;
       evidenceMap: {
         [key: string]: unknown;
       } | null;
@@ -9607,6 +11495,694 @@ export interface components {
       intakeReport?: components['schemas']['System3SourceIntakeReportView'];
     };
     AnalyzeSystem3ProjectBody: {
+      expectedVersion: number;
+    };
+    System3UnderstandingView: {
+      projectVersion: number;
+      activeSnapshot: components['schemas']['System3KnowledgeSnapshot'];
+      candidateSnapshot: components['schemas']['System3KnowledgeSnapshot'];
+      inputSnapshot: components['schemas']['System3UnderstandingInputSnapshot'];
+      decisions: components['schemas']['System3Decision'][];
+      canActivate: boolean;
+      blockingReasons: string[];
+    };
+    System3KnowledgeSnapshot: {
+      /** Format: uuid */
+      id: string;
+      /** Format: uuid */
+      projectId: string;
+      analysis:
+        | {
+            /** @enum {number} */
+            schemaVersion: 1;
+            businessGoal: string | null;
+            technicalObjective: string | null;
+            targetDefinition: string | null;
+            runtime: {
+              cpuOnly: boolean;
+              ramGb: number | null;
+            };
+            requirements: {
+              id: string;
+              kind: string;
+              priority: string | null;
+              source: string | null;
+              statement: string;
+              acceptanceCriterion: string;
+              sourcePointer: string;
+            }[];
+            modules: string[];
+            manualReviews: {
+              id: string;
+              text: string;
+              sourcePointer: string;
+            }[];
+            dataset: {
+              filename: string;
+              rowCount: number;
+              columnCount: number;
+              columns: string[];
+              targetColumn: string | null;
+              targetExists: boolean;
+              targetDistribution: {
+                [key: string]: number;
+              };
+            } | null;
+          }
+        | {
+            /** @enum {number} */
+            schemaVersion: 2;
+            businessGoal: string | null;
+            technicalObjective: string | null;
+            targetDefinition: string | null;
+            runtime: {
+              cpuOnly: boolean;
+              ramGb: number | null;
+            };
+            requirements: {
+              id: string;
+              kind: string;
+              priority: string | null;
+              source: string | null;
+              statement: string;
+              acceptanceCriterion: string;
+              sourcePointer: string;
+              sourcePointers: {
+                sourceVersionId: string;
+                filename: string;
+                headingPath: string[];
+                startLine: number | null;
+                endLine: number | null;
+                jsonPointer: string | null;
+                page: number | null;
+                boundingBox: {
+                  x: number;
+                  y: number;
+                  width: number;
+                  height: number;
+                } | null;
+                excerptHash: string;
+              }[];
+            }[];
+            modules: string[];
+            manualReviews: {
+              id: string;
+              text: string;
+              sourcePointer: string;
+              sourcePointers: {
+                sourceVersionId: string;
+                filename: string;
+                headingPath: string[];
+                startLine: number | null;
+                endLine: number | null;
+                jsonPointer: string | null;
+                page: number | null;
+                boundingBox: {
+                  x: number;
+                  y: number;
+                  width: number;
+                  height: number;
+                } | null;
+                excerptHash: string;
+              }[];
+            }[];
+            dataset: {
+              filename: string;
+              rowCount: number;
+              columnCount: number;
+              columns: string[];
+              targetColumn: string | null;
+              targetExists: boolean;
+              targetDistribution: {
+                [key: string]: number;
+              };
+            } | null;
+            problemProfile: {
+              businessGoal: {
+                value: string;
+                /** @enum {string} */
+                status:
+                  | 'confirmed'
+                  | 'declared_unverified'
+                  | 'assumption'
+                  | 'conflict'
+                  | 'missing'
+                  | 'blocked'
+                  | 'stale';
+                sourcePointers: {
+                  sourceVersionId: string;
+                  filename: string;
+                  headingPath: string[];
+                  startLine: number | null;
+                  endLine: number | null;
+                  jsonPointer: string | null;
+                  page: number | null;
+                  boundingBox: {
+                    x: number;
+                    y: number;
+                    width: number;
+                    height: number;
+                  } | null;
+                  excerptHash: string;
+                }[];
+              } | null;
+              technicalObjective: {
+                value: string;
+                /** @enum {string} */
+                status:
+                  | 'confirmed'
+                  | 'declared_unverified'
+                  | 'assumption'
+                  | 'conflict'
+                  | 'missing'
+                  | 'blocked'
+                  | 'stale';
+                sourcePointers: {
+                  sourceVersionId: string;
+                  filename: string;
+                  headingPath: string[];
+                  startLine: number | null;
+                  endLine: number | null;
+                  jsonPointer: string | null;
+                  page: number | null;
+                  boundingBox: {
+                    x: number;
+                    y: number;
+                    width: number;
+                    height: number;
+                  } | null;
+                  excerptHash: string;
+                }[];
+              } | null;
+              successCriteria: {
+                value: string;
+                /** @enum {string} */
+                status:
+                  | 'confirmed'
+                  | 'declared_unverified'
+                  | 'assumption'
+                  | 'conflict'
+                  | 'missing'
+                  | 'blocked'
+                  | 'stale';
+                sourcePointers: {
+                  sourceVersionId: string;
+                  filename: string;
+                  headingPath: string[];
+                  startLine: number | null;
+                  endLine: number | null;
+                  jsonPointer: string | null;
+                  page: number | null;
+                  boundingBox: {
+                    x: number;
+                    y: number;
+                    width: number;
+                    height: number;
+                  } | null;
+                  excerptHash: string;
+                }[];
+              }[];
+              constraints: {
+                value: string;
+                /** @enum {string} */
+                status:
+                  | 'confirmed'
+                  | 'declared_unverified'
+                  | 'assumption'
+                  | 'conflict'
+                  | 'missing'
+                  | 'blocked'
+                  | 'stale';
+                sourcePointers: {
+                  sourceVersionId: string;
+                  filename: string;
+                  headingPath: string[];
+                  startLine: number | null;
+                  endLine: number | null;
+                  jsonPointer: string | null;
+                  page: number | null;
+                  boundingBox: {
+                    x: number;
+                    y: number;
+                    width: number;
+                    height: number;
+                  } | null;
+                  excerptHash: string;
+                }[];
+              }[];
+            };
+            datasetUnderstanding: {
+              /** @enum {string} */
+              availability: 'not_linked' | 'linked' | 'inaccessible';
+              declaration: {
+                /** @enum {string} */
+                availability: 'declared_unverified';
+                unitOfAnalysis: string | null;
+                targetColumn: string | null;
+                targetDefinition: string | null;
+                expectedColumns: string[];
+                constraints: string[];
+                sourcePointers: {
+                  sourceVersionId: string;
+                  filename: string;
+                  headingPath: string[];
+                  startLine: number | null;
+                  endLine: number | null;
+                  jsonPointer: string | null;
+                  page: number | null;
+                  boundingBox: {
+                    x: number;
+                    y: number;
+                    width: number;
+                    height: number;
+                  } | null;
+                  excerptHash: string;
+                }[];
+              } | null;
+              profile: {
+                filename: string;
+                sourceVersionId: string;
+                rowCount: number;
+                columnCount: number;
+                columns: {
+                  name: string;
+                  /** @enum {string} */
+                  inferredType: 'empty' | 'boolean' | 'integer' | 'number' | 'datetime' | 'string';
+                  missingCount: number;
+                  distinctCount: number;
+                }[];
+                targetColumn: string | null;
+                targetExists: boolean;
+                targetDistribution: {
+                  [key: string]: number;
+                };
+                targetOtherCount: number;
+                duplicateRowCount: number;
+                invalidRowCount: number;
+                rowFingerprint?: string;
+                limits?: {
+                  maxRows: number;
+                  maxColumns: number;
+                  maxRecordBytes: number;
+                  maxDistinctValuesPerColumn: number;
+                  maxTrackedDistinctValues: number;
+                };
+              } | null;
+              /** @enum {string} */
+              comparisonStatus: 'not_checked' | 'matched' | 'mismatch';
+              issues: {
+                id: string;
+                /** @enum {string} */
+                kind:
+                  | 'manual_review'
+                  | 'missing_required_field'
+                  | 'conflict'
+                  | 'invalid_reference'
+                  | 'duplicate_identifier'
+                  | 'unsupported_content'
+                  | 'unclassified_content'
+                  | 'dataset_mismatch'
+                  | 'semantic_assistance';
+                /** @enum {string} */
+                severity: 'warning' | 'revision_required' | 'blocking';
+                title: string;
+                detail: string;
+                requiresDecision: boolean;
+                decisionBinding?:
+                  | {
+                      /** @enum {string} */
+                      kind: 'dataset_target_column';
+                      allowedValues: string[];
+                    }
+                  | unknown;
+                sourcePointers: {
+                  sourceVersionId: string;
+                  filename: string;
+                  headingPath: string[];
+                  startLine: number | null;
+                  endLine: number | null;
+                  jsonPointer: string | null;
+                  page: number | null;
+                  boundingBox: {
+                    x: number;
+                    y: number;
+                    width: number;
+                    height: number;
+                  } | null;
+                  excerptHash: string;
+                }[];
+              }[];
+            };
+            pipeline: {
+              id: string;
+              name: string;
+              inputs: string[];
+              outputs: string[];
+              requirementIds: string[];
+              sourcePointers: {
+                sourceVersionId: string;
+                filename: string;
+                headingPath: string[];
+                startLine: number | null;
+                endLine: number | null;
+                jsonPointer: string | null;
+                page: number | null;
+                boundingBox: {
+                  x: number;
+                  y: number;
+                  width: number;
+                  height: number;
+                } | null;
+                excerptHash: string;
+              }[];
+            }[];
+            technologyStack: {
+              name: string;
+              purpose: string | null;
+              category: string | null;
+              rationale: string | null;
+              tradeoffs: string[];
+              requirementIds: string[];
+              sourcePointers: {
+                sourceVersionId: string;
+                filename: string;
+                headingPath: string[];
+                startLine: number | null;
+                endLine: number | null;
+                jsonPointer: string | null;
+                page: number | null;
+                boundingBox: {
+                  x: number;
+                  y: number;
+                  width: number;
+                  height: number;
+                } | null;
+                excerptHash: string;
+              }[];
+            }[];
+            moduleDesign: {
+              id: string;
+              name: string;
+              responsibility: string | null;
+              inputs: string[];
+              outputs: string[];
+              requirementIds: string[];
+              dependencies: string[];
+              sourcePointers: {
+                sourceVersionId: string;
+                filename: string;
+                headingPath: string[];
+                startLine: number | null;
+                endLine: number | null;
+                jsonPointer: string | null;
+                page: number | null;
+                boundingBox: {
+                  x: number;
+                  y: number;
+                  width: number;
+                  height: number;
+                } | null;
+                excerptHash: string;
+              }[];
+            }[];
+            executionBlueprint: {
+              id: string | null;
+              /** @enum {string} */
+              kind: 'folder' | 'file' | 'class' | 'function' | 'configuration' | 'unknown';
+              name: string;
+              parameters: string[];
+              returns: string[];
+              moduleIds: string[];
+              requirementIds: string[];
+              sourcePointers: {
+                sourceVersionId: string;
+                filename: string;
+                headingPath: string[];
+                startLine: number | null;
+                endLine: number | null;
+                jsonPointer: string | null;
+                page: number | null;
+                boundingBox: {
+                  x: number;
+                  y: number;
+                  width: number;
+                  height: number;
+                } | null;
+                excerptHash: string;
+              }[];
+            }[];
+            extractionQuality: {
+              /** @enum {string} */
+              status: 'passed' | 'decision_required' | 'revision_required' | 'blocked';
+              parserVersion: string;
+              extractionPolicyVersion: string;
+              headingAliasVersion: string;
+              totalComponents: number;
+              extractedComponents: number;
+              ignoredComponents: number;
+              unsupportedComponents: number;
+              unclassifiedComponents: number;
+              missingChapters: (
+                | 'problem_profile'
+                | 'requirements_contract'
+                | 'high_level_pipeline'
+                | 'technology_stack'
+                | 'modular_design'
+                | 'execution_blueprint'
+              )[];
+              issues: {
+                id: string;
+                /** @enum {string} */
+                kind:
+                  | 'manual_review'
+                  | 'missing_required_field'
+                  | 'conflict'
+                  | 'invalid_reference'
+                  | 'duplicate_identifier'
+                  | 'unsupported_content'
+                  | 'unclassified_content'
+                  | 'dataset_mismatch'
+                  | 'semantic_assistance';
+                /** @enum {string} */
+                severity: 'warning' | 'revision_required' | 'blocking';
+                title: string;
+                detail: string;
+                requiresDecision: boolean;
+                decisionBinding?:
+                  | {
+                      /** @enum {string} */
+                      kind: 'dataset_target_column';
+                      allowedValues: string[];
+                    }
+                  | unknown;
+                sourcePointers: {
+                  sourceVersionId: string;
+                  filename: string;
+                  headingPath: string[];
+                  startLine: number | null;
+                  endLine: number | null;
+                  jsonPointer: string | null;
+                  page: number | null;
+                  boundingBox: {
+                    x: number;
+                    y: number;
+                    width: number;
+                    height: number;
+                  } | null;
+                  excerptHash: string;
+                }[];
+              }[];
+              coverage: {
+                componentId: string;
+                /** @enum {string} */
+                kind:
+                  | 'heading'
+                  | 'paragraph'
+                  | 'list'
+                  | 'table'
+                  | 'code'
+                  | 'blockquote'
+                  | 'unsupported';
+                /** @enum {string|null} */
+                chapter:
+                  | 'problem_profile'
+                  | 'requirements_contract'
+                  | 'high_level_pipeline'
+                  | 'technology_stack'
+                  | 'modular_design'
+                  | 'execution_blueprint'
+                  | null;
+                headingPath: string[];
+                /** @enum {string} */
+                status: 'extracted' | 'ignored_with_reason' | 'unsupported' | 'unclassified';
+                reason: string;
+                sourcePointer: {
+                  sourceVersionId: string;
+                  filename: string;
+                  headingPath: string[];
+                  startLine: number | null;
+                  endLine: number | null;
+                  jsonPointer: string | null;
+                  page: number | null;
+                  boundingBox: {
+                    x: number;
+                    y: number;
+                    width: number;
+                    height: number;
+                  } | null;
+                  excerptHash: string;
+                };
+              }[];
+            };
+          };
+      artifactKey: string;
+      workflowRunId: string | null;
+      /** Format: uuid */
+      inputSnapshotId: string | null;
+      schemaVersion: number;
+      /** @enum {string} */
+      lifecycleStatus: 'candidate' | 'active' | 'superseded' | 'stale';
+      /** @enum {string|null} */
+      qualityStatus: 'passed' | 'decision_required' | 'revision_required' | 'blocked' | null;
+      qualityReport: {
+        /** @enum {string} */
+        status: 'passed' | 'decision_required' | 'revision_required' | 'blocked';
+        parserVersion: string;
+        extractionPolicyVersion: string;
+        headingAliasVersion: string;
+        totalComponents: number;
+        extractedComponents: number;
+        ignoredComponents: number;
+        unsupportedComponents: number;
+        unclassifiedComponents: number;
+        missingChapters: (
+          | 'problem_profile'
+          | 'requirements_contract'
+          | 'high_level_pipeline'
+          | 'technology_stack'
+          | 'modular_design'
+          | 'execution_blueprint'
+        )[];
+        issues: {
+          id: string;
+          /** @enum {string} */
+          kind:
+            | 'manual_review'
+            | 'missing_required_field'
+            | 'conflict'
+            | 'invalid_reference'
+            | 'duplicate_identifier'
+            | 'unsupported_content'
+            | 'unclassified_content'
+            | 'dataset_mismatch'
+            | 'semantic_assistance';
+          /** @enum {string} */
+          severity: 'warning' | 'revision_required' | 'blocking';
+          title: string;
+          detail: string;
+          requiresDecision: boolean;
+          decisionBinding?:
+            | {
+                /** @enum {string} */
+                kind: 'dataset_target_column';
+                allowedValues: string[];
+              }
+            | unknown;
+          sourcePointers: {
+            sourceVersionId: string;
+            filename: string;
+            headingPath: string[];
+            startLine: number | null;
+            endLine: number | null;
+            jsonPointer: string | null;
+            page: number | null;
+            boundingBox: {
+              x: number;
+              y: number;
+              width: number;
+              height: number;
+            } | null;
+            excerptHash: string;
+          }[];
+        }[];
+        coverage: {
+          componentId: string;
+          /** @enum {string} */
+          kind: 'heading' | 'paragraph' | 'list' | 'table' | 'code' | 'blockquote' | 'unsupported';
+          /** @enum {string|null} */
+          chapter:
+            | 'problem_profile'
+            | 'requirements_contract'
+            | 'high_level_pipeline'
+            | 'technology_stack'
+            | 'modular_design'
+            | 'execution_blueprint'
+            | null;
+          headingPath: string[];
+          /** @enum {string} */
+          status: 'extracted' | 'ignored_with_reason' | 'unsupported' | 'unclassified';
+          reason: string;
+          sourcePointer: {
+            sourceVersionId: string;
+            filename: string;
+            headingPath: string[];
+            startLine: number | null;
+            endLine: number | null;
+            jsonPointer: string | null;
+            page: number | null;
+            boundingBox: {
+              x: number;
+              y: number;
+              width: number;
+              height: number;
+            } | null;
+            excerptHash: string;
+          };
+        }[];
+      } | null;
+      /** Format: date-time */
+      activatedAt: string | null;
+      activatedBy: string | null;
+      /** Format: date-time */
+      createdAt: string;
+    } | null;
+    System3UnderstandingInputSnapshot: {
+      /** Format: uuid */
+      id: string;
+      /** Format: uuid */
+      projectId: string;
+      /** Format: uuid */
+      operationId: string;
+      /** Format: uuid */
+      knowledgeSnapshotId: string | null;
+      workflowRunId: string | null;
+      sourceIds: string[];
+      sourceHashes: string[];
+      sourceRefs: {
+        /** Format: uuid */
+        sourceVersionId: string;
+        /** @enum {string} */
+        kind:
+          | 'blueprint'
+          | 'dataset'
+          | 'constraints'
+          | 'data_dictionary'
+          | 'user_brief'
+          | 'supporting_document';
+        filename: string;
+        mediaType: string;
+        contentHash: string;
+      }[];
+      parserVersion: string;
+      extractionPolicyVersion: string;
+      capabilityRegistryHash: string;
+      runtimeProfile: {
+        [key: string]: unknown;
+      };
+      /** Format: date-time */
+      createdAt: string;
+    } | null;
+    ActivateSystem3UnderstandingBody: {
       expectedVersion: number;
     };
     AnswerSystem3DecisionBody: {

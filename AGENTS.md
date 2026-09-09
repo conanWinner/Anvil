@@ -1,1098 +1,263 @@
-## Project Overview
+# Anvil Agent Instructions
 
-**Anvil** is the product and platform name. Anvil lets developers control AI coding assistants (Claude Code SDK, Codex SDK, and other registered providers) from Web, CLI, Slack, Telegram, GitHub, and other adapters. It is built with **Bun + TypeScript + SQLite/PostgreSQL** and prioritizes simplicity, flexibility, reproducibility, and user control.
+## Scope and Instruction Priority
 
-**System 3** is a first-class product domain inside Anvil. It manages a project's lifecycle from source intake through verified delivery. System 3 is not the name of the whole product, and it is not a replacement name for Anvil's generic workflow engine.
+- These instructions apply to the Anvil repository.
+- Follow higher-priority global and user instructions first.
+- Start with read-only inspection. Preserve unrelated and pre-existing worktree changes.
+- Treat live code, tests, schemas, and Git state as evidence of current behavior. Documentation may describe target design and is not proof of implementation.
+- Keep changes scoped, reversible, and proportionate to the request. Do not publish, merge, or mutate external systems unless the user authorizes it.
 
-Naming rules:
+## Data Safety
 
-- Use **Anvil** for the complete product, platform, repository, Web UI, CLI, and shared runtime.
-- Use **System 3** only for the project-lifecycle domain and its control-plane behavior.
-- Use **Anvil Workflow Runtime** for the reusable technical workflow engine in `packages/workflows`.
-- Do not call the product “System 3”, “Archon”, or “Remote Agentic Coding Platform” in new user-facing copy. The last phrase may be used only as a descriptive product category.
+- Never delete files, directories, databases, volumes, branches, worktrees, untracked data, or history without explicit permission in the current conversation.
+- General requests such as “clean up”, “redo”, “fix”, or “sync” are not deletion permission.
+- Before an authorized deletion, resolve the exact target and explain the affected data.
+- Never format, reformat, repartition, recreate a filesystem, secure-erase, factory-reset, or wipe a storage device.
+- Never use git clean -fd. Do not bypass these rules through scripts, containers, agents, GUIs, or remote tools.
+- If an operation may overwrite or destroy data and its effect is uncertain, stop and ask. Prefer read-only and recoverable operations.
 
-## Anvil and System 3 Documentation and Terminology
+## Product Context and Required Names
 
-When a task touches System 3 architecture, product flow, UI, API, source handling, lifecycle state, artifacts, evidence, or delivery, read the documentation in this order:
+**Anvil** is the complete product and platform. It controls AI coding assistants from Web, CLI, Slack, Telegram, GitHub, and other adapters. The repository uses Bun, TypeScript, and SQLite/PostgreSQL.
 
-1. `docs/README.md` — documentation map and reading guide.
-2. `docs/1. Tổng quan hệ thống.md` — product overview, system input/output, architecture, and the 6-phase lifecycle map.
-3. `docs/lifecycle_activity/README.md` and the relevant activity file — user-facing behavior for one of the 10 Lifecycle Activities.
-4. `docs/technical/README.md` and the relevant technical document — contracts, API, artifacts, retry, security, LLM policy, implementation, and testing.
-5. `docs/system_2/DESIGN_B_2.md` only when a concrete System 2 blueprint example is needed. The filename is an example, not an input contract.
+Anvil is a single-developer tool. Do not introduce multi-tenant complexity without an accepted requirement.
 
-Treat the overview and technical documents as **target product design**, not proof that every behavior exists in the current implementation. Verify live code before making current-state claims.
+**System 3** is Anvil’s project-lifecycle domain. It is not the product name and is not the generic workflow engine.
 
-### Required Anvil and System 3 names
+Use these names consistently:
 
-- **Anvil**: the complete product and platform.
-- **System 3**: Anvil's project-lifecycle product domain.
-- **System 3 Control Plane**: the System 3 domain layer that owns project state, versions, decisions, readiness, invalidation, approval, evidence projection, and delivery semantics.
-- **Anvil Workflow Runtime**: Anvil's reusable workflow engine. After the formal name is introduced, “Workflow Runtime” or “generic runtime” may be used as a short description.
-- **Project Lifecycle**: the complete journey from Intake to Delivery. Do not call the entire journey a workflow.
-- **Lifecycle Phase**: one of the 6 user-visible stages: Intake, Understanding, Readiness, Build, Verify, Delivery.
-- **Lifecycle Activity**: one of the 10 concrete activities inside those phases.
-- **Control-plane Operation (`OP-*`)**: deterministic backend operation; it does not automatically create a Workflow Run.
-- **Technical Workflow (`TW-*`)**: reusable DAG executed by the Anvil Workflow Runtime.
-- **Workflow Run**: one execution of a Technical Workflow.
-- **Workflow Node**: one step inside a Technical Workflow.
-- **Product Workflow Template**: reusable domain process for a project type.
-- **Project Workflow Version**: immutable, project-bound application of a Product Workflow Template.
-- **Workflow Compilation**: deterministic conversion of readiness-eligible project state into an Execution Plan. The Execution Plan is approved afterward; compilation does not imply approval.
-- **Execution Plan**: the exact technical plan that pins inputs, definitions, capabilities, permissions, and execution order.
-- **Source Version**: immutable record of one accepted source payload, including its kind, filename, content hash, storage pointer, and provenance. A later upload creates a new version instead of overwriting it.
-- **Input Snapshot**: persisted, immutable selection of the exact Source Versions and processing/runtime basis used by an activity. Persist it before starting the related Technical Workflow; never resolve an unpinned “latest file” during execution.
-- **Knowledge Snapshot**: versioned project understanding derived from pinned inputs, including requirements, constraints, facts, open issues, and source pointers.
-- **Decision**: an explicit question that requires a user or authorized actor to answer because Anvil must not guess. A Decision is not synonymous with an LLM response.
-- **Readiness Contract**: versioned result of readiness evaluation, including gates, missing inputs, unresolved Decisions, and whether execution may proceed.
-- **Approval Manifest**: immutable record of the exact Execution Plan and versioned basis an actor approved. Approval applies only to that pinned manifest.
-- **Artifact**: a generated file or result. **Evidence**: proof that validates a requirement or result.
-- **DAG execution**: the Anvil Workflow Runtime scheduling Workflow Nodes according to declared dependencies. It is an execution mechanism, not the Project Lifecycle.
-- **Provider Session**: resumable conversation/execution state owned by an AI provider for a node or conversation. It is runtime state, not project truth or approval state.
-- **Worktree / Isolation**: a separate Git working directory used to keep execution changes away from the live checkout and other runs. It is an execution environment, not a Source Version or Project Workflow Version.
+- **Anvil**: complete product, platform, repository, UI, CLI, and shared runtime.
+- **System 3**: project-lifecycle domain.
+- **System 3 Control Plane**: project state, versions, decisions, readiness, invalidation, approval, evidence projection, and delivery semantics.
+- **Anvil Workflow Runtime**: reusable workflow engine in packages/workflows.
+- **Project Lifecycle**: full journey from Intake to Delivery; never call the whole journey a workflow.
+- **Lifecycle Phase**: one of the 6 user-visible stages.
+- **Lifecycle Activity**: one of the 10 activities within those stages.
+- **Control-plane Operation (OP-\*)**: deterministic backend operation; it does not create a Workflow Run by default.
+- **Technical Workflow (TW-\*)**: DAG executed by the Anvil Workflow Runtime.
+- **Workflow Run** and **Workflow Node**: one Technical Workflow execution and one step within it.
+- **Product Workflow Template** and **Project Workflow Version**: reusable domain process and its immutable project-bound application.
+- **Workflow Compilation**: deterministic creation of an Execution Plan; compilation is not approval.
+- **Execution Plan**: pinned technical plan for exact inputs, definitions, capabilities, permissions, and order.
+- **Source Version**, **Input Snapshot**, and **Knowledge Snapshot** are immutable and provenance-preserving.
+- **Decision** is an explicit question for an authorized actor; it is not an LLM response.
+- **Readiness Contract** evaluates gates and missing inputs.
+- **Approval Manifest** records exactly what an actor approved.
+- **Artifact** is a generated result; **Evidence** validates a requirement or result.
+- **Provider Session** and **Worktree / Isolation** are runtime state and environment, not project truth or approval state.
 
-The target System 3 product UI uses **6 Lifecycle Phases** at the top level and reveals these **10 Lifecycle Activities** within them. Use these as the canonical activity names:
+Do not introduce “System 3”, “Archon”, or “Remote Agentic Coding Platform” as the product name in new user-facing copy.
+Do not expose legacy identifiers such as productWorkflowVersionId as new user-facing terminology; the canonical term is Project Workflow Version.
 
-```text
-Intake:        OP-00 Source Intake, OP-01 Change Detection
-Understanding: TW-02 Understand Project
-Readiness:     TW-03 Readiness, OP-04 Compile, OP-05 Approve
-Build:         TW-06 Execute Project Workflow Version
-Verify:        TW-07 Verify
-Delivery:      OP-08 Delivery Request, TW-09 Deliver
-```
+## System 3 Documentation Routing
 
-`TW-06A Build` and `TW-06B Data & Experiment` are child Technical Workflows inside TW-06. They are not additional Lifecycle Activities.
+For System 3 architecture, lifecycle, UI, API, sources, artifacts, Evidence, or delivery, read in this order:
 
-Keep the three naming layers separate:
+1. docs/README.md
+2. docs/1. Tổng quan hệ thống.md
+3. docs/lifecycle_activity/README.md and the relevant activity document
+4. docs/technical/README.md and the relevant technical document
+5. docs/system_2/DESIGN_B_2.md only when a concrete System 2 example is needed
 
-| Canonical Lifecycle Activity           | Vietnamese UI label        | Current workflow implementation                                         |
-| -------------------------------------- | -------------------------- | ----------------------------------------------------------------------- |
-| OP-00 Source Intake                    | Tiếp nhận nguồn đầu vào    | Control-plane operation; no Workflow Run by default                     |
-| OP-01 Change Detection                 | Phát hiện thay đổi         | Control-plane operation; no Workflow Run by default                     |
-| TW-02 Understand Project               | Hiểu dự án                 | `system3-understand-project`                                            |
-| TW-03 Readiness                        | Kiểm tra mức độ sẵn sàng   | `system3-readiness-contract`                                            |
-| OP-04 Compile                          | Chuẩn bị kế hoạch thực thi | Control-plane operation; produces an Execution Plan                     |
-| OP-05 Approve                          | Phê duyệt kế hoạch         | Control-plane operation; records an Approval Manifest                   |
-| TW-06 Execute Project Workflow Version | Thực thi kế hoạch đã duyệt | Orchestrates `system3-baseline-build` and `system3-baseline-experiment` |
-| TW-07 Verify                           | Xác minh kết quả độc lập   | `system3-verify`                                                        |
-| OP-08 Delivery Request                 | Yêu cầu bàn giao           | Control-plane operation; validates the delivery gate                    |
-| TW-09 Deliver                          | Tạo gói bàn giao           | `system3-delivery`                                                      |
+When adding, moving, or renaming documentation, update the documentation maps and inbound links.
 
-The canonical activity name is not the same thing as a UI label, output object, or workflow identifier. Names such as `Readiness Contract`, `Compile Preview`, `Approval Manifest`, and `Independent Verification` may be output names or descriptive implementation labels; they do not replace the canonical Lifecycle Activity names above.
+## Canonical Project Lifecycle
 
-Current implementation caveats:
+Render exactly 6 Lifecycle Phases and reveal exactly these 10 Lifecycle Activities:
 
-- `packages/system3/src/project-flow.ts` still exposes internal/legacy sections such as `data`, `features`, `experiments`, and `explainability`. They are not additional Lifecycle Phases. Do not expose them as a 7- or 8-phase product lifecycle; map or migrate them into the canonical 6-phase UI.
-- The canonical product term is **Project Workflow Version**. Existing identifiers such as `productWorkflowVersionId` and `remote_agent_system3_product_workflow_versions` are legacy implementation names awaiting an explicit compatibility migration. Do not copy those names into new user-facing text.
-- Current TW-02 nodes are deterministic System 3 action executors. A workflow-level `provider: 'claude'` field does not prove that an LLM is called. Today, Decision items are derived from parsed System 2 blueprint markers such as `[Manual Review Required]`; describe LLM behavior only when a real provider node exists in the execution path.
+| Lifecycle Phase | Canonical Lifecycle Activity           | Vietnamese UI label        | Current implementation                     |
+| --------------- | -------------------------------------- | -------------------------- | ------------------------------------------ |
+| Intake          | OP-00 Source Intake                    | Tiếp nhận nguồn đầu vào    | Control-plane operation                    |
+| Intake          | OP-01 Change Detection                 | Phát hiện thay đổi         | Control-plane operation                    |
+| Understanding   | TW-02 Understand Project               | Hiểu dự án                 | system3-understand-project                 |
+| Readiness       | TW-03 Readiness                        | Kiểm tra mức độ sẵn sàng   | system3-readiness-contract                 |
+| Readiness       | OP-04 Compile                          | Chuẩn bị kế hoạch thực thi | Produces an Execution Plan                 |
+| Readiness       | OP-05 Approve                          | Phê duyệt kế hoạch         | Records an Approval Manifest               |
+| Build           | TW-06 Execute Project Workflow Version | Thực thi kế hoạch đã duyệt | Orchestrates baseline build and experiment |
+| Verify          | TW-07 Verify                           | Xác minh kết quả độc lập   | system3-verify                             |
+| Delivery        | OP-08 Delivery Request                 | Yêu cầu bàn giao           | Validates the delivery gate                |
+| Delivery        | TW-09 Deliver                          | Tạo gói bàn giao           | system3-delivery                           |
 
-### System 3 boundary and documentation rules
+TW-06A Build and TW-06B Data & Experiment are child Technical Workflows, not additional Lifecycle Activities. Legacy sections such as data, features, experiments, and explainability are not extra phases.
 
-- Preserve the architecture boundary: `Anvil Product UI → Anvil Backend API → System 3 Control Plane → Workflow Compiler → Anvil Workflow Runtime → Storage/Artifact/Evidence`.
-- System 3 owns project, source, knowledge, Product Workflow Template and Project Workflow Version semantics, decisions, readiness, invalidation, domain semantics, evidence projection, and delivery semantics.
-- The Anvil Workflow Runtime owns DAG execution, Technical Workflow definitions, Workflow Runs, Workflow Nodes, provider sessions, retry/timeout, events/logs, worktree isolation, and generic artifact storage.
-- Keep Customer Churn, dataset, target, SHAP, readiness, and experiment logic out of `packages/workflows`.
-- Keep `docs/1. Tổng quan hệ thống.md` concise and product-facing. Put activity-specific behavior in `docs/lifecycle_activity/` and implementation detail in `docs/technical/`.
-- Explain Vietnamese-first in user-facing docs. Define unavoidable English terms at first use and keep raw JSON, hashes, IDs, and logs in technical sections.
-- Preserve immutable versions and provenance. Do not describe a mutable “latest file” as a reproducible workflow input.
-- A dataset may be absent during Understanding. In that case, distinguish the System 2 `Dataset Declaration` from a real `Dataset Profile`; Readiness returns `data_required` before an activity that requires actual data.
-- User-facing artifact views are friendly-first. Technical JSON and debugging metadata belong behind a disclosure.
-- When adding, moving, or renaming docs, update `docs/README.md`, relevant folder README files, and inbound links so no page becomes orphaned.
+## System 3 Architecture and Product Guardrails
 
-### System 3 lifecycle UI rules
+Preserve this boundary:
 
-- The top-level System 3 flow must render exactly **6 Lifecycle Phases** and reveal exactly **10 canonical Lifecycle Activities**. Never render internal `data`, `features`, `experiments`, or `explainability` sections as extra product phases.
-- Derive the UI projection in `packages/web/src/features/system3/lifecycle-view.ts`; keep legacy backend phase identifiers behind that boundary until an explicit API migration is approved.
-- Use one primary navigation axis inside the Lifecycle screen. On desktop, group all 10 activities under the 6 phases in one lifecycle rail and show the selected activity in one workspace; on compact screens, make that rail horizontally scrollable instead of stacking a second full navigation page above the activity.
-- Do not stack redundant summaries such as metric cards, a large hero, phase tabs, activity cards, and resource tabs before the user reaches the current task. Keep project context compact, put status plus the next action near the activity title, and remove repeated information that does not change the user's decision.
-- Every Lifecycle Activity surface must explain what Anvil does, its pinned input, its output, the reason it cannot proceed, and the next user action. Show Vietnamese-first labels and keep canonical `OP-*`/`TW-*` codes as supporting context.
-- Never present an `OP-*` activity as a Workflow Run. Technical node/run views apply only to `TW-*` activities.
-- Treat the Sources route as the detail surface for **OP-00 Source Intake**. Always show the Intake Gate and report-history state. For migrated legacy sources, explain that no historical OP-00 report exists and offer explicit revalidation or a new upload; never synthesize provenance.
-- Use the canonical blue–cyan–teal Anvil application tokens in `packages/web/src/index.css`. Do not introduce purple or fork a feature-specific color palette in the System 3 lifecycle UI. Keep gradient usage selective and keep primary content on high-contrast neutral surfaces.
-- Motion must communicate state or hierarchy, remain short and subtle, and include a `prefers-reduced-motion` fallback. Status must never depend on motion or color alone.
-- Every `OP-*` and `TW-*` activity must list its exact input and output resources and let users open each resource in an inline viewer without changing the current route, phase, activity, scroll position, or browser tab. A standalone page, download, or share link may exist only as a secondary action.
-- Show Inputs, Outputs, and Evidence together as directly scannable sections in the selected activity. Use progressive disclosure for History, Workflow Nodes, logs, raw data, and other secondary or technical material; do not require users to switch through nested tabs to understand the activity's basic state.
-- Keep user-facing output friendly-first. Preserve immutable JSON, CSV, logs, hashes, and binary files as machine-readable truth, but render them through a typed Artifact Presentation Layer selected by resource kind and schema version. Default views use domain-aware headings, prose, tables, checklists, timelines, callouts, file trees, and Evidence links; raw JSON, full hashes, logs, storage metadata, and node I/O belong behind an explicit technical disclosure.
-- Never use raw JSON as the primary view or as the automatic fallback when a renderer is missing or fails. Show a friendly unsupported/error state with provenance, metadata, and a safe download action instead. Optional LLM summaries must be labeled, non-authoritative, and must never replace deterministic presentation data.
-- Do not label every activity result as an Artifact. Decisions, snapshots, contracts, plans, manifests, approvals, Evidence, and control-plane records retain their domain names while sharing the same inline resource-viewing experience.
-- When changing the lifecycle UI, update unit/E2E coverage for the canonical phase/activity count, activity navigation, OP-00 report visibility, legacy-source explanation, inline resource viewing without route changes, friendly-first rendering, raw-data disclosure, responsive behavior, focus restoration, and keyboard-accessible controls. See `docs/technical/07-system3-lifecycle-ui.md`.
-- Before considering a lifecycle layout change complete, inspect a rendered project with real activity data at desktop and compact/mobile widths. Type-checks and DOM assertions do not prove that information density, overflow, hierarchy, or above-the-fold usability are acceptable.
+**Anvil Product UI → Anvil Backend API → System 3 Control Plane → Workflow Compiler → Anvil Workflow Runtime → Storage / Artifact / Evidence**
 
-## Core Principles
+- System 3 owns project and source semantics, versioned knowledge, Product Workflow Templates, Project Workflow Versions, Decisions, readiness, invalidation, compilation, approval, evidence projection, and delivery.
+- The Anvil Workflow Runtime owns generic DAG execution, Technical Workflow definitions, Workflow Runs, Workflow Nodes, provider sessions, retry/timeout, events/logs, worktree isolation, and generic artifact storage.
+- Keep Customer Churn, dataset, target, SHAP, readiness, and experiment policy out of packages/workflows.
+- Preserve immutable versions and provenance. Persist an Input Snapshot before execution; never resolve an unpinned “latest file” during a run.
+- A missing dataset during Understanding is valid. Distinguish a System 2 Dataset Declaration from a real Dataset Profile; Readiness must return data_required before data-dependent work.
+- A workflow-level provider field is metadata, not proof of an LLM call. Verify the active execution path before describing provider behavior.
+- `OP-*` activities are not Workflow Runs. Node and run views apply only to `TW-*` activities.
+- Do not autonomously mark non-terminal cross-process work failed, cancelled, or abandoned from a timer or staleness guess. Surface ambiguity and require user action.
 
-**Single-Developer Tool**
+## System 3 Lifecycle UI Guardrails
 
-- No multi-tenant complexity
+- Derive the UI projection in packages/web/src/features/system3/lifecycle-view.ts and keep legacy backend phase identifiers behind that boundary.
+- Use one navigation axis: all activities grouped beneath the 6 phases, with one selected-activity workspace. Make the rail horizontally scrollable on compact screens.
+- Keep project context compact. Put status and the next action near the activity title; avoid redundant hero, cards, tabs, and summaries.
+- Every activity must show what Anvil does, pinned inputs, outputs, Evidence, blockers, and the next user action.
+- Inputs, Outputs, and Evidence must be directly scannable together. Put history, nodes, logs, raw data, hashes, and storage metadata behind progressive disclosure.
+- Every resource must open inline without changing route, selected activity, scroll position, or browser tab.
+- Use a typed, friendly-first Artifact Presentation Layer. Raw JSON must never be the primary view or automatic renderer fallback.
+- Unsupported renderers must show a friendly state with provenance, metadata, and safe download. Optional LLM summaries are labeled non-authoritative.
+- Decisions, snapshots, contracts, plans, manifests, approvals, and Evidence retain their domain names; do not label every result an Artifact.
+- Treat the Sources route as the OP-00 detail surface. Show the Intake Gate and report history; never synthesize missing legacy provenance.
+- Use the canonical blue–cyan–teal application tokens from packages/web/src/index.css. Do not introduce a System 3-specific purple palette.
+- Motion must communicate state, remain subtle, and respect prefers-reduced-motion. Status cannot depend on color or motion alone.
+- Test the canonical counts, navigation, OP-00 legacy state, inline viewing, friendly/raw views, responsive layout, focus restoration, and keyboard access.
+- Before completion, inspect a rendered project with real activity data at desktop and compact widths.
 
-**Platform Agnostic**
+## Two-Stage Astra-to-Sol Workflow
 
-- Unified conversation interface across Slack/Telegram/GitHub/cli/web
-- Platform adapters implement `IPlatformAdapter`
-- Stream/batch AI responses in real-time to all platforms
+Apply this section only when the user explicitly requests this workflow. It does not itself authorize sub-agents or external writes.
 
-**Type Safety (CRITICAL)**
+### Planning tab
 
-- Strict TypeScript configuration enforced
-- All functions must have complete type annotations
-- No `any` types without explicit justification
-- Interfaces for all major abstractions
+- Use Astra only for the initial analysis and planning pass.
+- Astra produces a durable, self-contained Execution Brief and does not implement or supervise after handoff.
+- The brief must include objective, scope, out-of-scope, verified current state, assumptions, decisions, ordered tasks, dependencies, affected areas, acceptance criteria, validation commands, risks, rollback, and repository baseline.
+- Separate verified facts from target design and inference.
 
-**Zod Schema Conventions**
+### Execution tab
 
-- Schema naming: camelCase, descriptive suffix (e.g., `workflowRunSchema`, `errorSchema`)
-- Type derivation: always use `z.infer<typeof schema>` — never write parallel hand-crafted interfaces
-- Import `z` from `@hono/zod-openapi` (not from `zod` directly). Exception: `@anvil/providers` imports `z` from `zod` directly in `claude/native-tools.ts` — it only builds the Zod shape the Claude SDK's `tool()` expects (never an OpenAPI schema), and being an SDK-deps-only leaf package it must not pull in Hono.
-- Record schemas: always pass an explicit key type — `z.record(z.string(), valueSchema)` — zod v4 dropped the single-arg `z.record(valueSchema)` form
-- All new/modified API routes must use `registerOpenApiRoute(createRoute({...}), handler)` — the local wrapper handles the TypedResponse bypass. Two narrow exceptions exist: (1) routes that serve raw non-JSON content (e.g. `/api/artifacts/:runId/*` returns `text/markdown`/`text/plain`) AND use wildcard path params that OpenAPI 3.0 can't represent, use `app.get(...)` with an explanatory comment; (2) multipart-or-JSON routes (e.g. `/api/conversations/:id/message`, `/api/workflows/:name/run`) register through `registerOpenApiRoute` but drop `request.body` from the route config so Zod doesn't validate multipart payloads against a JSON schema — the handler parses both content types manually.
-- Core row schemas live in `packages/core/src/schemas/` — one file per data shape (conversation, message, user, codebase, session, workflow-event, env-var, workflow-run); `index.ts` re-exports all
-- Route schemas live in `packages/server/src/routes/schemas/` — one file per domain
-- Engine schemas live in `packages/workflows/src/schemas/` — one file per concern (dag-node, workflow, workflow-run, retry, loop, hooks); `index.ts` re-exports all
-- Engine schema naming: camelCase (e.g., `dagNodeSchema`, `workflowBaseSchema`, `nodeOutputSchema`)
-- `TRIGGER_RULES` and `WORKFLOW_HOOK_EVENTS` are derived from schema `.options` — never duplicate as a plain array (exception: `@anvil/web` must define a local constant since `api.generated.d.ts` is type-only and cannot export runtime values)
-- `loader.ts` uses `dagNodeSchema.safeParse()` for node validation; graph-level checks (cycles, deps, `$nodeId.output` refs) remain as imperative code in `validateDagStructure()`
+- Start a new tab with Sol at medium reasoning effort as the primary coordinator and implementer.
+- Sol reads the complete brief, inspects the live repository, and reports material drift before editing.
+- Sol may refine implementation details based on code, but must report material scope or architecture changes.
+- Do not invoke Astra again unless the user explicitly authorizes it in the current conversation.
+- Sol reviews all delegated output against the repository and tests before accepting it.
 
-**Git Workflow and Releases**
+### Model routing
 
-- `main` is the release branch. Never commit directly to `main`.
-- `dev` is the working branch. All feature work branches off `dev` and merges back into `dev`.
-- All PRs must use the template at `.github/PULL_REQUEST_TEMPLATE.md` — fill in every section. When opening a PR via `gh pr create`, copy the template into the body explicitly; GitHub only auto-applies it through the web UI.
-- Link the issue with `Closes #<number>` (or `Fixes` / `Resolves`) in the PR description so it auto-closes on merge.
-- To release, use the `/release` skill. It compares `dev` to `main`, generates changelog entries, bumps the version, and creates a PR to merge `dev` into `main`.
-- Releases follow Semantic Versioning: `/release` (patch), `/release minor`, `/release major`.
-- Changelog lives in `CHANGELOG.md` and follows Keep a Changelog format.
-- Version is the single `version` field in the root `package.json`.
+- Use the least expensive model and lowest reasoning effort that can reliably complete the task.
+- Luna low/medium: bounded discovery, inventory, mechanical checks, and repetitive verification.
+- Terra medium: well-scoped code, tests, and refactors with clear acceptance criteria.
+- Sol medium: default coordination and implementation.
+- Sol high: substantial cross-package coupling, concurrency, migrations, security-sensitive logic, hard debugging, or ambiguous failures.
+- Sol xhigh: only after high is insufficient or for a concrete high-risk decision.
+- Never select max or ultra automatically; they require explicit current-conversation authorization.
+- Never use Astra as an execution fallback. Preserve failure evidence, retry safely with an appropriate Sol effort, or ask the user.
+- When delegation is authorized, give each subtask a narrow objective, context, constraints, expected output, and acceptance criteria. Parallelize only independent, non-overlapping work.
 
-**Git as First-Class Citizen**
+### Notion, Linear, and Git
 
-- Let git handle what git does best (conflicts, uncommitted changes, branch management)
-- Surface git errors to users for actionable issues (conflicts, uncommitted changes)
-- Handle expected failure cases gracefully (missing directories during cleanup)
-- Trust git's natural guardrails (e.g., refuse to remove worktree with uncommitted changes)
-- Use `@anvil/git` functions for git operations; use `execFileAsync` (not `exec`) when calling git directly
-- Worktrees enable parallel development per conversation without branch conflicts
-- Workspaces automatically sync with origin before worktree creation (ensures latest code)
-- **NEVER run `git clean -fd`** - it permanently deletes untracked files (use `git checkout .` instead)
+- Notion holds durable planning context and human-readable decisions.
+- Linear holds executable tasks, dependencies, status, blockers, and per-task Evidence.
+- Git and the repository remain the technical source of truth.
+- Link Linear issues to the relevant Notion sections instead of duplicating the full plan.
+- Version the Execution Brief with its planning date and repository baseline; record material decision changes explicitly.
+- Write to Notion or Linear only when the user authorizes those external mutations for the current task.
+- A document, task status, or agent report is never proof that code works; validate the live repository.
 
 ## Engineering Principles
 
-These are implementation constraints, not slogans. Apply them by default.
+- Prefer simple, explicit, typed control flow over speculative abstractions.
+- Apply YAGNI. Do not add configuration, flags, interfaces, or fallback paths without a current caller.
+- Apply the Rule of Three before extracting shared utilities; preserve package boundaries.
+- Keep interfaces narrow and modules single-purpose. Separate policy, transport, persistence, and execution.
+- Fail fast with actionable errors. Never silently swallow failures, broaden permissions, or invent partial support.
+- Keep tests deterministic and network-independent unless explicit guardrails exist.
+- Keep changes easy to review and revert. Define rollback before risky changes.
+- Every handoff reports completed work, remaining work, changed resources, validation, blockers, and next action.
 
-**KISS — Keep It Simple, Stupid**
+## TypeScript, Zod, and OpenAPI
 
-- Prefer straightforward control flow over clever meta-programming
-- Prefer explicit branches and typed interfaces over hidden dynamic behavior
-- Keep error paths obvious and localized
+- Strict TypeScript is mandatory. Add complete function annotations and do not use any without a documented justification.
+- Use z.infer<typeof schema>; never maintain a parallel hand-written type.
+- Import z from @hono/zod-openapi. The only current exception is the SDK-only Zod shape in packages/providers/src/claude/native-tools.ts, which imports from zod.
+- Use explicit record keys: z.record(z.string(), valueSchema).
+- Core row schemas belong in packages/core/src/schemas; route schemas in packages/server/src/routes/schemas; engine schemas in packages/workflows/src/schemas.
+- New or modified JSON API routes use registerOpenApiRoute(createRoute(...), handler).
+- Raw wildcard non-JSON routes may use app.get with an explanatory comment.
+- Multipart-or-JSON routes remain registered but omit request.body from the OpenAPI route config and parse both forms manually.
+- Derive constants such as TRIGGER_RULES and WORKFLOW_HOOK_EVENTS from schema options. The web package may keep a local runtime constant because generated API declarations are type-only.
+- loader.ts validates nodes with dagNodeSchema.safeParse(); graph cycles, dependencies, and node-output references remain imperative checks.
+- The web package must derive server contracts from packages/web/src/lib/api.generated.d.ts and local API re-exports; never import server runtime packages into the browser bundle.
 
-**YAGNI — You Aren't Gonna Need It**
+## Package Boundaries
 
-- Do not add config keys, interface methods, feature flags, or workflow branches without a concrete accepted use case
-- Do not introduce speculative abstractions without at least one current caller
-- Keep unsupported paths explicit (error out) rather than adding partial fake support
+- packages/system3: System 3 domain and control-plane behavior.
+- packages/workflows: generic Workflow Runtime; database, AI, and configuration enter through narrow dependencies.
+- packages/providers: provider contracts, registry, and SDK integrations.
+- packages/core: shared business logic, persistence adapters, and orchestration.
+- packages/git and packages/isolation: Git operations and worktree isolation.
+- packages/adapters: Slack, Telegram, GitHub, Discord, and other platform adapters implementing IPlatformAdapter.
+- packages/server: HTTP, OpenAPI routes, auth boundaries, and Web adapter.
+- packages/web: React client and generated API types.
+- packages/cli: command-line interface.
+- packages/paths: path and logging primitives with minimal dependencies.
 
-**DRY + Rule of Three**
+Use typed named imports and import type for type-only imports. Avoid broad main-package namespace imports. Use direct package subpaths where the public contract requires them.
 
-- Duplicate small, local logic when it preserves clarity
-- Extract shared utilities only after the same pattern appears at least three times and has stabilized
-- When extracting, preserve module boundaries and avoid hidden coupling
+## Git and Release Rules
 
-**SRP + ISP — Single Responsibility + Interface Segregation**
+- main is the release branch. Never commit directly to main.
+- dev is the working branch. Feature work branches from dev and merges back into dev.
+- Preserve existing worktree changes and surface Git conflicts or dirty-state blockers.
+- Use @anvil/git for Git operations; if direct Git execution is necessary, use execFileAsync rather than exec.
+- Trust Git guardrails. Never force cleanup of uncommitted work or untracked files.
+- All pull requests use .github/PULL_REQUEST_TEMPLATE.md and fill every section. Link the issue with Closes, Fixes, or Resolves.
+- Use the release skill to merge dev toward main. Follow Semantic Versioning and update the root package.json version plus CHANGELOG.md.
 
-- Keep each module and package focused on one concern
-- Extend behavior by implementing existing narrow interfaces (`IPlatformAdapter`, `IAgentProvider`, `IDatabase`, `IWorkflowStore`) whenever possible
-- Avoid fat interfaces and "god modules" that mix policy, transport, and storage
-- Do not add unrelated methods to an existing interface — define a new one
+## Validation and Generated Files
 
-**Fail Fast + Explicit Errors** — Silent fallback in agent runtimes can create unsafe or costly behavior
-
-- Prefer throwing early with a clear error for unsupported or unsafe states — never silently swallow errors
-- Never silently broaden permissions or capabilities
-- Document fallback behavior with a comment when a fallback is intentional and safe; otherwise throw
-
-**No Autonomous Lifecycle Mutation Across Process Boundaries**
-
-- When a process cannot reliably distinguish "actively running elsewhere" from "orphaned by a crash" — typically because the work was started by a different process or input source (CLI, adapter, webhook, web UI, cron) — it must not autonomously mark that work as failed/cancelled/abandoned based on a timer or staleness guess.
-- Surface the ambiguous state to the user and provide a one-click action.
-- Heuristics for _recoverable_ operations (retry backoff, subprocess timeouts, hygiene cleanup of terminal-status data) remain appropriate; the rule is about destructive mutation of _non-terminal_ state owned by an unknowable other party.
-- Reference: #1216 and the CLI orphan-cleanup precedent at `packages/cli/src/cli.ts:256-258`.
-
-**Determinism + Reproducibility**
-
-- Prefer reproducible commands and locked dependency behavior in CI-sensitive paths
-- Keep tests deterministic — no flaky timing or network dependence without guardrails
-- Ensure local validation commands (`bun run validate`) map directly to CI expectations
-
-**Reversibility + Rollback-First Thinking**
-
-- Keep changes easy to revert: small scope, clear blast radius
-- For risky changes, define the rollback path before merging
-- Avoid mixed mega-patches that block safe rollback
-
-## Essential Commands
-
-### Development
-
-```bash
-# Start server + Web UI together (hot reload for both)
-bun run dev
-
-# Or start individually
-bun run dev:server  # Backend only (port 3090)
-bun run dev:web     # Frontend only (port 5173)
-```
-
-Regenerating frontend API types (requires server to be running at port 3090):
-
-```bash
-bun run dev:server  # must be running first
-bun --filter @anvil/web generate:types
-```
-
-Optional: Use PostgreSQL instead of SQLite by setting `DATABASE_URL` in `.env`:
-
-```bash
-docker-compose --profile with-db up -d postgres
-# Set DATABASE_URL=postgresql://postgres:postgres@localhost:5432/remote_coding_agent in .env
-```
-
-### Testing
-
-```bash
-bun run test                # Run all tests (per-package, isolated processes)
-bun test --watch            # Watch mode (single package)
-bun test packages/core/src/handlers/command-handler.test.ts  # Single file
-```
-
-**Test isolation (mock.module pollution):** Bun's `mock.module()` permanently replaces modules in the process-wide cache — `mock.restore()` does NOT undo it ([oven-sh/bun#7823](https://github.com/oven-sh/bun/issues/7823)). To prevent cross-file pollution, packages that have conflicting `mock.module()` calls split their tests into separate `bun test` invocations: `@anvil/core` (20 batches), `@anvil/workflows` (5), `@anvil/adapters` (6), `@anvil/isolation` (3). See each package's `package.json` for the exact splits.
-
-**Do NOT run `bun test` from the repo root** — it discovers all test files across all packages and runs them in one process, causing ~135 mock pollution failures. Always use `bun run test` (which uses `bun --filter '*' test` for per-package isolation).
-
-### Type Checking & Linting
+Use the smallest relevant check while iterating, then the required gate for the requested outcome.
 
 ```bash
 bun run type-check
 bun run lint
-bun run lint:fix
-bun run format
 bun run format:check
-```
-
-### Pre-PR Validation
-
-**Always run before creating a pull request:**
-
-```bash
+bun run test
 bun run validate
 ```
 
-This runs `check:bundled`, `check:bundled-skill`, `check:bundled-schema`, type-check, lint, format check, and tests. All seven must pass for CI to succeed.
+- Never run bun test from the repository root. It combines packages in one process and causes mock.module cache pollution. Use bun run test for isolated package runs; a targeted test file is allowed.
+- CI allows no ESLint warnings. Fix warnings instead of broadly disabling rules.
+- Inline ESLint disables are exceptional and must document an external type defect or a validated assertion. Never add file-level disables.
+- Run bun run validate before creating a pull request. It checks bundled assets/schema, types, lint, formatting, and tests.
+- If ESLint reaches the heap limit, rerun it with NODE_OPTIONS=--max-old-space-size=4096 and then fix actual errors.
+- After changing bundled default workflows or commands, run bun run generate:bundled.
+- After changing migrations/000_combined.sql, run bun run generate:bundled-schema.
+- The authoritative PostgreSQL schema is migrations/000_combined.sql; keep the generated SQLite schema synchronized.
+- Regenerating Web API types requires the server on port 3090, then bun --filter @anvil/web generate:types.
 
-### ESLint Guidelines
-
-**Zero-tolerance policy**: CI enforces `--max-warnings 0`. No warnings allowed.
-
-**When to use inline disable comments** (`// eslint-disable-next-line`):
-
-- **Almost never** - fix the issue instead
-- Only acceptable when:
-  1. External SDK types are incorrect (document which SDK and why)
-  2. Intentional type assertion after validation (must include comment explaining the validation)
-
-**Never acceptable:**
-
-- Disabling `no-explicit-any` without justification
-- Disabling rules to "make CI pass"
-- Bulk disabling at file level (`/* eslint-disable */`)
-
-### Database
-
-**Auto-Detection (SQLite is the default — zero setup):**
-
-- **Without `DATABASE_URL`**: Uses SQLite at `~/.anvil/anvil.db` (auto-initialized, recommended for most users)
-- **With `DATABASE_URL` set**: Uses PostgreSQL (schema auto-applied on startup; no manual `psql` needed). The Postgres adapter runs the idempotent `migrations/000_combined.sql` inside an advisory-lock transaction on first connection, so upgrades that add tables or columns converge automatically.
-
-### CLI (Command Line)
-
-Run workflows directly from the command line without needing the server. Workflow and isolation commands require running from within a git repository (subdirectories work - resolves to repo root).
+## Development Commands
 
 ```bash
-# List available workflows (requires git repo)
-bun run cli workflow list
-
-# Machine-readable JSON output
-bun run cli workflow list --json
-
-# Run a workflow
-bun run cli workflow run assist "What does the orchestrator do?"
-
-# Run in a specific directory
-bun run cli workflow run plan --cwd /path/to/repo "Add dark mode"
-
-# Default: auto-creates worktree with generated branch name (isolation by default)
-bun run cli workflow run implement "Add auth"
-
-# Explicit branch name for the worktree
-bun run cli workflow run implement --branch feature-auth "Add auth"
-
-# Opt out of isolation (run in live checkout)
-bun run cli workflow run quick-fix --no-worktree "Fix typo"
-
-# Run in a detached background child (returns immediately; find it via `workflow runs`)
-bun run cli workflow run implement "Add auth" --detach
-
-# Show active runs (running + paused)
-bun run cli workflow status
-
-# List recent runs of ALL statuses, scoped to this project's codebase (cwd)
-bun run cli workflow runs
-bun run cli workflow runs --json                 # machine-readable { runs, total, counts }
-bun run cli workflow runs --status failed --limit 50
-bun run cli workflow runs --all                  # across all projects
-
-# Show detail for one run (any status); --verbose adds per-node summary
-bun run cli workflow get <run-id>
-bun run cli workflow get <run-id> --json
-
-# Resume a failed workflow (re-runs, skipping completed nodes)
-bun run cli workflow resume <run-id>
-
-# Discard a non-terminal run
-bun run cli workflow abandon <run-id>
-
-# Most read/write subcommands accept --json for machine-readable output:
-#   list, status, runs, get, approve, reject, abandon, resume.
-# For approve/reject/resume, --json records/validates the decision and returns a
-# clean JSON line WITHOUT the inline auto-resume (drive continuation separately).
-
-# Delete old workflow run records (default: 7 days)
-bun run cli workflow cleanup
-bun run cli workflow cleanup 30  # Custom days
-
-# Clear persisted per-node AI sessions for a workflow (persist_session memory)
-# Without --scope, wipes every scope and requires --yes; --node narrows to one node
-bun run cli workflow reset-sessions <workflow-name> [--scope <key>] [--node <id>] [--yes] [--json]
-
-# Emit a workflow event (used inside workflow loop prompts)
-bun run cli workflow event emit --run-id <uuid> --type <event-type> [--data <json>]
-
-# List active worktrees/environments
-bun run cli isolation list
-
-# Clean up stale environments (default: 7 days)
-bun run cli isolation cleanup
-bun run cli isolation cleanup 14  # Custom days
-
-# Clean up environments with branches merged into main (also deletes remote branches)
-bun run cli isolation cleanup --merged
-
-# Also remove environments with closed (abandoned) PRs
-bun run cli isolation cleanup --merged --include-closed
-
-# Validate workflow definitions and their referenced resources
-bun run cli validate workflows              # All workflows
-bun run cli validate workflows my-workflow  # Single workflow
-bun run cli validate workflows my-workflow --json  # Machine-readable output
-
-# Validate command files
-bun run cli validate commands               # All commands
-bun run cli validate commands my-command    # Single command
-
-# Complete branch lifecycle (remove worktree + local/remote branches)
-bun run cli complete <branch-name>
-bun run cli complete <branch-name> --force  # Skip uncommitted-changes check
-
-# Start the web UI server (compiled binary only, downloads web UI on first run)
-bun run cli serve
-bun run cli serve --port 4000
-bun run cli serve --download-only  # Download without starting
-
-# Install the bundled Anvil skill into a project
-bun run cli skill install
-bun run cli skill install /path/to/project
-
-# Verify your Anvil setup (Claude binary, gh auth, DB, adapters)
+bun run dev
+bun run dev:server
+bun run dev:web
 bun run cli doctor
-
-# Connect your GitHub identity via device flow (multi-user installs only:
-# App mode + TOKEN_ENCRYPTION_KEY). Identity from ANVIL_USER_ID or $USER.
-bun run cli auth github
-
-# Inspect or rotate the anonymous telemetry install UUID
-bun run cli telemetry status
-bun run cli telemetry reset
-
-# Show version
-bun run cli version
+bun run cli validate workflows
+bun run cli validate commands
 ```
 
-## Architecture
-
-### Directory Structure
-
-**Monorepo Layout (Bun Workspaces):**
-
-```
-packages/
-├── cli/                      # @anvil/cli - Command-line interface
-│   └── src/
-│       ├── adapters/         # CLI adapter (stdout output)
-│       ├── commands/         # CLI command implementations
-│       └── cli.ts            # CLI entry point
-├── providers/                # @anvil/providers - AI agent providers (SDK deps live here)
-│   └── src/
-│       ├── types.ts          # Contract layer (IAgentProvider, SendQueryOptions, MessageChunk — ZERO SDK deps)
-│       ├── registry.ts       # Typed provider registry (ProviderRegistration records)
-│       ├── errors.ts         # UnknownProviderError
-│       ├── claude/           # ClaudeProvider + parseClaudeConfig + MCP/hooks/skills translation
-│       ├── codex/            # CodexProvider + parseCodexConfig + binary-resolver
-│       ├── community/pi/     # PiProvider (builtIn: false) — @earendil-works/pi-coding-agent, ~20 LLM backends
-│       ├── community/opencode/ # OpenCodeProvider (builtIn: false) — @anvil/opencode SDK, local embedded runtime
-│       └── index.ts          # Package exports
-├── core/                     # @anvil/core - Shared business logic
-│   └── src/
-│       ├── config/           # YAML config loading
-│       ├── db/               # Database connection, queries
-│       ├── handlers/         # Command handler (slash commands)
-│       ├── orchestrator/     # AI conversation management
-│       ├── services/         # Background services (cleanup)
-│       ├── schemas/          # Zod row schemas for core data shapes (conversation, message, user, codebase, session, workflow-event, env-var, workflow-run)
-│       ├── state/            # Session state machine
-│       ├── types/            # TypeScript types and interfaces
-│       ├── utils/            # Shared utilities
-│       ├── workflows/        # Store adapter (createWorkflowStore) bridging core DB → IWorkflowStore
-│       └── index.ts          # Package exports
-├── system3/                  # @anvil/system3 - Project Lifecycle domain and control plane
-│   └── src/
-│       ├── contracts.ts      # System 3 schemas and domain contracts
-│       ├── source-storage.ts # Immutable source content storage
-│       ├── blueprint.ts      # Deterministic blueprint and dataset parsing
-│       ├── capabilities.ts   # System 3 capability descriptors and handlers
-│       ├── templates.ts      # Programmatic Technical Workflow definitions
-│       ├── compiler.ts       # Execution Plan compilation
-│       ├── invalidation.ts   # Change-impact and stale-state rules
-│       ├── project-flow.ts   # Product flow projection
-│       └── store.ts          # Durable System 3 persistence
-├── workflows/                # @anvil/workflows - Workflow engine (depends on @anvil/git + @anvil/paths)
-│   └── src/
-│       ├── schemas/          # Zod schemas for engine types
-│       ├── loader.ts         # YAML parsing + validation (parseWorkflow)
-│       ├── workflow-discovery.ts # Workflow filesystem discovery (discoverWorkflows, discoverWorkflowsWithConfig)
-│       ├── executor-shared.ts # Shared executor infrastructure (error classification, variable substitution)
-│       ├── router.ts         # Prompt building + invocation parsing
-│       ├── executor.ts       # Workflow execution orchestrator (executeWorkflow)
-│       ├── dag-executor.ts   # DAG-specific execution logic
-│       ├── store.ts          # IWorkflowStore interface (database abstraction)
-│       ├── deps.ts           # WorkflowDeps injection types (IWorkflowPlatform, imports from @anvil/providers/types)
-│       ├── event-emitter.ts  # Workflow observability events
-│       ├── logger.ts         # JSONL file logger
-│       ├── validator.ts      # Resource validation (command files, MCP configs, skill dirs)
-│       ├── defaults/         # Bundled default commands and workflows
-│       └── utils/            # Variable substitution, tool formatting, execution utilities
-├── git/                      # @anvil/git - Git operations (no @anvil/core dep)
-│   └── src/
-│       ├── branch.ts         # Branch operations (checkout, merge detection, etc.)
-│       ├── exec.ts           # execFileAsync and mkdirAsync wrappers
-│       ├── repo.ts           # Repository operations (clone, sync, remote URL)
-│       ├── types.ts          # Branded types (RepoPath, BranchName, etc.)
-│       ├── worktree.ts       # Worktree operations (create, remove, list)
-│       └── index.ts          # Package exports
-├── isolation/                # @anvil/isolation - Worktree isolation (depends on @anvil/git + @anvil/paths)
-│   └── src/
-│       ├── types.ts          # Isolation types and interfaces
-│       ├── errors.ts         # Error classifiers (classifyIsolationError, IsolationBlockedError)
-│       ├── factory.ts        # Provider factory (getIsolationProvider, configureIsolation)
-│       ├── resolver.ts       # IsolationResolver (request → environment resolution)
-│       ├── store.ts          # IIsolationStore interface
-│       ├── worktree-copy.ts  # File copy utilities for worktrees
-│       ├── providers/
-│       │   └── worktree.ts   # WorktreeProvider implementation
-│       └── index.ts          # Package exports
-├── paths/                    # @anvil/paths - Path resolution and logger (zero @anvil/* deps)
-│   └── src/
-│       ├── anvil-paths.ts   # Anvil directory path utilities
-│       ├── logger.ts         # Pino logger factory
-│       └── index.ts          # Package exports
-├── adapters/                 # @anvil/adapters - Platform adapters (Slack, Telegram, GitHub, Discord)
-│   └── src/
-│       ├── chat/             # Chat platform adapters (Slack, Telegram)
-│       ├── forge/            # Forge adapters (GitHub)
-│       ├── community/        # Community adapters (Discord)
-│       ├── utils/            # Shared adapter utilities (message splitting)
-│       └── index.ts          # Package exports
-├── server/                   # @anvil/server - HTTP server + Web adapter
-│   └── src/
-│       ├── adapters/         # Web platform adapter (SSE streaming)
-│       ├── routes/           # API routes (REST + SSE)
-│       └── index.ts          # Hono server entry point
-├── web/                      # @anvil/web - React frontend (Web UI)
-│   └── src/
-│       ├── components/       # React components (chat, layout, projects, ui, workflows)
-│       ├── hooks/            # Custom hooks (useSSE, etc.)
-│       ├── lib/              # API client, types, utilities
-│       ├── stores/           # Zustand stores (workflow-store)
-│       ├── routes/           # Route pages (ChatPage, WorkflowsPage, WorkflowBuilderPage, etc.)
-│       ├── experiments/      # Isolated in-repo spikes; lint-guarded against
-│       │   │                 # importing production web modules. Drop-in or
-│       │   │                 # delete cleanly. See experiments/README.md.
-│       │   └── console/      # Run-centric console UI mounted at /console
-│       └── App.tsx           # Router + layout
-└── docs-web/                 # @anvil/docs-web - Public documentation website
-```
-
-**Import Patterns:**
-
-**IMPORTANT**: Always use typed imports - never use generic `import *` for the main package.
-
-```typescript
-// ✅ CORRECT: Use `import type` for type-only imports
-import type { IPlatformAdapter, Conversation, MergedConfig } from '@anvil/core';
-
-// ✅ CORRECT: Use specific named imports for values
-import { handleMessage, ConversationLockManager, pool } from '@anvil/core';
-
-// ✅ CORRECT: Namespace imports for submodules with many exports
-import * as conversationDb from '@anvil/core/db/conversations';
-import * as git from '@anvil/git';
-
-// ✅ CORRECT: Import workflow engine types/functions from direct subpaths
-import type { WorkflowDeps } from '@anvil/workflows/deps';
-import type { IWorkflowStore } from '@anvil/workflows/store';
-import type { WorkflowDefinition } from '@anvil/workflows/schemas/workflow';
-import { executeWorkflow } from '@anvil/workflows/executor';
-import { discoverWorkflowsWithConfig } from '@anvil/workflows/workflow-discovery';
-import { findWorkflow } from '@anvil/workflows/router';
-
-// ❌ WRONG: Never use generic import for main package
-import * as core from '@anvil/core'; // Don't do this
-
-// ❌ WRONG: In @anvil/web, never import from @anvil/workflows (it's a server package)
-import type { DagNode } from '@anvil/workflows/schemas/dag-node'; // Don't do this from @anvil/web
-// ✅ CORRECT: Use re-exports from api.ts (derived from generated OpenAPI spec)
-import type { DagNode, WorkflowDefinition } from '@/lib/api';
-```
-
-### Database Schema
-
-The authoritative PostgreSQL schema is `migrations/000_combined.sql`; the SQLite bundled schema is generated from the supported migrations. Do not rely on a manually maintained table count when changing persistence.
-
-At the current schema revision, the PostgreSQL combined schema declares **48 tables**, all prefixed with `remote_agent_`:
-
-- **18 shared Anvil tables** for codebases, conversations, sessions, messages, users and identities, provider connections/preferences, Workflow Runs/events/node sessions/intake drafts, isolation, environment variables, GitHub tokens, and project memory.
-- **26 System 3 tables** for projects, immutable source versions, knowledge/readiness/decision state, Product Workflow and runtime snapshots, compilation/approval/execution/verification operations, transitions, evidence, artifacts, impact, traceability facts, and delivery manifests.
-- **4 Better Auth tables** for opt-in Web authentication on PostgreSQL.
-
-When a migration adds or removes a table, update the combined schema and generated SQLite schema according to the repository migration process. Prefer linking to the schema over duplicating a long table inventory here.
-
-**Key Patterns:**
-
-- Conversation ID format: Platform-specific (`thread_ts`, `chat_id`, `user/repo#123`)
-- One active session per conversation
-- Codebase commands stored in filesystem, paths in `codebases.commands` JSONB
-
-**Session Transitions:**
-
-- Sessions are immutable - transitions create new linked sessions
-- Each transition has explicit `TransitionTrigger` reason (first-message, plan-to-execute, reset-requested, etc.)
-- Audit trail: `parent_session_id` links to previous session, `transition_reason` records why
-- Only plan→execute creates new session immediately; other triggers deactivate current session
-
-### Architecture Layers
-
-**Package Split:**
-
-- **@anvil/paths**: Path resolution utilities, Pino logger factory, web dist cache path (`getWebDistDir`), CWD env stripper (`stripCwdEnv`, `strip-cwd-env-boot`) (no @anvil/\* deps; `pino` and `dotenv` are allowed external deps)
-- **@anvil/git**: Git operations - worktrees, branches, repos, exec wrappers (depends only on @anvil/paths)
-- **@anvil/providers**: AI agent providers (Claude, Codex, Pi community) — owns SDK deps, `IAgentProvider` interface, `sendQuery()` contract, and provider-specific option translation. `@anvil/providers/types` is the contract subpath (zero SDK deps, zero runtime side effects) that `@anvil/workflows` imports from. Providers receive raw `nodeConfig` + `assistantConfig` and translate to SDK-specific options internally. Core providers live under `claude/` and `codex/`; community providers live under `community/` (currently `community/pi/`, registered with `builtIn: false`).
-- **@anvil/isolation**: Worktree isolation types, providers, resolver, error classifiers (depends only on @anvil/git + @anvil/paths)
-- **@anvil/system3**: System 3 Project Lifecycle domain - immutable sources, knowledge, decisions, readiness, invalidation, compilation, approval, execution projection, verification evidence, and delivery semantics (depends only on @anvil/paths + @hono/zod-openapi; it does not import the generic engine)
-- **@anvil/workflows**: Workflow engine - loader, router, executor, DAG, logger, bundled defaults (depends only on @anvil/git + @anvil/paths + @anvil/providers/types + @hono/zod-openapi + zod; DB/AI/config injected via `WorkflowDeps`)
-- **@anvil/cli**: Command-line interface for running workflows and starting the web UI server (depends on @anvil/server + @anvil/adapters for the serve command)
-- **@anvil/core**: Business logic, database, orchestration (depends on @anvil/providers for AI and @hono/zod-openapi for core Zod schemas; provides `createWorkflowStore()` adapter bridging core DB → `IWorkflowStore`)
-- **@anvil/adapters**: Platform adapters for Slack, Telegram, GitHub, Discord (depends on @anvil/core)
-- **@anvil/server**: OpenAPIHono HTTP server (Zod + OpenAPI spec generation via `@hono/zod-openapi`), Web adapter (SSE), API routes, Web UI static serving (depends on @anvil/adapters)
-- **@anvil/web**: React frontend (Vite + Tailwind v4 + shadcn/ui + Zustand), SSE streaming to server. `WorkflowRunStatus`, `WorkflowDefinition`, and `DagNode` are all derived from `src/lib/api.generated.d.ts` (generated from the OpenAPI spec via `bun generate:types`; never import from `@anvil/workflows`)
-- **@anvil/docs-web**: Public Anvil documentation website and brand documentation
-
-**1. Platform Adapters**
-
-- Implement `IPlatformAdapter` interface
-- Handle platform-specific message formats
-- **Web** (`packages/server/src/adapters/web/`): Server-Sent Events (SSE) streaming, conversation ID = user-provided string
-- **Slack** (`packages/adapters/src/chat/slack/`): SDK with polling (not webhooks), conversation ID = `thread_ts`
-- **Telegram** (`packages/adapters/src/chat/telegram/`): Bot API with polling, conversation ID = `chat_id`
-- **GitHub** (`packages/adapters/src/forge/github/`): Webhooks + GitHub CLI, conversation ID = `owner/repo#number`
-- **Discord** (`packages/adapters/src/community/chat/discord/`): discord.js WebSocket, conversation ID = channel ID
-
-**Adapter Authorization Pattern:**
-
-- Auth checks happen INSIDE adapters (encapsulation, consistency)
-- Auth utilities co-located with each adapter (e.g., `packages/adapters/src/chat/slack/auth.ts`)
-- Parse whitelist from env var in constructor (e.g., `TELEGRAM_ALLOWED_USER_IDS`)
-- Check authorization in message handler (before calling `onMessage` callback)
-- Silent rejection for unauthorized users (no error response)
-- Log unauthorized attempts with masked user IDs for privacy
-- Adapters expose `onMessage(handler)` callback; errors handled by caller
-
-**2. Command Handler** (`packages/core/src/handlers/`)
-
-- Process slash commands (deterministic, no AI)
-- The orchestrator treats only these top-level commands as deterministic: `/help`, `/status`, `/reset`, `/workflow`, `/register-project`, `/update-project`, `/remove-project`, `/commands`, `/init`, `/worktree`
-- `/workflow` handles subcommands like `list`, `run`, `status`, `cancel`, `resume`, `abandon`, `approve`, `reject`, `reset-sessions`
-- Update database, perform operations, return responses
-
-**3. Orchestrator** (`packages/core/src/orchestrator/`)
-
-- Manage AI conversations
-- Load conversation + codebase context from database
-- Variable substitution: `$1`, `$2`, `$3`, `$ARGUMENTS`
-- Session management: Create new or resume existing
-- Stream AI responses to platform
-- System prompt gets a "Managing Workflow Runs" section (`buildRunManagementSection` in `prompt-builder.ts`) teaching the chat agent to drive run management (`anvil workflow runs/get/status/run --detach/approve/reject/abandon`) directly via bash. It is appended **only for project-scoped chats on providers without the native `manage_run` tool** (Codex/OpenCode/Copilot) — gated in `orchestrator-agent.ts` on `!scopedCaps.nativeTools`. Claude and Pi instead receive the in-process `manage_run` native tool (the prompt section would be redundant for them). This is the CLI-bash delivery path for providers that have neither native tools nor `skills:` (direct chat doesn't consume the `skills:` option — it is workflow-node-only).
-
-**4. AI Agent Providers** (`packages/providers/src/`)
-
-- Implement `IAgentProvider` interface
-- **ClaudeProvider**: `@anthropic-ai/claude-agent-sdk`
-- **CodexProvider**: `@openai/codex-sdk`
-- **PiProvider** (community, `builtIn: false`): `@earendil-works/pi-coding-agent` — one harness for ~20 LLM backends via `<provider>/<model>` refs (e.g. `anthropic/claude-haiku-4-5`, `openrouter/qwen/qwen3-coder`); supports extensions, skills, tool restrictions, thinking level, best-effort structured output. See `packages/docs-web/src/content/docs/getting-started/ai-assistants.md` for setup, capability matrix, and extension config.
-- Streaming: `for await (const event of events) { await platform.send(event) }`
-
-### Configuration
-
-**Environment Variables:**
-
-see .env.example
-see .anvil/config.yaml setup as needed
-
-**Assistant Defaults:**
-
-The system supports configuring default models and options per assistant in `.anvil/config.yaml`:
-
-```yaml
-assistants:
-  claude:
-    model: sonnet # or 'opus', 'haiku', 'claude-*', 'inherit'
-    settingSources: # Controls which CLAUDE.md, skills, commands, and agents the SDK loads
-      - project # Project-level <cwd>/.claude/ (included in default)
-      - user # User-level ~/.claude/ (included in default; omit both to restrict to project-only)
-    claudeBinaryPath:
-      /absolute/path/to/claude # Optional: Claude Code executable.
-      # Native binary (curl installer at
-      # ~/.local/bin/claude), npm cli.js, or
-      # the npm platform-package directory
-      # (e.g. @anthropic-ai/claude-code-win32-x64)
-      # which is auto-expanded to claude/claude.exe.
-      # Required in compiled binaries if
-      # CLAUDE_BIN_PATH env var is not set.
-  codex:
-    model: gpt-5.3-codex
-    modelReasoningEffort: medium # 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
-    webSearchMode: live # 'disabled' | 'cached' | 'live'
-    additionalDirectories:
-      - /absolute/path/to/other/repo
-    codexBinaryPath: /usr/local/bin/codex # Optional: custom Codex CLI binary path
-
-
-# docs:
-#   path: docs  # Optional: default is docs/
-```
-
-**Configuration Priority:**
-
-1. Workflow-level options (in YAML `model`, `modelReasoningEffort`, etc.)
-2. Config file defaults (`.anvil/config.yaml` `assistants.*`)
-3. SDK defaults
-
-**Model Validation:**
-
-- Workflows are validated at load time for provider _identity_ only — `provider:` (workflow-level and per-node) must be a registered provider id, otherwise the YAML is rejected with `Unknown provider '<id>'. Registered: claude, codex, pi`.
-- Model strings are NOT validated by Anvil. Whatever the user writes in `model:` is forwarded verbatim to the resolved SDK. Vendor SDKs ship new models faster than Anvil can update; the SDK and the upstream API are the source of truth for what names exist.
-- Provider is resolved via an explicit chain: `node.provider ?? workflow.provider ?? config.assistant`. Model never influences provider selection.
-
-### Running the App in Worktrees
-
-Agents working in worktrees can run the app for self-testing (make changes → run app → test via curl → fix). Ports are automatically allocated to avoid conflicts:
-
-```bash
-# Run in worktree (port auto-allocated based on path)
-bun dev &
-# [Hono] Worktree detected (/path/to/worktree)
-# [Hono] Auto-allocated port: 3637 (base: 3090, offset: +547)
-
-# Test via web API (production path)
-# 1) Create a conversation
-curl -X POST http://localhost:3637/api/conversations \
-  -H "Content-Type: application/json" \
-  -d '{}'
-
-# 2) Send a message
-curl -X POST http://localhost:3637/api/conversations/<conversationId>/message \
-  -H "Content-Type: application/json" \
-  -d '{"message":"/status"}'
-
-# 3) Fetch messages (polling)
-curl http://localhost:3637/api/conversations/<conversationId>/messages
-
-# Note: SSE streaming is available at /api/stream/<conversationId>
-```
-
-**Port Allocation:**
-
-- Worktrees: Automatic unique port (3190-4089 range, hash-based on path)
-- Main repo: Default 3090
-- Override: `PORT=4000 bun dev` (works in both contexts)
-- Same worktree always gets same port (deterministic)
-
-**Important:**
-
-- Use the web API routes for manual validation (avoid running multiple platform adapters)
-- Database is shared (same conversations/codebases available)
-- Kill the server when done: `pkill -f "bun.*dev"` or use the specific port
-
-### Anvil Directory Structure
-
-**User-level (`~/.anvil/`):**
-
-```
-~/.anvil/
-├── workspaces/owner/repo/        # Project-centric layout
-│   ├── source/                   # Cloned repo or symlink → local path
-│   ├── worktrees/                # Git worktrees for this project
-│   ├── artifacts/                # Workflow artifacts (NEVER in git)
-│   │   ├── runs/{id}/            # Per-run artifacts ($ARTIFACTS_DIR)
-│   │   └── uploads/{convId}/     # Web UI file uploads (ephemeral)
-│   └── logs/                     # Workflow execution logs
-├── vendor/codex/                  # Codex native binary (binary builds, user-placed)
-├── web-dist/<version>/            # Cached web UI dist (anvil serve, binary only)
-├── update-check.json              # Update check cache (binary builds, 24h TTL)
-├── anvil.db                     # SQLite database (when DATABASE_URL not set)
-└── config.yaml                   # Global configuration (non-secrets)
-```
-
-**Repo-level (`.anvil/` in any repository):**
-
-```
-.anvil/
-├── commands/       # Custom commands
-├── workflows/      # Workflow definitions (YAML files)
-├── scripts/        # Named scripts for script: nodes (.ts/.js for bun, .py for uv)
-├── state/          # Cross-run workflow state (gitignored — never in git)
-└── config.yaml     # Repo-specific configuration
-```
-
-- `ANVIL_HOME` - Override the base directory (default: `~/.anvil`)
-- Docker: Paths automatically set to `/.anvil/`
-
-## Development Guidelines
-
-### UI and Visual Design
-
-All UI changes — production web (`packages/web/`), experiments (`packages/web/src/experiments/`), the docs site, marketing surfaces, and any future visual surface — must align with the Anvil brand foundation.
-
-- **Canonical brand guide:** https://anvil.diy/brand/ (source: `packages/docs-web/src/content/docs/brand/index.md` + `packages/docs-web/public/brand/foundation.html`).
-- **Use brand tokens, not ad-hoc values.** Colors, gradients, surfaces, and typography must come from the established design tokens (`packages/web/src/index.css`) or the brand guide. Don't hard-code hex values that aren't in the system.
-- **Introducing a new visual token** (color, font, radius, spacing) means updating both the token source and the brand guide. Don't fork the palette per package.
-- **When in doubt, consult the brand guide first** before inventing new visual treatments. Open a discussion if the guide doesn't cover your case.
-
-### When Creating New Features
-
-**Quick reference:**
-
-- **Platform Adapters**: Implement `IPlatformAdapter`, handle auth, polling/webhooks
-- **AI Providers**: Implement `IAgentProvider`, session management, streaming
-- **Slash Commands**: Add to command-handler.ts, update database, no AI
-- **Database Operations**: Use `IDatabase` interface (supports PostgreSQL and SQLite via adapters)
-- **Plan insertion points**: Use stable text anchors (e.g., "after the `it('throws on ...')` test block"), never raw line numbers — line numbers drift on every preceding edit.
-
-### SDK Type Patterns
-
-When working with external SDKs (Claude Agent SDK, Codex SDK), prefer importing and using SDK types directly:
-
-```typescript
-// ✅ CORRECT - Import SDK types directly
-import { query, type Options } from '@anthropic-ai/claude-agent-sdk';
-
-const options: Options = {
-  cwd,
-  permissionMode: 'bypassPermissions',
-  // ...
-};
-
-// Use type assertions for SDK response structures
-const message = msg as { message: { content: ContentBlock[] } };
-```
-
-```typescript
-// ❌ AVOID - Defining duplicate types
-interface MyQueryOptions {  // Don't duplicate SDK types
-  cwd: string;
-  // ...
-}
-const options: MyQueryOptions = { ... };
-query({ prompt, options: options as any });  // Avoid 'as any'
-```
-
-This ensures type compatibility with SDK updates and eliminates `as any` casts.
-
-### Testing
-
-**Unit Tests:**
-
-- Test pure functions (variable substitution, command parsing)
-- Mock external dependencies (database, AI SDKs, platform APIs)
-
-**Integration Tests:**
-
-- Test database operations with test database
-- Test end-to-end flows (mock platforms/AI but use real orchestrator)
-- Clean up test data after each test
-
-**Mock isolation rules (IMPORTANT):**
-
-- Bun's `mock.module()` is process-global and irreversible — `mock.restore()` does NOT undo it
-- Do NOT add `afterAll(() => mock.restore())` for `mock.module()` cleanup — it has no effect
-- Use `spyOn()` for internal modules that other test files import directly (e.g., `spyOn(git, 'checkout')`) — `spy.mockRestore()` DOES work for spies
-- Never `mock.module()` a module path that another test file also `mock.module()`s with a different implementation
-- When adding a new test file with `mock.module()`, ensure its package.json test script runs it in a separate `bun test` invocation from any conflicting files
-
-**Manual Validation:** Use the web API (`curl`) or CLI commands directly for end-to-end testing of new features.
-
-### Logging
-
-**Structured logging with Pino** (`packages/paths/src/logger.ts`):
-
-```typescript
-import { createLogger } from '@anvil/paths';
-
-const log = createLogger('orchestrator');
-
-// Event naming: {domain}.{action}_{state}
-// Standard states: _started, _completed, _failed, _validated, _rejected
-async function createSession(conversationId: string, codebaseId: string) {
-  log.info({ conversationId, codebaseId }, 'session.create_started');
-
-  try {
-    const session = await doCreate();
-    log.info({ conversationId, codebaseId, sessionId: session.id }, 'session.create_completed');
-    return session;
-  } catch (e) {
-    const err = e as Error;
-    log.error(
-      { conversationId, error: err.message, errorType: err.constructor.name, err },
-      'session.create_failed'
-    );
-    throw err;
-  }
-}
-```
-
-**Event naming rules:**
-
-- Format: `{domain}.{action}_{state}` — e.g. `workflow.step_started`, `isolation.create_failed`
-- Avoid generic events like `processing` or `handling`
-- Always pair `_started` with `_completed` or `_failed`
-- Include context: IDs, durations, error details
-
-**Log Levels:** `fatal` > `error` > `warn` > `info` (default) > `debug` > `trace`
-
-**Verbosity:**
-
-- CLI: `anvil --quiet` (errors only) — suppresses Pino logs and workflow progress output
-- CLI: `anvil --verbose` (debug) — enables debug Pino logs and tool-level workflow progress events
-- Server: `LOG_LEVEL=debug bun run start`
-
-**Never log:** API keys or tokens (mask: `token.slice(0, 8) + '...'`), user message content, PII.
-
-### Command System
-
-**Variable Substitution:**
-
-- `$1`, `$2`, `$3` - Positional arguments
-- `$ARGUMENTS` - All arguments as single string
-- `$ARTIFACTS_DIR` - External artifacts directory for the current workflow run (pre-created by executor)
-- `$WORKFLOW_ID` - The workflow run ID
-- `$BASE_BRANCH` - Base branch; auto-detected from git when `worktree.baseBranch` is not set; fails only if referenced in a prompt and auto-detection also fails
-- `$DOCS_DIR` - Documentation directory path; configured via `docs.path` in `.anvil/config.yaml`. Defaults to `docs/`. Never throws.
-- `$LOOP_USER_INPUT` - User feedback provided via `/workflow approve <id> <text>` at an interactive loop gate. Only populated on the first iteration of a resumed interactive loop; empty string on all other iterations.
-- `$REJECTION_REASON` - Reviewer feedback provided via `/workflow reject <id> <reason>` at an approval gate. Only populated in `on_reject` prompts; empty string elsewhere.
-- `$LOOP_PREV_OUTPUT` - Cleaned output of the previous loop iteration (loop nodes only). Empty string on the first iteration (no prior output exists). Useful for `fresh_context: true` loops that need to reference what the previous pass produced or why it failed without carrying full session history.
-
-**Command Types:**
-
-1. **Codebase Commands** (per-repo):
-   - Stored in `.anvil/commands/` (plain text/markdown)
-   - Discovered from the repository `.anvil/commands/` directory
-   - Surfaced via `GET /api/commands` for the workflow builder and invoked by workflow `command:` nodes
-
-2. **Workflows** (YAML-based):
-   - Stored in `.anvil/workflows/` (searched recursively)
-   - Multi-step AI execution chains, discovered at runtime
-   - **`nodes:` (DAG format)**: Nodes with explicit `depends_on` edges; independent nodes in the same topological layer run concurrently. Node types: `command:` (named command file), `prompt:` (inline prompt), `bash:` (shell script, stdout captured as `$nodeId.output`, no AI, receives managed per-project env vars in its subprocess environment when configured), `loop:` (iterative AI prompt until completion signal), `approval:` (human gate; pauses until user approves or rejects; `capture_response: true` stores the user's comment as `$<node-id>.output` for downstream nodes, default false), `script:` (inline TypeScript/Python or named script from `.anvil/scripts/`, runs via `bun` or `uv`, stdout captured as `$nodeId.output`, no AI, receives managed per-project env vars in its subprocess environment when configured, supports `deps:` for dependency installation and `timeout:` in ms, requires `runtime: bun` or `runtime: uv`) . Supports `when:` conditions, `trigger_rule` join semantics, `$nodeId.output` substitution, `output_format` for structured JSON output (SDK-enforced on Claude/Codex/OpenCode; best-effort prompt-augmentation + repair on Pi/Copilot — the parsed output is **validated against the declared schema for every provider**, best-effort providers (Pi/Copilot) re-ask up to 3× on a validation miss, and a node that declares `output_format` but returns no schema-valid output **fails** rather than degrading silently; `$nodeId.output.field` access is strict — a field not in the producer's schema, or a schemaless node whose output isn't JSON / lacks the key, fails the consuming node, while an author-declared-optional field resolves to `''`), `allowed_tools`/`denied_tools` for per-node tool restrictions (Claude only), `hooks` for per-node SDK hook callbacks (Claude only), `mcp` for per-node MCP server config files (Claude only, env vars expanded at execution time), and `skills` for per-node skill preloading via AgentDefinition wrapping (Claude only), `agents` for inline sub-agent definitions invokable via the Task tool (Claude only), and `effort`/`thinking`/`maxBudgetUsd`/`systemPrompt`/`fallbackModel`/`betas`/`sandbox` for Claude SDK advanced options (Claude only, also settable at workflow level), and `persist_session` for cross-run provider session continuity (node-level opt-in; workflow-level default via `persist_sessions: true`; requires a provider with the `sessionResume` capability)
-   - Workflow-level `requires: [github]` hard-blocks invocation (before any worktree/clone/AI cost) when the originating user hasn't connected their GitHub identity — enforced only when per-user GitHub is enabled (GitHub App + `TOKEN_ENCRYPTION_KEY`); a no-op for solo PAT installs
-   - Provider inherited from `.anvil/config.yaml` unless explicitly set; per-node `provider` and `model` overrides supported
-   - Model and options can be set per workflow or inherited from config defaults
-   - `interactive: true` at the workflow level forces foreground execution on web (required for approval-gate workflows in the web UI)
-   - Model validation ensures provider/model compatibility at load time
-   - Commands: `/workflow list`, `/workflow reload`, `/workflow status`, `/workflow cancel`, `/workflow resume <id>` (re-runs failed workflow, skipping completed nodes), `/workflow abandon <id>`, `/workflow cleanup [days]` (CLI only — deletes old run records), `/workflow reset-sessions <name> [<node-id>]` (clears persisted `persist_session` memory; chat auto-scopes to the current conversation, CLI adds `--scope`/`--yes` for cross-scope control)
-   - Resilient loading: One broken YAML doesn't abort discovery; errors shown in `/workflow list`
-   - `resolveWorkflowName()` (in `router.ts`) resolves workflow names via a 4-tier fallback — exact, case-insensitive, suffix (`-name`), substring — with ambiguity detection; used by both the CLI and all chat platforms
-   - Router fallback: if no `/invoke-workflow` is produced, falls back to `anvil-assist` (with "Routing unclear" notice); raw AI response returned only when `anvil-assist` is unavailable
-   - Claude routing calls use `tools: []` to prevent tool use at the API level; Codex tool bypass is detected and triggers the same fallback
-
-**Defaults:**
-
-- Bundled in `.anvil/commands/defaults/` and `.anvil/workflows/defaults/`
-- Binary builds: Embedded at compile time (no filesystem access needed) via `packages/workflows/src/defaults/bundled-defaults.generated.ts`
-- Source builds: Loaded from filesystem at runtime
-- Merged with repo-specific commands/workflows (repo overrides defaults by name)
-- Opt-out: Set `defaults.loadDefaultCommands: false` or `defaults.loadDefaultWorkflows: false` in `.anvil/config.yaml`
-- **After adding, removing, or editing a default file, run `bun run generate:bundled`** to refresh the embedded bundle. After editing `migrations/000_combined.sql`, run `bun run generate:bundled-schema` to keep the embedded schema in sync. `bun run validate` (and CI) run `check:bundled`, `check:bundled-skill`, and `check:bundled-schema` and will fail loudly if any generated file is stale.
-
-**Home-scoped ("global") workflows, commands, and scripts** (user-level, applies to every project):
-
-- Workflows: `~/.anvil/workflows/` (or `$ANVIL_HOME/workflows/`)
-- Commands: `~/.anvil/commands/` (or `$ANVIL_HOME/commands/`)
-- Scripts: `~/.anvil/scripts/` (or `$ANVIL_HOME/scripts/`)
-- Source label: `source: 'global'` on workflows and commands (scripts don't have a source label)
-- Load priority: bundled < global < project (repo overrides global by filename or script name)
-- Subfolders: supported 1 level deep (e.g. `~/.anvil/workflows/triage/foo.yaml`). Deeper nesting is ignored silently.
-- Discovery is automatic — `discoverWorkflowsWithConfig(cwd, loadConfig)` and `discoverScriptsForCwd(cwd)` both read home-scoped paths unconditionally; no caller option needed
-- **Migration from pre-0.x `~/.anvil/.anvil/workflows/`**: if Anvil detects files at the old location it emits a one-time WARN with the exact `mv` command and does NOT load from there. Move with: `mv ~/.anvil/.anvil/workflows ~/.anvil/workflows && rmdir ~/.anvil/.anvil`
-- See the docs site at `packages/docs-web/` for details
-
-### Error Handling
-
-**Database Errors:**
-
-```typescript
-// INSERT operations
-try {
-  await db.query('INSERT INTO conversations ...', params);
-} catch (error) {
-  log.error({ err: error, params }, 'db_insert_failed');
-  throw new Error('Failed to create conversation');
-}
-
-// UPDATE operations - verify rowCount to catch missing records
-try {
-  await db.updateConversation(conversationId, { codebase_id: codebaseId });
-} catch (error) {
-  // updateConversation throws if no rows matched (conversation not found)
-  log.error({ err: error, conversationId }, 'db_update_failed');
-  throw error; // Re-throw to surface the issue
-}
-```
-
-**Git Operation Errors (don't fail silently):**
-
-```typescript
-// When isolation environment creation fails:
-try {
-  // ... isolation creation logic ...
-} catch (error) {
-  const err = error as Error;
-  const userMessage = classifyIsolationError(err);
-  log.error({ err, codebaseId, codebaseName }, 'isolation_creation_failed');
-  await platform.sendMessage(conversationId, userMessage);
-}
-```
-
-Pattern: Use `classifyIsolationError()` (from `@anvil/isolation`) to map git errors (permission denied, timeout, no space, not a git repo) to user-friendly messages. Always log the raw error for debugging and send a classified message to the user.
-
-### API Endpoints
-
-**Web UI REST API** (`packages/server/src/routes/api.ts`):
-
-**System 3 Project Lifecycle:**
-
-- System 3 routes live under `/api/system3/*`. Their authoritative OpenAPI route definitions are in `packages/server/src/routes/schemas/system3.schemas.ts`; handlers are registered in `packages/server/src/routes/api.ts`.
-- Project surfaces cover project creation/listing, Project Flow, source versions, phase detail, and project history.
-- Understanding and readiness surfaces cover source upload, Knowledge Snapshots, Decisions, readiness contracts, and Compilation previews.
-- Approval and execution surfaces cover Approval Manifests, project executions, verification runs, and delivery requests/packages.
-- Audit surfaces cover durable operations and events, abandon actions, Evidence, and Traceability.
-- Keep System 3 domain semantics in `@anvil/system3`; API handlers adapt HTTP requests to that domain and invoke the Anvil Workflow Runtime only for actual Technical Workflow execution.
-
-**Workflow Management:**
-
-- `GET /api/workflows` - List available workflows; optional `?cwd=`; returns `{ workflows: [...], errors?: [...] }`
-- `POST /api/workflows/validate` - Validate a workflow definition in-memory (no save); body: `{ definition: object }`; returns `{ valid: boolean, errors?: string[] }`
-- `GET /api/workflows/:name` - Fetch a single workflow by name; optional `?cwd=` query param; returns `{ workflow, filename, source: 'project' | 'bundled' }`
-- `PUT /api/workflows/:name` - Save (create or update) a workflow YAML; body: `{ definition: object }`; validates before writing; requires `?cwd=` or registered codebase
-- `DELETE /api/workflows/:name` - Delete a user-defined workflow; bundled defaults cannot be deleted
-- `DELETE /api/workflows/:name/node-sessions` - Reset persisted per-node provider sessions; optional `?scope=` and `?node=` narrow the deletion; omitting `?scope=` is a cross-scope wipe and requires `?confirm=all-scopes`; returns `{ success, deleted }`
-
-**Workflow Run Lifecycle:**
-
-- `POST /api/workflows/runs/{runId}/resume` - Resume a failed run from where it left off (skips already-completed DAG nodes; AI session context is not restored).
-- `POST /api/workflows/runs/{runId}/abandon` - Abandon a non-terminal run (marks as cancelled)
-- `DELETE /api/workflows/runs/{runId}` - Delete a terminal workflow run and its events
-
-**Codebases:**
-
-- `GET /api/codebases` / `GET /api/codebases/:id` - List / fetch codebases
-- `POST /api/codebases` - Register a codebase (clone or local path)
-- `DELETE /api/codebases/:id` - Delete a codebase and clean up resources
-- `GET /api/codebases/:id/env` - List env var keys for a codebase (never returns values)
-- `PUT /api/codebases/:id/env` / `DELETE /api/codebases/:id/env/:key` - Upsert / delete a single codebase env var
-- `GET /api/codebases/:id/environments` - List tracked isolation environments for a codebase
-
-**Artifact Files:**
-
-- `GET /api/runs/:runId/artifacts` - List artifact files for a run; walks the on-disk artifact directory (dotfiles skipped) and returns `{ files: [{ path, size, modifiedAt }] }`; 400 on invalid run id or path-escape attempt, 404 if the run does not exist
-- `GET /api/artifacts/:runId/*` - Serve a workflow artifact file by run ID and relative path; returns `text/markdown` for `.md` files, `text/plain` otherwise; 400 on path traversal (`..`), 404 if run or file not found
-
-**Command Listing:**
-
-- `GET /api/commands` - List available command names (bundled + project-defined); optional `?cwd=`; returns `{ commands: [{ name, source: 'bundled' | 'project' }] }`
-
-**Providers:**
-
-- `GET /api/providers` - List registered AI providers; returns `{ providers: [{ id, displayName, capabilities, builtIn }] }`. `capabilities.nativeTools` is `true` for providers that accept in-process native tools (Claude, Pi) — Anvil's `manage_run` tool is auto-injected into project-scoped chat for those providers only. `capabilities.structuredOutput` is a tiered union `'enforced' | 'best-effort' | false` (not a boolean): `'enforced'` = SDK/backend grammar-constrained (Claude/Codex/OpenCode), `'best-effort'` = prompt-augmentation + validate (Pi/Copilot), `false` = unsupported.
-
-**Web Auth (opt-in Better Auth; Postgres + `BETTER_AUTH_SECRET`):**
-
-- Better Auth mounts email/password login at `/api/auth/*` (sign-up/sign-in/sign-out/get-session). Mounted only when enabled; the catch-all explicitly falls through for Anvil-owned `/api/auth/status` + `/api/auth/github*` paths so they aren't shadowed.
-- `GET /api/auth/status` - Web auth availability + signup posture (no auth required); returns `{ enabled: boolean, signup: 'allowlist' | 'open' | 'disabled' }`. Drives the Web UI login gate.
-- The per-request identity seam is `resolveAuthContext(c): { userId, role } | undefined` (in `routes/api.ts`): Better Auth session first, then the `X-Anvil-User` header, then undefined. `resolveWebUserId` delegates to it; `requireWebUser` is the session-aware strict variant (401 missing / 503 backend). `role` rides the canonical user row (default `admin`).
-- **Server-side API gate** (`isApiGateEnabled`): when web auth is enabled, every `/api/*` request must resolve to an identity or gets **401** — except `/api/auth/*` (login surface) and `/api/health*` (healthcheck must stay reachable). `/webhooks/*` and `/internal/*` are outside `/api/*` and untouched. On by default; `ANVIL_WEB_AUTH_REQUIRED=false` keeps login-UI-only. This is what lets Better Auth replace the Caddy `forward_auth` sidecar as the real access boundary.
-- **Signup safety** (`getSignupMode`): with web auth on and no `ANVIL_AUTH_ALLOWED_EMAILS`, signup defaults to **disabled** (login only) + a boot WARN — never silently open. `ANVIL_AUTH_OPEN_SIGNUP=true` opts into open public signup.
-- `GET /api/workflows/runs?mine=true` and `GET /api/conversations?mine=true` - Non-enforcing "my" filter (narrows to `ctx.userId` only when an identity resolves; default lists everything). Not a security boundary.
-
-**GitHub Identity (per-user device flow; App mode + `TOKEN_ENCRYPTION_KEY`):**
-
-- `POST /api/auth/github/device/start` - Begin the device flow for the current web user (from `X-Anvil-User`); returns `{ device_code, user_code, verification_uri, interval, expires_in }`; 401 if no web-auth header
-- `POST /api/auth/github/device/poll` - Single non-blocking poll; body `{ device_code }`; returns `{ status: 'pending' | 'connected' | 'expired' | 'denied' | 'error', githubLogin?, detail? }`
-- `GET /api/auth/github` - Connection status for the current web user; returns `{ connected, githubLogin }`
-- `DELETE /api/auth/github` - Disconnect the current web user's GitHub identity
-
-**System:**
-
-- `GET /api/health` - Health check with adapter/system status
-- `GET /api/update-check` - Check for available updates; returns `{ updateAvailable, currentVersion, latestVersion, releaseUrl }`; skips GitHub API call for non-binary builds
-
-**OpenAPI Spec:**
-
-- `GET /api/openapi.json` - Generated OpenAPI 3.0 spec for all Zod-validated routes
-
-**Webhooks:**
-
-- `POST /webhooks/github` - GitHub webhook events
-- Signature verification required (HMAC SHA-256)
-- Return 200 immediately, process async
-
-**Internal (App mode only; bind 127.0.0.1):**
-
-- `POST /internal/git-credential` - Git credential helper endpoint. Returns `{token}` for the installation matching the requested host/path. Used by the `git-credential-anvil` script in worktree `.git/config` to refresh installation tokens for long-running workflow `git` operations. Hands out installation tokens — MUST NOT be exposed beyond loopback. Server **refuses to start** (not just WARN) if App mode is active and `hostname != 127.0.0.1/localhost`, unless `ANVIL_ALLOW_INTERNAL_ON_PUBLIC_BIND=1` is set as an opt-in escape hatch for deployments where the reverse proxy already drops `/internal/*`.
-
-**Security:**
-
-- Verify webhook signatures (GitHub: `X-Hub-Signature-256`)
-- Use `c.req.text()` for raw webhook body (signature verification)
-- Never log or expose tokens in responses
-- `/internal/*` paths hand out live credentials — the reverse proxy in production MUST drop them, or the server MUST bind to `127.0.0.1` only.
-
-**@Mention Detection:**
-
-- Parse `@anvil` in issue/PR **comments only** (not descriptions)
-- Events: `issue_comment` only
-- Note: Descriptions often contain example commands or documentation - these are NOT command invocations (see #96)
+SQLite is the default without DATABASE_URL. PostgreSQL is selected when DATABASE_URL is set and converges through the combined migration on startup. Consult package.json scripts and CLI help for the current command catalog instead of duplicating it here.
+
+## Security and Reliability
+
+- Never log or expose API keys, tokens, credentials, message content, or PII. Mask identifiers when logging unauthorized access.
+- Verify GitHub webhook signatures against the raw request body.
+- Keep credential-serving internal endpoints loopback-only unless the documented reverse-proxy protection is explicitly enabled.
+- Authentication and authorization checks belong at the owning boundary; never silently broaden access.
+- Log structured start, completion, and failure events with relevant IDs and durations. Preserve raw error detail in logs and return actionable classified errors to users.
+- Use retries only for recoverable operations. Do not convert ambiguous ownership or non-terminal state into destructive lifecycle mutation.
+
+## Task-to-Documentation Routing
+
+- System 3 lifecycle or product behavior: follow “System 3 Documentation Routing” above.
+- System 3 lifecycle UI: also read docs/technical/07-system3-lifecycle-ui.md.
+- Repository setup, contribution, or command usage: read README.md, CONTRIBUTING.md, package.json scripts, and relevant package README files.
+- Public documentation changes: inspect packages/docs-web and its local guidance.
+- Workflow definitions or execution: inspect packages/workflows schemas, loader, validator, and the relevant tests.
+- API changes: inspect packages/server/src/routes/schemas, route registration, generated OpenAPI output, and Web API types.
+- Persistence changes: inspect migrations/000_combined.sql, SQLite generation, adapter implementations, and parity tests.
+- Provider changes: inspect packages/providers contracts, capability registry, provider parser, and provider-specific tests.
+- UI changes: inspect the rendered page at relevant desktop and compact widths; types and DOM assertions alone are insufficient.
+
+Do not preload every referenced document. Read only the route required by the current task, but read required instruction files completely.

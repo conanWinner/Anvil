@@ -20,6 +20,7 @@ import type {
 
 function statusLabel(status: System3ResourceDescriptor['status']): string {
   if (status === 'current') return 'Đang dùng';
+  if (status === 'candidate') return 'Bản nháp';
   if (status === 'stale') return 'Cần cập nhật';
   if (status === 'superseded') return 'Phiên bản cũ';
   if (status === 'failed') return 'Lỗi';
@@ -117,6 +118,42 @@ function Block({
     return (
       <section className="s3-presentation-markdown">
         <ReactMarkdown remarkPlugins={[remarkGfm]}>{block.markdown}</ReactMarkdown>
+      </section>
+    );
+  }
+  if (block.kind === 'citations') {
+    return (
+      <section className="s3-presentation-section s3-source-citations">
+        <h3>{block.title}</h3>
+        <p>Đoạn Markdown từ phiên bản nguồn đã dùng; không phải bản tóm tắt của AI.</p>
+        {block.items.map((citation, index) => (
+          <details
+            key={`${citation.sourceVersionId}:${index.toString()}`}
+            className="s3-source-citation"
+          >
+            <summary>Xem nguồn {citation.label}</summary>
+            <p className="s3-source-citation-location">
+              {citation.filename}
+              {citation.startLine === null
+                ? ''
+                : ` · Dòng ${citation.startLine.toString()}–${(citation.endLine ?? citation.startLine).toString()}`}
+            </p>
+            {citation.headingPath.length === 0 ? null : <p>{citation.headingPath.join(' → ')}</p>}
+            {citation.status === 'verified' && citation.excerpt !== null ? (
+              <>
+                <p className="s3-source-citation-verified">
+                  <Check size={14} aria-hidden="true" /> Đã đối chiếu với nguồn đã ghim
+                </p>
+                <blockquote className="s3-source-citation-excerpt">{citation.excerpt}</blockquote>
+              </>
+            ) : (
+              <p role="status">{citation.reason ?? 'Chưa thể xác minh đoạn nguồn này.'}</p>
+            )}
+            {citation.truncated ? (
+              <p>Đoạn xem trước đã được rút ngắn; nội dung nguồn gốc vẫn được giữ nguyên.</p>
+            ) : null}
+          </details>
+        ))}
       </section>
     );
   }

@@ -2,6 +2,7 @@ import { expect, test } from 'bun:test';
 import {
   compileCustomerChurnReference,
   createApprovalManifest,
+  projectSystem3WorkflowBundlePhases,
   validateSystem3CapabilityPolicy,
 } from './compiler';
 import type { BlueprintAnalysis } from './contracts';
@@ -28,6 +29,17 @@ const blueprint: System3SourceRecord = {
   intakeReportArtifactId: null,
   createdAt: '2026-07-21T00:00:00.000Z',
 };
+const dataset: System3SourceRecord = {
+  ...blueprint,
+  id: '00000000-0000-4000-8000-000000000005',
+  sourceId: '00000000-0000-4000-8000-000000000105',
+  kind: 'dataset',
+  filename: 'customers.csv',
+  originalFilename: 'customers.csv',
+  mediaType: 'text/csv',
+  contentHash: 'sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+  storageKey: 'sources/dataset/a/customers.csv',
+};
 
 const analysis: BlueprintAnalysis = {
   schemaVersion: 1,
@@ -40,26 +52,110 @@ const analysis: BlueprintAnalysis = {
   manualReviews: [],
   dataset: null,
 };
+const analysisWithDataset: BlueprintAnalysis = {
+  ...analysis,
+  dataset: {
+    filename: dataset.filename,
+    rowCount: 2,
+    columnCount: 2,
+    columns: ['id', 'churn'],
+    targetColumn: 'churn',
+    targetExists: true,
+    targetDistribution: { yes: 1, no: 1 },
+  },
+};
+const executableSources = [blueprint, dataset] as const;
 
 test('compiles a deterministic Customer Churn execution plan', () => {
   const input = {
     knowledgeSnapshotId: '00000000-0000-4000-8000-000000000020',
-    sources: [blueprint],
-    analysis,
+    sources: executableSources,
+    analysis: analysisWithDataset,
   };
   const first = compileCustomerChurnReference(input);
   const second = compileCustomerChurnReference(input);
 
   expect(first.definitionHash).toBe(second.definitionHash);
+  expect(first.plan.schemaVersion).toBe(3);
+  expect(first.plan.compilerVersion).toBe('system3-compiler@3');
+  expect(first.workflowBundles.map(bundle => bundle.activityId)).toEqual([
+    'TW-06',
+    'TW-07',
+    'TW-09',
+  ]);
+  expect(
+    first.plan.phases.filter(phase => ['build', 'experiment', 'delivery'].includes(phase.phaseId))
+  ).toEqual(
+    projectSystem3WorkflowBundlePhases({
+      workflowBundles: first.workflowBundles,
+      runtimeProfile: first.plan.runtimeProfile,
+    })
+  );
   expect(first.plan.phases[0]?.workflow).toBe('system3-understand-project');
   expect(first.plan.phases[0]?.resourceProfile).toEqual({ cpuOnly: true, ramGb: 8 });
+});
+
+test('pins the primary dataset Source Version and hash into the TW-06 bundle', () => {
+  const supplementalDataset = {
+    ...dataset,
+    id: '00000000-0000-4000-8000-000000000004',
+    sourceId: '00000000-0000-4000-8000-000000000004',
+    role: 'supplemental' as const,
+    filename: 'supplement.csv',
+    originalFilename: 'supplement.csv',
+  };
+  const compiled = compileCustomerChurnReference({
+    knowledgeSnapshotId: '00000000-0000-4000-8000-000000000020',
+    sources: [supplementalDataset, ...executableSources],
+    analysis: analysisWithDataset,
+  });
+  const executionBundle = compiled.workflowBundles.find(bundle => bundle.activityId === 'TW-06');
+  expect(executionBundle?.definition.workflows).toContainEqual(
+    expect.objectContaining({
+      nodes: expect.arrayContaining([
+        expect.objectContaining({
+          id: 'scaffold-project',
+          action: expect.objectContaining({
+            input: expect.objectContaining({
+              datasetSourceVersionId: dataset.id,
+              datasetContentHash: dataset.contentHash,
+            }),
+          }),
+        }),
+      ]),
+    })
+  );
+});
+
+test('refuses compilation without exactly one primary dataset Source Version', () => {
+  expect(() =>
+    compileCustomerChurnReference({
+      knowledgeSnapshotId: '00000000-0000-4000-8000-000000000020',
+      sources: [blueprint],
+      analysis,
+    })
+  ).toThrow('data_required');
+  expect(() =>
+    compileCustomerChurnReference({
+      knowledgeSnapshotId: '00000000-0000-4000-8000-000000000020',
+      sources: [
+        ...executableSources,
+        {
+          ...dataset,
+          id: '00000000-0000-4000-8000-000000000006',
+          sourceId: '00000000-0000-4000-8000-000000000106',
+        },
+      ],
+      analysis: analysisWithDataset,
+    })
+  ).toThrow('multiple primary dataset');
 });
 
 test('scopes persisted workflow and capability snapshot IDs to the project', () => {
   const common = {
     knowledgeSnapshotId: '00000000-0000-4000-8000-000000000020',
-    sources: [blueprint],
-    analysis,
+    sources: executableSources,
+    analysis: analysisWithDataset,
   };
   const first = compileCustomerChurnReference({
     ...common,
@@ -78,9 +174,11 @@ test('scopes persisted workflow and capability snapshot IDs to the project', () 
 
 test('approval manifest pins the compiled plan hashes', () => {
   const compiled = compileCustomerChurnReference({
+    compilationId: '00000000-0000-4000-8000-000000000030',
+    projectId: blueprint.projectId,
     knowledgeSnapshotId: '00000000-0000-4000-8000-000000000020',
-    sources: [blueprint],
-    analysis,
+    sources: executableSources,
+    analysis: analysisWithDataset,
   });
   const manifest = createApprovalManifest({
     compilationId: '00000000-0000-4000-8000-000000000030',
@@ -88,6 +186,7 @@ test('approval manifest pins the compiled plan hashes', () => {
     plan: compiled.plan,
     definitionHash: compiled.definitionHash,
     capabilityRegistryHash: compiled.capabilityRegistryHash,
+    workflowBundles: compiled.workflowBundles,
   });
 
   expect(manifest.executionPlanHash).toBe(compiled.definitionHash);
@@ -100,9 +199,11 @@ test('pins the immutable readiness contract into the execution plan and approval
     contractHash: 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
   };
   const compiled = compileCustomerChurnReference({
+    compilationId: '00000000-0000-4000-8000-000000000030',
+    projectId: blueprint.projectId,
     knowledgeSnapshotId: '00000000-0000-4000-8000-000000000020',
-    sources: [blueprint],
-    analysis,
+    sources: executableSources,
+    analysis: analysisWithDataset,
     readinessContract,
   });
   expect(compiled.plan.readinessContract).toEqual(readinessContract);
@@ -113,6 +214,7 @@ test('pins the immutable readiness contract into the execution plan and approval
       plan: compiled.plan,
       definitionHash: compiled.definitionHash,
       capabilityRegistryHash: compiled.capabilityRegistryHash,
+      workflowBundles: compiled.workflowBundles,
     }).readinessContract
   ).toEqual(readinessContract);
 });
@@ -126,13 +228,18 @@ test('pins only the latest immutable version from each logical source', () => {
     contentHash: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
   };
   const compiled = compileCustomerChurnReference({
+    compilationId: '00000000-0000-4000-8000-000000000030',
+    projectId: blueprint.projectId,
     knowledgeSnapshotId: '00000000-0000-4000-8000-000000000020',
-    sources: [currentBlueprint, previousBlueprint],
-    analysis,
+    sources: [currentBlueprint, previousBlueprint, dataset],
+    analysis: analysisWithDataset,
   });
 
-  expect(compiled.plan.inputSnapshot.sourceIds).toEqual([currentBlueprint.id]);
-  expect(compiled.plan.inputSnapshot.sourceHashes).toEqual([currentBlueprint.contentHash]);
+  expect(compiled.plan.inputSnapshot.sourceIds).toEqual([currentBlueprint.id, dataset.id]);
+  expect(compiled.plan.inputSnapshot.sourceHashes).toEqual([
+    currentBlueprint.contentHash,
+    dataset.contentHash,
+  ]);
 });
 
 test('keeps multiple active source lineages of the same kind', () => {
@@ -147,21 +254,21 @@ test('keeps multiple active source lineages of the same kind', () => {
   };
   const compiled = compileCustomerChurnReference({
     knowledgeSnapshotId: '00000000-0000-4000-8000-000000000020',
-    sources: [supportingBlueprint, blueprint],
-    analysis,
+    sources: [supportingBlueprint, blueprint, dataset],
+    analysis: analysisWithDataset,
   });
 
   expect(compiled.plan.inputSnapshot.sourceIds).toContain(blueprint.id);
   expect(compiled.plan.inputSnapshot.sourceIds).toContain(supportingBlueprint.id);
-  expect(compiled.plan.inputSnapshot.sourceIds).toHaveLength(2);
+  expect(compiled.plan.inputSnapshot.sourceIds).toHaveLength(3);
 });
 
 test('refuses compilation when a required capability cannot be resolved', () => {
   expect(() =>
     compileCustomerChurnReference({
       knowledgeSnapshotId: '00000000-0000-4000-8000-000000000020',
-      sources: [blueprint],
-      analysis,
+      sources: executableSources,
+      analysis: analysisWithDataset,
       availableCapabilities: [],
     })
   ).toThrow('unresolved required capabilities');
@@ -170,8 +277,8 @@ test('refuses compilation when a required capability cannot be resolved', () => 
 test('rejects capability policy tampering after compilation', () => {
   const compiled = compileCustomerChurnReference({
     knowledgeSnapshotId: '00000000-0000-4000-8000-000000000020',
-    sources: [blueprint],
-    analysis,
+    sources: executableSources,
+    analysis: analysisWithDataset,
   });
   const [firstCapability, ...remainingCapabilities] = compiled.plan.capabilityRegistry;
   if (firstCapability === undefined) throw new Error('Expected a compiled capability');
@@ -189,9 +296,11 @@ test('rejects capability policy tampering after compilation', () => {
 
 test('pins a pending impact manifest into a deterministic scoped rerun', () => {
   const compiled = compileCustomerChurnReference({
+    compilationId: '00000000-0000-4000-8000-000000000030',
+    projectId: blueprint.projectId,
     knowledgeSnapshotId: '00000000-0000-4000-8000-000000000020',
-    sources: [blueprint],
-    analysis,
+    sources: executableSources,
+    analysis: analysisWithDataset,
     rerunScope: {
       impactManifestId: '00000000-0000-4000-8000-000000000040',
       affectedPhases: [
@@ -221,6 +330,7 @@ test('pins a pending impact manifest into a deterministic scoped rerun', () => {
       plan: compiled.plan,
       definitionHash: compiled.definitionHash,
       capabilityRegistryHash: compiled.capabilityRegistryHash,
+      workflowBundles: compiled.workflowBundles,
     }).executionPlanHash
   ).toBe(compiled.definitionHash);
 });
@@ -231,11 +341,12 @@ test('pins an approved artifact for a delivery-only scoped execution', () => {
     storageKey: 'artifacts/delivery/abc/generated_project.tar.gz',
     contentHash: 'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
     sourceExecutionId: '00000000-0000-4000-8000-000000000060',
+    sourceVersionIds: executableSources.map(source => source.id),
   };
   const compiled = compileCustomerChurnReference({
     knowledgeSnapshotId: '00000000-0000-4000-8000-000000000020',
-    sources: [blueprint],
-    analysis,
+    sources: executableSources,
+    analysis: analysisWithDataset,
     rerunScope: {
       impactManifestId: '00000000-0000-4000-8000-000000000040',
       affectedPhases: ['delivery'],
@@ -265,12 +376,33 @@ test('refuses scoped artifact reuse when the approved artifact is unavailable', 
   expect(() =>
     compileCustomerChurnReference({
       knowledgeSnapshotId: '00000000-0000-4000-8000-000000000020',
-      sources: [blueprint],
-      analysis,
+      sources: executableSources,
+      analysis: analysisWithDataset,
       rerunScope: {
         impactManifestId: '00000000-0000-4000-8000-000000000040',
         affectedPhases: ['delivery'],
       },
     })
   ).toThrow('requires an approved reusable artifact');
+});
+
+test('refuses delivery result reuse when Source Version lineage differs', () => {
+  expect(() =>
+    compileCustomerChurnReference({
+      knowledgeSnapshotId: '00000000-0000-4000-8000-000000000020',
+      sources: executableSources,
+      analysis: analysisWithDataset,
+      rerunScope: {
+        impactManifestId: '00000000-0000-4000-8000-000000000040',
+        affectedPhases: ['delivery'],
+        reusableArtifact: {
+          kind: 'delivery_package',
+          storageKey: 'artifacts/delivery/old/generated_project.tar.gz',
+          contentHash: `sha256:${'e'.repeat(64)}`,
+          sourceExecutionId: '00000000-0000-4000-8000-000000000060',
+          sourceVersionIds: ['00000000-0000-4000-8000-000000000099'],
+        },
+      },
+    })
+  ).toThrow('equivalent Source Version basis');
 });

@@ -13,12 +13,22 @@ import {
   system3ResourcePresentationSchema,
   system3ResourceTypeSchema,
   system3ImpactManifestSchema,
+  extractionQualitySchema,
+  system3LifecycleAttemptBasisSchema,
+  system3LifecycleAttemptCleanupStatusSchema,
+  system3LifecycleAttemptInputModeSchema,
+  system3LifecycleAttemptRunStatusSchema,
+  system3LifecycleAttemptScopeSchema,
+  system3LifecycleAttemptStatusSchema,
 } from '@anvil/system3';
 import { errorSchema } from './common.schemas';
 
 export const system3ProjectParamsSchema = z.object({ id: z.string().uuid() });
 export const system3DecisionParamsSchema = system3ProjectParamsSchema.extend({
   decisionId: z.string().uuid(),
+});
+export const system3KnowledgeSnapshotParamsSchema = system3ProjectParamsSchema.extend({
+  snapshotId: z.string().uuid(),
 });
 export const system3SourceVersionParamsSchema = system3ProjectParamsSchema.extend({
   sourceVersionId: z.string().uuid(),
@@ -44,6 +54,9 @@ export const system3VerificationParamsSchema = system3ProjectParamsSchema.extend
   executionId: z.string().uuid(),
   verificationId: z.string().uuid(),
 });
+export const system3LifecycleAttemptParamsSchema = system3ProjectParamsSchema.extend({
+  attemptId: z.string().uuid(),
+});
 
 export const system3ProjectSchema = z
   .object({
@@ -64,6 +77,79 @@ export const system3ProjectSchema = z
     updatedAt: z.string().datetime(),
   })
   .openapi('System3Project');
+
+export const system3LifecycleAttemptSchema = z
+  .object({
+    id: z.string().uuid(),
+    projectId: z.string().uuid(),
+    sequence: z.number().int().positive(),
+    baseAttemptId: z.string().uuid().nullable(),
+    startActivityId: system3LifecycleActivityIdSchema,
+    scope: system3LifecycleAttemptScopeSchema,
+    inputMode: system3LifecycleAttemptInputModeSchema,
+    basis: system3LifecycleAttemptBasisSchema,
+    previewHash: z.string().min(1),
+    conversationId: z.string().uuid().nullable(),
+    isolationEnvironmentId: z.string().uuid().nullable(),
+    branchName: z.string().nullable(),
+    workingPath: z.string().nullable(),
+    lifecycleStatus: system3LifecycleAttemptStatusSchema,
+    runStatus: system3LifecycleAttemptRunStatusSchema,
+    cleanupStatus: system3LifecycleAttemptCleanupStatusSchema,
+    checkpointActivityId: system3LifecycleActivityIdSchema.nullable(),
+    nextActivityId: system3LifecycleActivityIdSchema.nullable(),
+    cleanupManifest: z.record(z.string(), z.unknown()).nullable(),
+    createdBy: z.string().nullable(),
+    createdAt: z.string().datetime(),
+    startedAt: z.string().datetime().nullable(),
+    completedAt: z.string().datetime().nullable(),
+    cleanedAt: z.string().datetime().nullable(),
+  })
+  .openapi('System3LifecycleAttempt');
+
+export const system3LifecycleAttemptPreviewBodySchema = z.object({
+  expectedVersion: z.number().int().positive(),
+  baseAttemptId: z.string().uuid().nullable().optional(),
+  startActivityId: system3LifecycleActivityIdSchema,
+  scope: system3LifecycleAttemptScopeSchema,
+  inputMode: system3LifecycleAttemptInputModeSchema,
+});
+
+export const system3LifecycleAttemptPreviewSchema = z
+  .object({
+    basis: system3LifecycleAttemptBasisSchema,
+    previewHash: z.string().startsWith('sha256:'),
+    branchHint: z.string(),
+    activities: z.array(system3LifecycleActivityIdSchema),
+    checkpoints: z.array(system3LifecycleActivityIdSchema),
+    warnings: z.array(z.string()),
+    blockingReasons: z.array(z.string()),
+    canStart: z.boolean(),
+  })
+  .openapi('System3LifecycleAttemptPreview');
+
+export const createSystem3LifecycleAttemptBodySchema =
+  system3LifecycleAttemptPreviewBodySchema.extend({
+    previewHash: z.string().startsWith('sha256:'),
+    idempotencyKey: z.string().min(1).max(200),
+  });
+
+export const cleanupSystem3LifecycleAttemptBodySchema = z.object({
+  expectedVersion: z.number().int().positive(),
+  confirmation: z.literal('cleanup_attempt'),
+  force: z.boolean().default(false),
+});
+
+/** OP-00 and OP-01 are deterministic control-plane operations, not Workflow Runs. */
+export const continueSystem3LifecycleAttemptBodySchema = z.object({
+  expectedVersion: z.number().int().positive(),
+});
+
+export const cleanupAllSystem3LifecycleAttemptsBodySchema = z.object({
+  expectedVersion: z.number().int().positive(),
+  confirmation: z.literal('cleanup_all_attempts'),
+  force: z.boolean().default(false),
+});
 
 export const system3SourceValidationReportSchema = z
   .object({
@@ -214,6 +300,14 @@ export const system3DecisionSchema = z
     why: z.string(),
     recommendation: z.string(),
     options: z.array(z.string()),
+    binding: z
+      .discriminatedUnion('kind', [
+        z.object({
+          kind: z.literal('dataset_target_column'),
+          allowedValues: z.array(z.string()),
+        }),
+      ])
+      .nullable(),
     affectedPhases: z.array(z.string()),
     status: z.enum(['pending', 'answered']),
     answer: z.string().nullable(),
@@ -221,6 +315,64 @@ export const system3DecisionSchema = z
     updatedAt: z.string().datetime(),
   })
   .openapi('System3Decision');
+
+export const system3KnowledgeSnapshotSchema = z
+  .object({
+    id: z.string().uuid(),
+    projectId: z.string().uuid(),
+    analysis: blueprintAnalysisSchema,
+    artifactKey: z.string(),
+    workflowRunId: z.string().nullable(),
+    inputSnapshotId: z.string().uuid().nullable(),
+    schemaVersion: z.number().int().positive(),
+    lifecycleStatus: z.enum(['candidate', 'active', 'superseded', 'stale']),
+    qualityStatus: z
+      .enum(['passed', 'decision_required', 'revision_required', 'blocked'])
+      .nullable(),
+    qualityReport: extractionQualitySchema.nullable(),
+    activatedAt: z.string().datetime().nullable(),
+    activatedBy: z.string().nullable(),
+    createdAt: z.string().datetime(),
+  })
+  .openapi('System3KnowledgeSnapshot');
+
+export const system3UnderstandingInputSnapshotSchema = z
+  .object({
+    id: z.string().uuid(),
+    projectId: z.string().uuid(),
+    operationId: z.string().uuid(),
+    knowledgeSnapshotId: z.string().uuid().nullable(),
+    workflowRunId: z.string().nullable(),
+    sourceIds: z.array(z.string().uuid()),
+    sourceHashes: z.array(z.string().startsWith('sha256:')),
+    sourceRefs: z.array(
+      z.object({
+        sourceVersionId: z.string().uuid(),
+        kind: system3SourceKindSchema,
+        filename: z.string(),
+        mediaType: z.string(),
+        contentHash: z.string().startsWith('sha256:'),
+      })
+    ),
+    parserVersion: z.string(),
+    extractionPolicyVersion: z.string(),
+    capabilityRegistryHash: z.string(),
+    runtimeProfile: z.record(z.string(), z.unknown()),
+    createdAt: z.string().datetime(),
+  })
+  .openapi('System3UnderstandingInputSnapshot');
+
+export const system3UnderstandingViewSchema = z
+  .object({
+    projectVersion: z.number().int().positive(),
+    activeSnapshot: system3KnowledgeSnapshotSchema.nullable(),
+    candidateSnapshot: system3KnowledgeSnapshotSchema.nullable(),
+    inputSnapshot: system3UnderstandingInputSnapshotSchema.nullable(),
+    decisions: z.array(system3DecisionSchema),
+    canActivate: z.boolean(),
+    blockingReasons: z.array(z.string()),
+  })
+  .openapi('System3UnderstandingView');
 
 export const system3ReadinessContractSchema = z
   .object({
@@ -235,6 +387,40 @@ export const system3ReadinessContractSchema = z
   })
   .openapi('System3ReadinessContract');
 
+export const system3ReadinessEvaluationSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    status: z.enum(['passed', 'decision_required', 'data_required', 'blocked']),
+    knowledgeSnapshotId: z.string().uuid(),
+    projectVersion: z.number().int().positive(),
+    checks: z.array(
+      z.object({
+        id: z.string(),
+        label: z.string(),
+        status: z.enum(['passed', 'failed']),
+        message: z.string(),
+        nextAction: z
+          .enum([
+            'continue_compile',
+            'answer_decisions',
+            'link_dataset',
+            'review_understanding',
+            'configure_runtime',
+          ])
+          .nullable(),
+      })
+    ),
+    blockerReasons: z.array(z.string()),
+    nextAction: z.enum([
+      'continue_compile',
+      'answer_decisions',
+      'link_dataset',
+      'review_understanding',
+      'configure_runtime',
+    ]),
+  })
+  .openapi('System3ReadinessEvaluation');
+
 export const system3FlowSchema = z
   .object({
     project: system3ProjectSchema,
@@ -242,6 +428,7 @@ export const system3FlowSchema = z
     analysis: blueprintAnalysisSchema.nullable(),
     decisions: z.array(system3DecisionSchema),
     readiness: system3ReadinessContractSchema.nullable(),
+    readinessEvaluation: system3ReadinessEvaluationSchema.nullable(),
     compilation: z
       .object({
         id: z.string().uuid(),
@@ -344,6 +531,9 @@ export const createSystem3ProjectBodySchema = z
 export const analyzeSystem3ProjectBodySchema = z
   .object({ expectedVersion: z.number().int().positive() })
   .openapi('AnalyzeSystem3ProjectBody');
+export const activateSystem3UnderstandingBodySchema = z
+  .object({ expectedVersion: z.number().int().positive() })
+  .openapi('ActivateSystem3UnderstandingBody');
 export const retrySystem3IntakeOperationBodySchema = z
   .object({ expectedVersion: z.number().int().positive() })
   .openapi('RetrySystem3IntakeOperationBody');
@@ -379,6 +569,9 @@ export const system3ExecutionSchema = z
     approvalId: z.string().uuid(),
     workflowRunId: z.string(),
     definitionHash: z.string().startsWith('sha256:'),
+    bundleSnapshotId: z.string().uuid().nullable(),
+    bundleHash: z.string().startsWith('sha256:').nullable(),
+    runtimeBindings: z.record(z.string(), z.unknown()).nullable(),
     status: z.enum(['accepted', 'running', 'completed', 'failed']),
     error: z.string().nullable(),
     createdAt: z.string().datetime(),
@@ -394,6 +587,7 @@ export const system3OperationSchema = z
       'source_intake',
       'change_detection',
       'analyze',
+      'activate_understanding',
       'readiness',
       'compile',
       'execute',
@@ -441,6 +635,9 @@ export const system3VerificationSchema = z
     status: z.enum(['accepted', 'running', 'completed', 'failed']),
     validatorVersion: z.string(),
     basisHash: z.string().startsWith('sha256:'),
+    bundleSnapshotId: z.string().uuid().nullable(),
+    bundleHash: z.string().startsWith('sha256:').nullable(),
+    runtimeBindings: z.record(z.string(), z.unknown()).nullable(),
     evidenceMap: z.record(z.string(), z.unknown()).nullable(),
     gate: z.record(z.string(), z.unknown()).nullable(),
     error: z.string().nullable(),
@@ -622,6 +819,131 @@ export const getSystem3HistoryRoute = createRoute({
     200: {
       description: 'System 3 project history',
       content: { 'application/json': { schema: system3HistorySchema } },
+    },
+    ...projectErrors,
+  },
+});
+
+export const previewSystem3LifecycleAttemptRoute = createRoute({
+  method: 'post',
+  path: '/api/system3/projects/{id}/attempts/preview',
+  summary: 'Preview a new immutable System 3 Lifecycle Attempt',
+  request: {
+    params: system3ProjectParamsSchema,
+    body: { content: { 'application/json': { schema: system3LifecycleAttemptPreviewBodySchema } } },
+  },
+  responses: {
+    200: {
+      description: 'Attempt preview',
+      content: { 'application/json': { schema: system3LifecycleAttemptPreviewSchema } },
+    },
+    ...projectErrors,
+  },
+});
+
+export const createSystem3LifecycleAttemptRoute = createRoute({
+  method: 'post',
+  path: '/api/system3/projects/{id}/attempts',
+  summary: 'Create a System 3 Lifecycle Attempt',
+  request: {
+    params: system3ProjectParamsSchema,
+    body: { content: { 'application/json': { schema: createSystem3LifecycleAttemptBodySchema } } },
+  },
+  responses: {
+    201: {
+      description: 'Lifecycle Attempt',
+      content: { 'application/json': { schema: system3LifecycleAttemptSchema } },
+    },
+    ...projectErrors,
+  },
+});
+
+export const listSystem3LifecycleAttemptsRoute = createRoute({
+  method: 'get',
+  path: '/api/system3/projects/{id}/attempts',
+  summary: 'List System 3 Lifecycle Attempts',
+  request: { params: system3ProjectParamsSchema },
+  responses: {
+    200: {
+      description: 'Lifecycle Attempts',
+      content: {
+        'application/json': {
+          schema: z.object({ attempts: z.array(system3LifecycleAttemptSchema) }),
+        },
+      },
+    },
+    ...projectErrors,
+  },
+});
+
+export const getSystem3LifecycleAttemptRoute = createRoute({
+  method: 'get',
+  path: '/api/system3/projects/{id}/attempts/{attemptId}',
+  summary: 'Get a System 3 Lifecycle Attempt',
+  request: { params: system3LifecycleAttemptParamsSchema },
+  responses: {
+    200: {
+      description: 'Lifecycle Attempt',
+      content: { 'application/json': { schema: system3LifecycleAttemptSchema } },
+    },
+    ...projectErrors,
+  },
+});
+
+export const cleanupSystem3LifecycleAttemptRoute = createRoute({
+  method: 'post',
+  path: '/api/system3/projects/{id}/attempts/{attemptId}/cleanup',
+  summary: 'Clean generated payload for a terminal System 3 Lifecycle Attempt',
+  request: {
+    params: system3LifecycleAttemptParamsSchema,
+    body: { content: { 'application/json': { schema: cleanupSystem3LifecycleAttemptBodySchema } } },
+  },
+  responses: {
+    200: {
+      description: 'Cleaned Lifecycle Attempt',
+      content: { 'application/json': { schema: system3LifecycleAttemptSchema } },
+    },
+    ...projectErrors,
+  },
+});
+
+export const continueSystem3LifecycleAttemptRoute = createRoute({
+  method: 'post',
+  path: '/api/system3/projects/{id}/attempts/{attemptId}/continue',
+  summary: 'Advance a waiting System 3 Lifecycle Attempt to its next activity',
+  request: {
+    params: system3LifecycleAttemptParamsSchema,
+    body: {
+      content: { 'application/json': { schema: continueSystem3LifecycleAttemptBodySchema } },
+    },
+  },
+  responses: {
+    200: {
+      description: 'Advanced Lifecycle Attempt',
+      content: { 'application/json': { schema: system3LifecycleAttemptSchema } },
+    },
+    ...projectErrors,
+  },
+});
+
+export const cleanupAllSystem3LifecycleAttemptsRoute = createRoute({
+  method: 'post',
+  path: '/api/system3/projects/{id}/attempts/cleanup-all',
+  summary: 'Clean generated payload for every terminal System 3 Lifecycle Attempt',
+  request: {
+    params: system3ProjectParamsSchema,
+    body: {
+      content: { 'application/json': { schema: cleanupAllSystem3LifecycleAttemptsBodySchema } },
+    },
+  },
+  responses: {
+    200: {
+      description: 'Cleaned Lifecycle Attempts',
+      content: {
+        'application/json': {
+          schema: z.object({ attempts: z.array(system3LifecycleAttemptSchema) }),
+        },
+      },
     },
     ...projectErrors,
   },
@@ -936,6 +1258,63 @@ export const analyzeSystem3ProjectRoute = createRoute({
           schema: z.object({ operation: system3OperationSchema }),
         },
       },
+    },
+    ...projectErrors,
+  },
+});
+export const getSystem3UnderstandingViewRoute = createRoute({
+  method: 'get',
+  path: '/api/system3/projects/{id}/phases/understanding/view',
+  summary: 'Get the active and candidate Project Understanding state',
+  request: { params: system3ProjectParamsSchema },
+  responses: {
+    200: {
+      description: 'Project Understanding view',
+      content: { 'application/json': { schema: system3UnderstandingViewSchema } },
+    },
+    ...projectErrors,
+  },
+});
+export const listSystem3KnowledgeSnapshotsRoute = createRoute({
+  method: 'get',
+  path: '/api/system3/projects/{id}/knowledge-snapshots',
+  summary: 'List Project Understanding snapshots',
+  request: { params: system3ProjectParamsSchema },
+  responses: {
+    200: {
+      description: 'Project Understanding snapshot history',
+      content: { 'application/json': { schema: z.array(system3KnowledgeSnapshotSchema) } },
+    },
+    ...projectErrors,
+  },
+});
+export const getSystem3KnowledgeSnapshotRoute = createRoute({
+  method: 'get',
+  path: '/api/system3/projects/{id}/knowledge-snapshots/{snapshotId}',
+  summary: 'Get one Project Understanding snapshot',
+  request: { params: system3KnowledgeSnapshotParamsSchema },
+  responses: {
+    200: {
+      description: 'Project Understanding snapshot',
+      content: { 'application/json': { schema: system3KnowledgeSnapshotSchema } },
+    },
+    ...projectErrors,
+  },
+});
+export const activateSystem3KnowledgeSnapshotRoute = createRoute({
+  method: 'post',
+  path: '/api/system3/projects/{id}/knowledge-snapshots/{snapshotId}/activate',
+  summary: 'Activate a reviewed Project Understanding candidate',
+  request: {
+    params: system3KnowledgeSnapshotParamsSchema,
+    body: {
+      content: { 'application/json': { schema: activateSystem3UnderstandingBodySchema } },
+    },
+  },
+  responses: {
+    200: {
+      description: 'Activated Project Understanding snapshot',
+      content: { 'application/json': { schema: system3KnowledgeSnapshotSchema } },
     },
     ...projectErrors,
   },

@@ -153,4 +153,35 @@ describe('buildLifecycleView', () => {
     expect(sourceIntake?.statusDetail).toContain('Anvil cũ');
     expect(changeDetection).toMatchObject({ id: 'OP-01', status: 'ready' });
   });
+
+  test('routes a data_required readiness result to Dataset intake with its blocker reason', () => {
+    const lifecycle = buildLifecycleView(
+      projectFixture({
+        readinessEvaluation: {
+          status: 'data_required',
+          blockerReasons: [
+            'Cần liên kết và kiểm tra Dataset thật trước công việc phụ thuộc dữ liệu.',
+          ],
+          nextAction: 'link_dataset',
+          checks: [
+            {
+              id: 'dataset_profile',
+              label: 'Dataset Profile',
+              status: 'failed',
+              message: 'Cần liên kết Dataset thật.',
+            },
+          ],
+        },
+      })
+    );
+    const readiness = lifecycle
+      .flatMap(phase => phase.activities)
+      .find(activity => activity.id === 'TW-03');
+
+    expect(readiness).toMatchObject({
+      status: 'blocked',
+      route: 'sources',
+      statusDetail: 'Cần liên kết và kiểm tra Dataset thật trước công việc phụ thuộc dữ liệu.',
+    });
+  });
 });

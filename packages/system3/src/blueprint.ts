@@ -4,6 +4,7 @@ import type {
   System3ManualReview,
   System3Requirement,
 } from './contracts';
+import { parseSystem3CsvText } from './csv-contract';
 
 function tableCells(line: string): string[] | null {
   const trimmed = line.trim();
@@ -115,40 +116,12 @@ export function analyzeBlueprintMarkdown(
   };
 }
 
-function parseCsv(text: string): string[][] {
-  const rows: string[][] = [];
-  let row: string[] = [];
-  let field = '';
-  let quoted = false;
-  for (let index = 0; index < text.length; index += 1) {
-    const char = text[index] ?? '';
-    if (char === '"') {
-      if (quoted && text[index + 1] === '"') {
-        field += '"';
-        index += 1;
-      } else quoted = !quoted;
-    } else if (char === ',' && !quoted) {
-      row.push(field);
-      field = '';
-    } else if ((char === '\n' || char === '\r') && !quoted) {
-      if (char === '\r' && text[index + 1] === '\n') index += 1;
-      row.push(field);
-      if (row.some(value => value.length > 0)) rows.push(row);
-      row = [];
-      field = '';
-    } else field += char;
-  }
-  if (field.length > 0 || row.length > 0) rows.push([...row, field]);
-  if (quoted) throw new Error('Dataset CSV contains an unterminated quoted field');
-  return rows;
-}
-
 export function profileDatasetCsv(
   filename: string,
   text: string,
   targetColumn = 'target'
 ): System3DatasetProfile {
-  const rows = parseCsv(text);
+  const rows = parseSystem3CsvText(text);
   const columns = rows[0] ?? [];
   if (columns.length === 0) throw new Error('Dataset CSV has no header');
   const targetIndex = columns.indexOf(targetColumn);

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import { link, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { basename, join, normalize, sep } from 'node:path';
 import type { System3SourceKind } from './contracts';
@@ -176,6 +177,19 @@ export async function readSystem3Source(input: {
   return readFile(safePath(input.artifactsRoot, input.storageKey));
 }
 
+/** Opens a new stream for an immutable source so large datasets stay out of memory. */
+export function streamSystem3Source(input: {
+  artifactsRoot: string;
+  storageKey: string;
+}): AsyncIterable<Uint8Array> {
+  const stream = createReadStream(safePath(input.artifactsRoot, input.storageKey));
+  return (async function* (): AsyncGenerator<Uint8Array> {
+    for await (const chunk of stream) {
+      yield typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+    }
+  })();
+}
+
 export async function persistSystem3Artifact(input: {
   artifactsRoot: string;
   storageKey: string;
@@ -195,16 +209,57 @@ export async function persistSystem3Artifact(input: {
   return input.storageKey;
 }
 
+export async function persistSystem3JsonArtifact(input: {
+  artifactsRoot: string;
+  storageKey: string;
+  body: unknown;
+}): Promise<{ storageKey: string; contentHash: string; sizeBytes: number }> {
+  await persistSystem3Artifact(input);
+  const bytes = Buffer.from(`${JSON.stringify(input.body, null, 2)}\n`);
+  return {
+    storageKey: input.storageKey,
+    contentHash: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+    sizeBytes: bytes.byteLength,
+  };
+}
+
+export async function persistSystem3TextArtifact(input: {
+  artifactsRoot: string;
+  storageKey: string;
+  text: string;
+}): Promise<{ storageKey: string; contentHash: string; sizeBytes: number }> {
+  const path = safePath(input.artifactsRoot, input.storageKey);
+  const bytes = Buffer.from(input.text.endsWith('\n') ? input.text : `${input.text}\n`);
+  await mkdir(join(path, '..'), { recursive: true });
+  await writeFile(path, bytes, { flag: 'wx' }).catch(async error => {
+    const code = error as NodeJS.ErrnoException;
+    if (code.code !== 'EEXIST') throw error;
+    const existing = await readFile(path);
+    if (!existing.equals(bytes)) {
+      throw new Error('Immutable System 3 text artifact already exists with different content');
+    }
+  });
+  return {
+    storageKey: input.storageKey,
+    contentHash: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+    sizeBytes: bytes.byteLength,
+  };
+}
+
 export async function persistSystem3BinaryArtifact(input: {
   artifactsRoot: string;
   category: string;
   filename: string;
   bytes: Uint8Array;
+  /** A server-generated namespace, e.g. attempts/<uuid>, for isolated reruns. */
+  storagePrefix?: string;
 }): Promise<{ storageKey: string; contentHash: string; sizeBytes: number; filename: string }> {
   const filename = safeFilename(input.filename);
   const category = safeFilename(input.category);
   const contentHash = `sha256:${createHash('sha256').update(input.bytes).digest('hex')}`;
-  const storageKey = join(category, contentHash.slice('sha256:'.length, 26), filename);
+  const storageKey = input.storagePrefix
+    ? join(input.storagePrefix, category, contentHash.slice('sha256:'.length, 26), filename)
+    : join(category, contentHash.slice('sha256:'.length, 26), filename);
   const path = safePath(input.artifactsRoot, storageKey);
   await mkdir(join(path, '..'), { recursive: true });
   await writeFile(path, input.bytes, { flag: 'wx' }).catch(async error => {

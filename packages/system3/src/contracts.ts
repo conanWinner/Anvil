@@ -1,5 +1,15 @@
 import { z } from '@hono/zod-openapi';
 import { system3LifecycleActivityIdSchema, system3ResourceTypeSchema } from './activity-resources';
+import {
+  codeDesignItemSchema,
+  datasetUnderstandingSchema,
+  extractionQualitySchema,
+  moduleDesignSchema,
+  pipelineStageSchema,
+  problemProfileV2Schema,
+  technologySelectionSchema,
+  understandingSourcePointerSchema,
+} from './understanding/schemas';
 
 export const system3ProjectStageSchema = z.enum([
   'draft',
@@ -24,6 +34,61 @@ export type System3Attention = z.infer<typeof system3AttentionSchema>;
 
 export const system3FreshnessSchema = z.enum(['current', 'partially_stale', 'stale']);
 export type System3Freshness = z.infer<typeof system3FreshnessSchema>;
+
+/** A user-visible, immutable retry/test cycle for one Project Lifecycle. */
+export const system3LifecycleAttemptScopeSchema = z.enum(['full', 'activity', 'downstream']);
+export type System3LifecycleAttemptScope = z.infer<typeof system3LifecycleAttemptScopeSchema>;
+
+export const system3LifecycleAttemptInputModeSchema = z.enum(['replay', 'current']);
+export type System3LifecycleAttemptInputMode = z.infer<
+  typeof system3LifecycleAttemptInputModeSchema
+>;
+
+export const system3LifecycleAttemptStatusSchema = z.enum(['active', 'superseded', 'cleaned']);
+export type System3LifecycleAttemptStatus = z.infer<typeof system3LifecycleAttemptStatusSchema>;
+
+export const system3LifecycleAttemptRunStatusSchema = z.enum([
+  'preparing',
+  'running',
+  'waiting',
+  'completed',
+  'failed',
+  'unknown',
+]);
+export type System3LifecycleAttemptRunStatus = z.infer<
+  typeof system3LifecycleAttemptRunStatusSchema
+>;
+
+export const system3LifecycleAttemptCleanupStatusSchema = z.enum([
+  'not_started',
+  'running',
+  'partial',
+  'completed',
+  'failed',
+]);
+export type System3LifecycleAttemptCleanupStatus = z.infer<
+  typeof system3LifecycleAttemptCleanupStatusSchema
+>;
+
+/**
+ * The reproducibility basis is intentionally open-ended: new activity outputs
+ * may be pinned without weakening the invariant that every referenced value
+ * is persisted on the attempt before a Technical Workflow starts.
+ */
+export const system3LifecycleAttemptBasisSchema = z.object({
+  schemaVersion: z.literal(1),
+  sourceVersionIds: z.array(z.string().uuid()),
+  sourceHashes: z.array(z.string().startsWith('sha256:')),
+  knowledgeSnapshotId: z.string().uuid().nullable(),
+  readinessContractId: z.string().uuid().nullable(),
+  compilationId: z.string().uuid().nullable(),
+  approvalId: z.string().uuid().nullable(),
+  executionId: z.string().uuid().nullable(),
+  verificationId: z.string().uuid().nullable(),
+  baseCommitSha: z.string().nullable(),
+  resources: z.record(z.string(), z.unknown()),
+});
+export type System3LifecycleAttemptBasis = z.infer<typeof system3LifecycleAttemptBasisSchema>;
 
 export const system3SourceKindSchema = z.enum([
   'blueprint',
@@ -145,12 +210,22 @@ export const requirementSchema = z.object({
 });
 export type System3Requirement = z.infer<typeof requirementSchema>;
 
+export const requirementV2Schema = requirementSchema.extend({
+  sourcePointers: z.array(understandingSourcePointerSchema).min(1),
+});
+export type System3RequirementV2 = z.infer<typeof requirementV2Schema>;
+
 export const manualReviewSchema = z.object({
   id: z.string(),
   text: z.string(),
   sourcePointer: z.string(),
 });
 export type System3ManualReview = z.infer<typeof manualReviewSchema>;
+
+export const manualReviewV2Schema = manualReviewSchema.extend({
+  sourcePointers: z.array(understandingSourcePointerSchema).min(1),
+});
+export type System3ManualReviewV2 = z.infer<typeof manualReviewV2Schema>;
 
 export const datasetProfileSchema = z.object({
   filename: z.string(),
@@ -163,7 +238,7 @@ export const datasetProfileSchema = z.object({
 });
 export type System3DatasetProfile = z.infer<typeof datasetProfileSchema>;
 
-export const blueprintAnalysisSchema = z.object({
+export const blueprintAnalysisV1Schema = z.object({
   schemaVersion: z.literal(1),
   businessGoal: z.string().nullable(),
   technicalObjective: z.string().nullable(),
@@ -174,7 +249,85 @@ export const blueprintAnalysisSchema = z.object({
   manualReviews: z.array(manualReviewSchema),
   dataset: datasetProfileSchema.nullable(),
 });
+
+export const blueprintAnalysisV2Schema = z.object({
+  schemaVersion: z.literal(2),
+  businessGoal: z.string().nullable(),
+  technicalObjective: z.string().nullable(),
+  targetDefinition: z.string().nullable(),
+  runtime: z.object({ cpuOnly: z.boolean(), ramGb: z.number().int().nullable() }),
+  requirements: z.array(requirementV2Schema),
+  modules: z.array(z.string()),
+  manualReviews: z.array(manualReviewV2Schema),
+  dataset: datasetProfileSchema.nullable(),
+  problemProfile: problemProfileV2Schema,
+  datasetUnderstanding: datasetUnderstandingSchema,
+  pipeline: z.array(pipelineStageSchema),
+  technologyStack: z.array(technologySelectionSchema),
+  moduleDesign: z.array(moduleDesignSchema),
+  executionBlueprint: z.array(codeDesignItemSchema),
+  extractionQuality: extractionQualitySchema,
+});
+
+export const blueprintAnalysisSchema = z.discriminatedUnion('schemaVersion', [
+  blueprintAnalysisV1Schema,
+  blueprintAnalysisV2Schema,
+]);
 export type BlueprintAnalysis = z.infer<typeof blueprintAnalysisSchema>;
+
+export const system3ReadinessStatusSchema = z.enum([
+  'passed',
+  'decision_required',
+  'data_required',
+  'blocked',
+]);
+export type System3ReadinessStatus = z.infer<typeof system3ReadinessStatusSchema>;
+
+export const system3ReadinessNextActionSchema = z.enum([
+  'continue_compile',
+  'answer_decisions',
+  'link_dataset',
+  'review_understanding',
+  'configure_runtime',
+]);
+export type System3ReadinessNextAction = z.infer<typeof system3ReadinessNextActionSchema>;
+
+export const system3ReadinessCheckSchema = z.object({
+  id: z.string().min(1),
+  label: z.string().min(1),
+  status: z.enum(['passed', 'failed']),
+  message: z.string().min(1),
+  nextAction: system3ReadinessNextActionSchema.nullable(),
+});
+export type System3ReadinessCheck = z.infer<typeof system3ReadinessCheckSchema>;
+
+/** A business outcome from TW-03. A non-passed evaluation is not a workflow failure. */
+export const system3ReadinessEvaluationSchema = z.object({
+  schemaVersion: z.literal(1),
+  status: system3ReadinessStatusSchema,
+  knowledgeSnapshotId: z.string().uuid(),
+  projectVersion: z.number().int().positive(),
+  checks: z.array(system3ReadinessCheckSchema),
+  blockerReasons: z.array(z.string().min(1)),
+  nextAction: system3ReadinessNextActionSchema,
+});
+export type System3ReadinessEvaluation = z.infer<typeof system3ReadinessEvaluationSchema>;
+
+/** Immutable input contract accepted by OP-04. It exists only for a passed evaluation. */
+export const system3ReadinessContractBodySchema = z.object({
+  schemaVersion: z.literal(2),
+  status: z.literal('passed'),
+  knowledgeSnapshotId: z.string().uuid(),
+  projectVersion: z.number().int().positive(),
+  requirementIds: z.array(z.string().min(1)).min(1),
+  targetDefinition: z.string().min(1),
+  targetColumn: z.string().min(1),
+  datasetSourceVersionId: z.string().min(1),
+  runtime: z.object({ cpuOnly: z.boolean(), ramGb: z.number().int().positive() }),
+  decisions: z.array(z.object({ id: z.string().min(1), answer: z.string().min(1) })),
+  checks: z.array(system3ReadinessCheckSchema),
+});
+export type System3ReadinessContractBody = z.infer<typeof system3ReadinessContractBodySchema>;
 
 export const system3PhaseStatusSchema = z.enum([
   'completed',
@@ -241,13 +394,15 @@ export const system3ReusableArtifactSchema = z.object({
   storageKey: z.string().min(1),
   contentHash: z.string().startsWith('sha256:'),
   sourceExecutionId: z.string().uuid(),
+  /** Optional only so persisted pre-T03 plans remain readable. New compilations require it. */
+  sourceVersionIds: z.array(z.string().uuid()).min(1).optional(),
 });
 export type System3ReusableArtifact = z.infer<typeof system3ReusableArtifactSchema>;
 
 export const system3ExecutionPlanSchema = z.object({
-  schemaVersion: z.literal(2),
+  schemaVersion: z.union([z.literal(2), z.literal(3)]),
   /** Compiler output is immutable and carries its own reproducibility pins. */
-  compilerVersion: z.literal('system3-compiler@2'),
+  compilerVersion: z.enum(['system3-compiler@2', 'system3-compiler@3']),
   templateId: z.literal('customer-churn-reference@1'),
   productWorkflowVersionId: z.string().uuid(),
   inputSnapshotId: z.string().uuid(),
@@ -288,36 +443,116 @@ export const system3ExecutionPlanSchema = z.object({
       permissions: z.array(z.string()),
       timeoutMs: z.number().int().positive(),
       resourceProfile: z.object({ cpuOnly: z.boolean(), ramGb: z.number().int().nullable() }),
+      /** Present on v3 plans: a readable projection of immutable bundle nodes. */
+      dependencies: z.record(z.string(), z.array(z.string())).optional(),
+      executors: z.record(z.string(), z.string()).optional(),
     })
   ),
 });
 export type System3ExecutionPlan = z.infer<typeof system3ExecutionPlanSchema>;
 
-export const system3ApprovalManifestSchema = z.object({
-  schemaVersion: z.literal(2),
-  compilationId: z.string().uuid(),
-  projectId: z.string().uuid(),
-  productWorkflowVersionId: z.string().uuid(),
-  inputSnapshotId: z.string().uuid(),
-  capabilityRegistrySnapshotId: z.string().uuid(),
-  compilationBasisId: z.string().uuid(),
-  executionPlanSnapshotId: z.string().uuid(),
-  runtimeProfileVersionId: z.string().uuid(),
-  compilerVersion: z.literal('system3-compiler@2'),
-  approvedBy: z.string().min(1),
-  approvedAt: z.string().datetime(),
-  templateId: z.literal('customer-churn-reference@1'),
-  inputSnapshot: z.object({
-    sourceIds: z.array(z.string().uuid()),
-    sourceHashes: z.array(z.string()),
-  }),
-  knowledgeSnapshotId: z.string().uuid(),
-  readinessContract: z
-    .object({ id: z.string().uuid(), contractHash: z.string().startsWith('sha256:') })
-    .optional(),
-  capabilityRegistryHash: z.string().startsWith('sha256:'),
-  definitionHash: z.string().startsWith('sha256:'),
-  executionPlanHash: z.string().startsWith('sha256:'),
-  runtimeProfile: z.object({ cpuOnly: z.boolean(), ramGb: z.number().int().nullable() }),
+export const system3WorkflowBundleActivityIdSchema = z.enum(['TW-06', 'TW-07', 'TW-09']);
+export type System3WorkflowBundleActivityId = z.infer<typeof system3WorkflowBundleActivityIdSchema>;
+
+export const system3RuntimeBindingTypeSchema = z.enum(['string', 'uuid', 'sha256', 'object']);
+export type System3RuntimeBindingType = z.infer<typeof system3RuntimeBindingTypeSchema>;
+
+export const system3RuntimeBindingSlotSchema = z.object({
+  name: z.string().min(1),
+  type: system3RuntimeBindingTypeSchema,
 });
+export type System3RuntimeBindingSlot = z.infer<typeof system3RuntimeBindingSlotSchema>;
+
+export const system3WorkflowBundleDefinitionSchema = z.object({
+  schemaVersion: z.literal(3),
+  compilerVersion: z.literal('system3-compiler@3'),
+  activityId: system3WorkflowBundleActivityIdSchema,
+  executionMode: z.enum(['full', 'experiment', 'delivery']),
+  rootWorkflow: z.string().min(1),
+  workflows: z.array(z.record(z.string(), z.unknown())).min(1),
+  runtimeBindings: z
+    .array(system3RuntimeBindingSlotSchema)
+    .refine(slots => new Set(slots.map(slot => slot.name)).size === slots.length, {
+      message: 'Runtime binding slot names must be unique',
+    }),
+  capabilityRegistry: z.array(system3CapabilityDescriptorSchema),
+  permissions: z.array(system3CapabilityPermissionSchema),
+  runtimeProfile: z.object({ cpuOnly: z.boolean(), ramGb: z.number().int().nullable() }),
+  dependencies: z.record(z.string(), z.array(z.string())),
+  inputMappings: z.record(z.string(), z.unknown()),
+  outputMappings: z.record(z.string(), z.unknown()),
+  outputSchemas: z.record(z.string(), z.unknown()),
+  timeouts: z.record(z.string(), z.number().int().positive()),
+});
+export type System3WorkflowBundleDefinition = z.infer<typeof system3WorkflowBundleDefinitionSchema>;
+
+export const system3WorkflowBundleSnapshotSchema = z.object({
+  id: z.string().uuid(),
+  projectId: z.string().uuid(),
+  compilationId: z.string().uuid(),
+  activityId: system3WorkflowBundleActivityIdSchema,
+  schemaVersion: z.literal(3),
+  compilerVersion: z.literal('system3-compiler@3'),
+  templateId: z.literal('customer-churn-reference@1'),
+  executionMode: z.enum(['full', 'experiment', 'delivery']),
+  definition: system3WorkflowBundleDefinitionSchema,
+  definitionHash: z.string().startsWith('sha256:'),
+});
+export type System3WorkflowBundleSnapshot = z.infer<typeof system3WorkflowBundleSnapshotSchema>;
+
+export const system3ApprovedBundleBindingSchema = z.object({
+  activityId: system3WorkflowBundleActivityIdSchema,
+  bundleSnapshotId: z.string().uuid(),
+  bundleHash: z.string().startsWith('sha256:'),
+  schemaVersion: z.literal(3),
+});
+export type System3ApprovedBundleBinding = z.infer<typeof system3ApprovedBundleBindingSchema>;
+
+export const system3ApprovalManifestSchema = z
+  .object({
+    schemaVersion: z.union([z.literal(2), z.literal(3)]),
+    compilationId: z.string().uuid(),
+    projectId: z.string().uuid(),
+    productWorkflowVersionId: z.string().uuid(),
+    inputSnapshotId: z.string().uuid(),
+    capabilityRegistrySnapshotId: z.string().uuid(),
+    compilationBasisId: z.string().uuid(),
+    executionPlanSnapshotId: z.string().uuid(),
+    runtimeProfileVersionId: z.string().uuid(),
+    compilerVersion: z.enum(['system3-compiler@2', 'system3-compiler@3']),
+    approvedBy: z.string().min(1),
+    approvedAt: z.string().datetime(),
+    templateId: z.literal('customer-churn-reference@1'),
+    inputSnapshot: z.object({
+      sourceIds: z.array(z.string().uuid()),
+      sourceHashes: z.array(z.string()),
+    }),
+    knowledgeSnapshotId: z.string().uuid(),
+    readinessContract: z
+      .object({ id: z.string().uuid(), contractHash: z.string().startsWith('sha256:') })
+      .optional(),
+    capabilityRegistryHash: z.string().startsWith('sha256:'),
+    definitionHash: z.string().startsWith('sha256:'),
+    executionPlanHash: z.string().startsWith('sha256:'),
+    runtimeProfile: z.object({ cpuOnly: z.boolean(), ramGb: z.number().int().nullable() }),
+    workflowBundleBindings: z.array(system3ApprovedBundleBindingSchema).length(3).optional(),
+  })
+  .superRefine((manifest, context) => {
+    if (manifest.schemaVersion !== 3) return;
+    const bindings = manifest.workflowBundleBindings;
+    const activities = new Set(bindings?.map(binding => binding.activityId));
+    if (
+      bindings === undefined ||
+      activities.size !== 3 ||
+      !activities.has('TW-06') ||
+      !activities.has('TW-07') ||
+      !activities.has('TW-09')
+    ) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Approval Manifest v3 requires one binding for TW-06, TW-07 and TW-09',
+        path: ['workflowBundleBindings'],
+      });
+    }
+  });
 export type System3ApprovalManifest = z.infer<typeof system3ApprovalManifestSchema>;

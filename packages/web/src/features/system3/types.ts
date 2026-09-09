@@ -68,6 +68,7 @@ export interface System3Decision {
   why: string;
   recommendation: string;
   options: readonly string[];
+  binding: { kind: 'dataset_target_column'; allowedValues: readonly string[] } | null;
   affectedPhases: readonly string[];
   status: DecisionStatus;
   answer: string | null;
@@ -230,10 +231,36 @@ export interface System3Project {
     workflowRunId: string;
     contractHash: string;
   };
+  readinessEvaluation?: {
+    status: 'passed' | 'decision_required' | 'data_required' | 'blocked';
+    blockerReasons: readonly string[];
+    nextAction:
+      | 'continue_compile'
+      | 'answer_decisions'
+      | 'link_dataset'
+      | 'review_understanding'
+      | 'configure_runtime';
+    checks: readonly {
+      id: string;
+      label: string;
+      status: 'passed' | 'failed';
+      message: string;
+    }[];
+  };
   execution?: System3Execution;
   verification?: System3Verification;
   operation?: {
     id: string;
+    type:
+      | 'source_intake'
+      | 'change_detection'
+      | 'analyze'
+      | 'activate_understanding'
+      | 'readiness'
+      | 'compile'
+      | 'execute'
+      | 'verify'
+      | 'delivery';
     status: 'accepted' | 'running' | 'succeeded' | 'failed' | 'abandoned' | 'unknown';
     error: string | null;
   };
@@ -317,3 +344,10 @@ export type System3ResourceDescriptor = System3ActivityResponse['inputs'][number
 export type System3ResourceType = System3ResourceDescriptor['resourceType'];
 export type System3ResourcePresentation = System3ResourceResponse;
 export type System3PresentationBlock = System3ResourceResponse['blocks'][number];
+type System3UnderstandingViewWire =
+  paths['/api/system3/projects/{id}/phases/understanding/view']['get']['responses'][200]['content']['application/json'];
+export type System3UnderstandingView = Omit<System3UnderstandingViewWire, 'decisions'> & {
+  decisions: readonly System3Decision[];
+};
+export type System3KnowledgeSnapshot =
+  paths['/api/system3/projects/{id}/knowledge-snapshots/{snapshotId}']['get']['responses'][200]['content']['application/json'];

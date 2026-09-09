@@ -132,6 +132,115 @@ describe('SqliteAdapter', () => {
           'parent_resource_ids',
         ])
       );
+
+      const operationColumns = await db.query<{ name: string }>(
+        "SELECT name FROM pragma_table_info('remote_agent_system3_project_operations')"
+      );
+      expect(operationColumns.rows.map(column => column.name)).toContain('owner_claim_token');
+    });
+  });
+
+  describe('withTransaction()', () => {
+    test('serializes concurrent async transactions on one adapter', async () => {
+      db = createTestDb();
+      await db.query('CREATE TABLE transaction_serialization_probe (value TEXT NOT NULL)');
+
+      const events: string[] = [];
+      let releaseFirst: (() => void) | undefined;
+      const firstMayFinish = new Promise<void>(resolve => {
+        releaseFirst = resolve;
+      });
+      let firstHasStarted: (() => void) | undefined;
+      const firstStarted = new Promise<void>(resolve => {
+        firstHasStarted = resolve;
+      });
+
+      const first = db.withTransaction(async tx => {
+        events.push('first-start');
+        await tx('INSERT INTO transaction_serialization_probe (value) VALUES ($1)', ['first']);
+        firstHasStarted?.();
+        await firstMayFinish;
+        events.push('first-finish');
+      });
+      await firstStarted;
+
+      const second = db.withTransaction(async tx => {
+        events.push('second-start');
+        await tx('INSERT INTO transaction_serialization_probe (value) VALUES ($1)', ['second']);
+        events.push('second-finish');
+      });
+
+      await Promise.resolve();
+      expect(events).toEqual(['first-start']);
+
+      releaseFirst?.();
+      await Promise.all([first, second]);
+
+      expect(events).toEqual(['first-start', 'first-finish', 'second-start', 'second-finish']);
+      const rows = await db.query<{ value: string }>(
+        'SELECT value FROM transaction_serialization_probe ORDER BY rowid'
+      );
+      expect(rows.rows).toEqual([{ value: 'first' }, { value: 'second' }]);
+    });
+
+    test('releases the transaction queue after rollback', async () => {
+      db = createTestDb();
+      await db.query('CREATE TABLE transaction_rollback_probe (value TEXT NOT NULL)');
+
+      const first = db.withTransaction(async tx => {
+        await tx('INSERT INTO transaction_rollback_probe (value) VALUES ($1)', ['rolled-back']);
+        throw new Error('intentional transaction failure');
+      });
+      const second = db.withTransaction(async tx => {
+        await tx('INSERT INTO transaction_rollback_probe (value) VALUES ($1)', ['committed']);
+      });
+
+      await expect(first).rejects.toThrow('intentional transaction failure');
+      await second;
+
+      const rows = await db.query<{ value: string }>(
+        'SELECT value FROM transaction_rollback_probe ORDER BY rowid'
+      );
+      expect(rows.rows).toEqual([{ value: 'committed' }]);
+    });
+  });
+
+  describe('System 3 project operation schema upgrade', () => {
+    test('adds owner_claim_token to an existing project operations table', () => {
+      currentDbPath = join(
+        import.meta.dir,
+        `.test-system3-operation-upgrade-${Date.now()}-${Math.random().toString(36).slice(2)}.db`
+      );
+      const legacy = new Database(currentDbPath);
+      legacy.exec(`
+        CREATE TABLE remote_agent_system3_project_operations (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL,
+          operation_type TEXT NOT NULL,
+          execution_id TEXT,
+          workflow_run_id TEXT,
+          status TEXT NOT NULL,
+          idempotency_key TEXT NOT NULL,
+          request_fingerprint TEXT NOT NULL,
+          project_version INTEGER NOT NULL,
+          result TEXT,
+          error TEXT,
+          owner_instance_id TEXT,
+          heartbeat_at TEXT,
+          started_at TEXT,
+          finished_at TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(project_id, operation_type, idempotency_key)
+        );
+      `);
+      legacy.close();
+
+      db = new SqliteAdapter(currentDbPath);
+
+      expect(raw_pragma(currentDbPath, 'remote_agent_system3_project_operations')).toContain(
+        'owner_claim_token'
+      );
     });
   });
 

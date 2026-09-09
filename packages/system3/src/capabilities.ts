@@ -1,7 +1,25 @@
 import { z } from '@hono/zod-openapi';
+import { createHash } from 'node:crypto';
 import { analyzeBlueprintMarkdown, profileDatasetCsv } from './blueprint';
-import { blueprintAnalysisSchema, system3SourceKindSchema } from './contracts';
-import type { System3CapabilityDescriptor, System3SourceKind } from './contracts';
+import {
+  blueprintAnalysisSchema,
+  system3ReadinessCheckSchema,
+  system3ReadinessContractBodySchema,
+  system3ReadinessEvaluationSchema,
+  system3SourceKindSchema,
+} from './contracts';
+import type {
+  BlueprintAnalysis,
+  System3CapabilityDescriptor,
+  System3SourceKind,
+} from './contracts';
+import {
+  understandProjectSources,
+  verifyPinnedUnderstandingSourceStream,
+  type PinnedUnderstandingSource,
+  type StreamedPinnedUnderstandingSource,
+  type UnderstandingSemanticFallback,
+} from './understanding';
 import {
   baselineCapabilityDescriptors,
   baselineCapabilityHandlers,
@@ -29,6 +47,12 @@ function descriptor<const T extends string>(
 
 export const customerChurnCapabilityDescriptors = [
   descriptor('system3.input-snapshot-verifier', 'understanding', ['source:read']),
+  descriptor(
+    'system3.understanding-analyzer',
+    'understanding',
+    ['source:read', 'artifact:write'],
+    120_000
+  ),
   descriptor('system3.blueprint-parser', 'understanding', ['source:read']),
   descriptor('system3.dataset-profiler', 'understanding', ['source:read']),
   descriptor('system3.project-overview', 'understanding', ['artifact:write']),
@@ -64,6 +88,18 @@ export interface System3CapabilitySourcePort {
     projectId: string,
     kind: 'blueprint' | 'dataset'
   ): Promise<{ filename: string; text: string } | null>;
+  readSourceVersion?(
+    projectId: string,
+    sourceVersionId: string
+  ): Promise<PinnedUnderstandingSource | null>;
+  streamSourceVersion?(
+    projectId: string,
+    sourceVersionId: string
+  ): Promise<StreamedPinnedUnderstandingSource | null>;
+  getActiveUnderstandingAnalysis?(projectId: string): Promise<BlueprintAnalysis | null>;
+  createUnderstandingSemanticFallback?(
+    projectId: string
+  ): Promise<UnderstandingSemanticFallback | undefined>;
   readArtifact(projectId: string, storageKey: string): Promise<Uint8Array>;
 }
 
@@ -75,6 +111,8 @@ type CapabilityHandler = (
 const sourceRefSchema = z.object({
   id: z.string().min(1),
   kind: system3SourceKindSchema,
+  filename: z.string().min(1).optional(),
+  mediaType: z.string().min(1).optional(),
   contentHash: z.string().startsWith('sha256:'),
 });
 
@@ -92,6 +130,11 @@ const decisionsInputSchema = z.object({ analysis: blueprintAnalysisSchema });
 const readinessGateInputSchema = z.object({
   analysis: blueprintAnalysisSchema,
   pendingDecisionCount: z.number().int().nonnegative(),
+  knowledgeSnapshotId: z.string().uuid(),
+  projectVersion: z.number().int().positive(),
+  datasetSourceVersionId: z.string().min(1).nullable(),
+  requiredCapabilityIds: z.array(z.string().min(1)),
+  availableCapabilityIds: z.array(z.string().min(1)),
 });
 const resolvedDecisionsInputSchema = z.object({
   decisions: z.array(
@@ -104,9 +147,41 @@ const resolvedDecisionsInputSchema = z.object({
 });
 const readinessContractInputSchema = z.object({
   analysis: blueprintAnalysisSchema,
-  gates: z.object({ blueprintReady: z.boolean(), decisionsReady: z.boolean() }),
+  evaluation: system3ReadinessEvaluationSchema,
+  datasetSourceVersionId: z.string().min(1).nullable(),
   resolvedDecisions: z.array(z.object({ id: z.string(), answer: z.string() })),
 });
+const pinnedDatasetInputSchema = z.object({
+  projectId: z.string().min(1),
+  datasetSourceVersionId: z.string().uuid(),
+  datasetContentHash: z.string().startsWith('sha256:'),
+});
+
+async function resolvePinnedDataset(
+  sourcePort: System3CapabilitySourcePort,
+  raw: Readonly<Record<string, unknown>>
+): Promise<{ bytes: Uint8Array; filename: string }> {
+  const input = pinnedDatasetInputSchema.parse(raw);
+  if (!sourcePort.readSourceVersion) {
+    throw new Error('Pinned Source Version reads are unavailable');
+  }
+  const source = await sourcePort.readSourceVersion(input.projectId, input.datasetSourceVersionId);
+  if (source?.id !== input.datasetSourceVersionId || source.kind !== 'dataset') {
+    throw new Error(
+      `Pinned dataset Source Version '${input.datasetSourceVersionId}' is unavailable`
+    );
+  }
+  const actualHash = `sha256:${createHash('sha256').update(source.bytes).digest('hex')}`;
+  if (source.contentHash !== input.datasetContentHash || actualHash !== input.datasetContentHash) {
+    throw new Error(
+      `Pinned dataset Source Version '${input.datasetSourceVersionId}' failed its content hash check`
+    );
+  }
+  return {
+    bytes: source.bytes,
+    filename: source.filename,
+  };
+}
 
 function result(value: unknown): System3CapabilityResult {
   return { output: JSON.stringify(value), structuredOutput: value };
@@ -116,7 +191,24 @@ function assertNotAborted(context: System3CapabilityContext): void {
   if (context.signal.aborted) throw new Error(`Capability '${context.nodeId}' was aborted`);
 }
 
-const handlers: Readonly<Record<System3CapabilityId, CapabilityHandler>> = {
+function readinessCheck(input: {
+  id: string;
+  label: string;
+  passed: boolean;
+  passedMessage: string;
+  failedMessage: string;
+  nextAction: 'answer_decisions' | 'link_dataset' | 'review_understanding' | 'configure_runtime';
+}): z.infer<typeof system3ReadinessCheckSchema> {
+  return {
+    id: input.id,
+    label: input.label,
+    status: input.passed ? 'passed' : 'failed',
+    message: input.passed ? input.passedMessage : input.failedMessage,
+    nextAction: input.passed ? null : input.nextAction,
+  };
+}
+
+const handlers: Readonly<Partial<Record<System3CapabilityId, CapabilityHandler>>> = {
   'system3.input-snapshot-verifier': async (raw, context) => {
     assertNotAborted(context);
     const input = verifyInputSchema.parse(raw);
@@ -160,11 +252,140 @@ const handlers: Readonly<Record<System3CapabilityId, CapabilityHandler>> = {
   'system3.readiness-gate-evaluator': async (raw, context) => {
     assertNotAborted(context);
     const input = readinessGateInputSchema.parse(raw);
-    const gates = {
-      blueprintReady: input.analysis.requirements.length > 0,
-      decisionsReady: input.pendingDecisionCount === 0,
-    };
-    return result({ gates, ready: gates.blueprintReady && gates.decisionsReady });
+    const dataset =
+      input.analysis.schemaVersion === 2
+        ? input.analysis.datasetUnderstanding.profile
+        : input.analysis.dataset;
+    const extractionStatus =
+      input.analysis.schemaVersion === 2 ? input.analysis.extractionQuality.status : 'passed';
+    const extractionReady =
+      extractionStatus === 'passed' ||
+      (extractionStatus === 'decision_required' && input.pendingDecisionCount === 0);
+    const datasetLinked =
+      input.datasetSourceVersionId !== null &&
+      dataset !== null &&
+      (input.analysis.schemaVersion === 1 ||
+        input.analysis.datasetUnderstanding.availability === 'linked');
+    const datasetNeedsLink =
+      input.analysis.schemaVersion === 2
+        ? input.analysis.datasetUnderstanding.availability === 'not_linked'
+        : dataset === null;
+    const datasetConsistent =
+      input.analysis.schemaVersion === 1 ||
+      (input.analysis.datasetUnderstanding.availability !== 'inaccessible' &&
+        input.analysis.datasetUnderstanding.comparisonStatus !== 'mismatch');
+    const targetReady =
+      input.analysis.targetDefinition !== null &&
+      input.analysis.targetDefinition.trim().length > 0 &&
+      dataset?.targetExists === true &&
+      dataset.targetColumn !== null;
+    const missingCapabilities = input.requiredCapabilityIds.filter(
+      capabilityId => !input.availableCapabilityIds.includes(capabilityId)
+    );
+    const runtimeReady =
+      input.analysis.runtime.cpuOnly &&
+      input.analysis.runtime.ramGb !== null &&
+      input.analysis.runtime.ramGb > 0;
+    const checks = [
+      readinessCheck({
+        id: 'requirements',
+        label: 'Mục tiêu và yêu cầu',
+        passed: input.analysis.requirements.length > 0,
+        passedMessage: 'Có yêu cầu đã chuẩn hóa để kiểm chứng.',
+        failedMessage: 'Bản hiểu dự án chưa có yêu cầu có thể kiểm chứng.',
+        nextAction: 'review_understanding',
+      }),
+      readinessCheck({
+        id: 'extraction_quality',
+        label: 'Chất lượng bản hiểu',
+        passed: extractionReady,
+        passedMessage:
+          extractionStatus === 'decision_required'
+            ? 'Các Decision từ kiểm tra chất lượng đã được trả lời.'
+            : 'Bản hiểu dự án đã vượt kiểm tra chất lượng.',
+        failedMessage:
+          extractionStatus === 'decision_required'
+            ? 'Bản hiểu dự án còn nội dung cần người dùng quyết định.'
+            : 'Bản hiểu dự án cần được chỉnh sửa hoặc phân tích lại.',
+        nextAction:
+          extractionStatus === 'decision_required' ? 'answer_decisions' : 'review_understanding',
+      }),
+      readinessCheck({
+        id: 'decisions',
+        label: 'Decision của Knowledge Snapshot',
+        passed: input.pendingDecisionCount === 0,
+        passedMessage: 'Không còn Decision đang chờ trong Knowledge Snapshot hiện hành.',
+        failedMessage: `Còn ${input.pendingDecisionCount.toString()} Decision đang chờ trong Knowledge Snapshot hiện hành.`,
+        nextAction: 'answer_decisions',
+      }),
+      readinessCheck({
+        id: 'dataset_profile',
+        label: 'Dataset Profile',
+        passed: datasetLinked,
+        passedMessage: 'Dataset thật và profile của nó đã được ghim.',
+        failedMessage: 'Cần liên kết và kiểm tra Dataset thật trước công việc phụ thuộc dữ liệu.',
+        nextAction: datasetNeedsLink ? 'link_dataset' : 'review_understanding',
+      }),
+      readinessCheck({
+        id: 'dataset_compatibility',
+        label: 'Tính nhất quán của Dataset',
+        passed: datasetConsistent,
+        passedMessage: 'Dataset khớp với khai báo trong bản hiểu dự án.',
+        failedMessage: 'Dataset không thể đọc hoặc không khớp với khai báo hiện hành.',
+        nextAction: 'review_understanding',
+      }),
+      readinessCheck({
+        id: 'target',
+        label: 'Target dữ liệu',
+        passed: targetReady,
+        passedMessage: 'Target đã được xác định và tồn tại trong Dataset Profile.',
+        failedMessage: 'Target chưa rõ hoặc không tồn tại trong Dataset Profile hiện hành.',
+        nextAction: datasetNeedsLink ? 'link_dataset' : 'review_understanding',
+      }),
+      readinessCheck({
+        id: 'runtime',
+        label: 'Runtime Profile',
+        passed: runtimeReady,
+        passedMessage: 'Runtime CPU/RAM đã được xác định.',
+        failedMessage: 'Runtime Profile chưa có CPU-only và giới hạn RAM hợp lệ.',
+        nextAction: 'configure_runtime',
+      }),
+      readinessCheck({
+        id: 'capabilities',
+        label: 'Capability theo activity',
+        passed: missingCapabilities.length === 0,
+        passedMessage: 'Các capability bắt buộc cho Build, Verify và Delivery đều khả dụng.',
+        failedMessage: `Thiếu capability bắt buộc: ${missingCapabilities.join(', ')}.`,
+        nextAction: 'configure_runtime',
+      }),
+    ];
+    const failedChecks = checks.filter(check => check.status === 'failed');
+    const failedActions = new Set(failedChecks.map(check => check.nextAction));
+    const status = failedActions.has('answer_decisions')
+      ? 'decision_required'
+      : failedActions.has('link_dataset')
+        ? 'data_required'
+        : failedChecks.length > 0
+          ? 'blocked'
+          : 'passed';
+    const nextAction =
+      status === 'passed'
+        ? 'continue_compile'
+        : status === 'decision_required'
+          ? 'answer_decisions'
+          : status === 'data_required'
+            ? 'link_dataset'
+            : (failedChecks[0]?.nextAction ?? 'review_understanding');
+    const evaluation = system3ReadinessEvaluationSchema.parse({
+      schemaVersion: 1,
+      status,
+      knowledgeSnapshotId: input.knowledgeSnapshotId,
+      projectVersion: input.projectVersion,
+      checks,
+      blockerReasons: failedChecks.map(check => check.message),
+      nextAction,
+    });
+    return result({ evaluation });
   },
   'system3.decision-resolver': async (raw, context) => {
     assertNotAborted(context);
@@ -172,34 +393,50 @@ const handlers: Readonly<Record<System3CapabilityId, CapabilityHandler>> = {
     const unresolved = input.decisions.filter(
       decision => decision.status !== 'answered' || decision.answer === null
     );
-    if (unresolved.length > 0) {
-      throw new Error(
-        `Readiness requires ${unresolved.length.toString()} decision(s) to be resolved`
-      );
-    }
     return result({
-      resolvedDecisions: input.decisions.map(decision => {
-        if (decision.answer === null) {
-          throw new Error(`Decision '${decision.id}' has no answer`);
-        }
-        return { id: decision.id, answer: decision.answer };
-      }),
+      resolvedDecisions: input.decisions.flatMap(decision =>
+        decision.status === 'answered' && decision.answer !== null
+          ? [{ id: decision.id, answer: decision.answer }]
+          : []
+      ),
+      pendingDecisionCount: unresolved.length,
     });
   },
   'system3.readiness-contract-builder': async (raw, context) => {
     assertNotAborted(context);
     const input = readinessContractInputSchema.parse(raw);
-    if (!input.gates.blueprintReady || !input.gates.decisionsReady) {
-      throw new Error('Readiness gates are not satisfied');
+    if (input.evaluation.status !== 'passed') {
+      return result({ evaluation: input.evaluation, contract: null });
     }
+    if (input.datasetSourceVersionId === null) {
+      throw new Error('Passed readiness evaluation is missing its pinned Dataset Source Version');
+    }
+    const targetDefinition = input.analysis.targetDefinition;
+    const dataset =
+      input.analysis.schemaVersion === 2
+        ? input.analysis.datasetUnderstanding.profile
+        : input.analysis.dataset;
+    const targetColumn = dataset?.targetColumn ?? null;
+    const ramGb = input.analysis.runtime.ramGb;
+    if (targetDefinition === null || targetColumn === null || ramGb === null) {
+      throw new Error('Passed readiness evaluation is inconsistent with its frozen inputs');
+    }
+    const contract = system3ReadinessContractBodySchema.parse({
+      schemaVersion: 2,
+      status: 'passed',
+      knowledgeSnapshotId: input.evaluation.knowledgeSnapshotId,
+      projectVersion: input.evaluation.projectVersion,
+      requirementIds: input.analysis.requirements.map(requirement => requirement.id),
+      targetDefinition,
+      targetColumn,
+      datasetSourceVersionId: input.datasetSourceVersionId,
+      runtime: { cpuOnly: input.analysis.runtime.cpuOnly, ramGb },
+      decisions: input.resolvedDecisions,
+      checks: input.evaluation.checks,
+    });
     return result({
-      contract: {
-        schemaVersion: 1,
-        requirementIds: input.analysis.requirements.map(requirement => requirement.id),
-        targetDefinition: input.analysis.targetDefinition,
-        runtime: input.analysis.runtime,
-        decisions: input.resolvedDecisions,
-      },
+      evaluation: input.evaluation,
+      contract,
     });
   },
   ...baselineCapabilityHandlers,
@@ -210,7 +447,7 @@ export class System3CapabilityRegistry {
   constructor(private readonly sourcePort?: System3CapabilitySourcePort) {}
 
   has(executorId: string): boolean {
-    return executorId in handlers;
+    return customerChurnCapabilityDescriptors.some(descriptor => descriptor.id === executorId);
   }
 
   async execute(
@@ -218,13 +455,79 @@ export class System3CapabilityRegistry {
     input: Readonly<Record<string, unknown>>,
     context: System3CapabilityContext
   ): Promise<System3CapabilityResult> {
+    const projectId = typeof input.projectId === 'string' ? input.projectId : undefined;
+    if (
+      executorId === 'system3.input-snapshot-verifier' &&
+      projectId !== undefined &&
+      this.sourcePort?.readSourceVersion !== undefined &&
+      Array.isArray(input.sources)
+    ) {
+      const refs = z.array(sourceRefSchema).min(1).parse(input.sources);
+      const sources: PinnedUnderstandingSource[] = [];
+      for (const ref of refs) {
+        if (this.sourcePort.streamSourceVersion) {
+          const source = await this.sourcePort.streamSourceVersion(projectId, ref.id);
+          if (!source) throw new Error(`Pinned Source Version '${ref.id}' does not exist`);
+          if (source.contentHash !== ref.contentHash)
+            throw new Error(`Pinned Source Version '${ref.id}' hash does not match its snapshot`);
+          await verifyPinnedUnderstandingSourceStream(source);
+        } else {
+          const source = await this.sourcePort.readSourceVersion(projectId, ref.id);
+          if (!source) throw new Error(`Pinned Source Version '${ref.id}' does not exist`);
+          if (source.contentHash !== ref.contentHash)
+            throw new Error(`Pinned Source Version '${ref.id}' hash does not match its snapshot`);
+          sources.push(source);
+        }
+      }
+      if (!refs.some(source => source.kind === 'blueprint')) {
+        throw new Error('Input snapshot requires a blueprint source');
+      }
+      return result({ verified: true, sources: refs });
+    }
+    if (
+      executorId === 'system3.understanding-analyzer' &&
+      projectId !== undefined &&
+      this.sourcePort?.readSourceVersion !== undefined &&
+      Array.isArray(input.sources)
+    ) {
+      const refs = z.array(sourceRefSchema).min(1).parse(input.sources);
+      const sources: PinnedUnderstandingSource[] = [];
+      let datasetSource: StreamedPinnedUnderstandingSource | undefined;
+      for (const ref of refs) {
+        if (ref.kind === 'dataset' && this.sourcePort.streamSourceVersion) {
+          const source = await this.sourcePort.streamSourceVersion(projectId, ref.id);
+          if (!source) throw new Error(`Pinned Source Version '${ref.id}' does not exist`);
+          datasetSource = source;
+          continue;
+        }
+        const source = await this.sourcePort.readSourceVersion(projectId, ref.id);
+        if (!source) throw new Error(`Pinned Source Version '${ref.id}' does not exist`);
+        sources.push(source);
+      }
+      const semanticFallback =
+        await this.sourcePort.createUnderstandingSemanticFallback?.(projectId);
+      const previousAnalysis = await this.sourcePort.getActiveUnderstandingAnalysis?.(projectId);
+      return result(
+        await understandProjectSources({
+          sources,
+          ...(datasetSource ? { datasetSource } : {}),
+          ...(previousAnalysis ? { previousAnalysis } : {}),
+          ...(semanticFallback ? { semanticFallback } : {}),
+          signal: context.signal,
+        })
+      );
+    }
     const handler = handlers[executorId as System3CapabilityId];
     if (!handler) throw new Error(`Unknown System 3 capability '${executorId}'`);
-    const projectId = typeof input.projectId === 'string' ? input.projectId : undefined;
     let resolvedInput = input;
     if (projectId && this.sourcePort) {
       if (executorId === 'system3.input-snapshot-verifier') {
-        resolvedInput = { sources: await this.sourcePort.listSourceRefs(projectId) };
+        const suppliedSources = input.sources;
+        resolvedInput = {
+          sources: Array.isArray(suppliedSources)
+            ? suppliedSources
+            : await this.sourcePort.listSourceRefs(projectId),
+        };
       } else if (executorId === 'system3.blueprint-parser') {
         const blueprint = await this.sourcePort.readLatestSource(projectId, 'blueprint');
         if (!blueprint) throw new Error('Blueprint source is missing');
@@ -235,13 +538,15 @@ export class System3CapabilityRegistry {
           filename: dataset?.filename ?? null,
           csv: dataset?.text ?? null,
         };
-      } else if (executorId === 'system3.project-scaffolder') {
-        const dataset = await this.sourcePort.readLatestSource(projectId, 'dataset');
-        if (!dataset) throw new Error('Dataset source is required for baseline execution');
+      } else if (
+        executorId === 'system3.project-scaffolder' ||
+        executorId === 'system3.pinned-dataset-materializer'
+      ) {
+        const dataset = await resolvePinnedDataset(this.sourcePort, input);
         resolvedInput = {
           ...input,
           datasetFilename: dataset.filename,
-          datasetCsv: dataset.text,
+          datasetBytes: dataset.bytes,
         };
       } else if (executorId === 'system3.delivery-artifact-materializer') {
         const storageKey = input.storageKey;

@@ -21,6 +21,7 @@ export const system3ResourceTypeSchema = z.enum([
   'dependency_graph_snapshot',
   'input_snapshot',
   'knowledge_snapshot',
+  'understanding_report',
   'decision',
   'readiness_contract',
   'execution_plan',
@@ -40,6 +41,7 @@ export type System3ResourceRelation = z.infer<typeof system3ResourceRelationSche
 
 export const system3ResourceStatusSchema = z.enum([
   'pending',
+  'candidate',
   'current',
   'stale',
   'superseded',
@@ -94,6 +96,24 @@ export const system3PresentationBlockSchema = z.discriminatedUnion('kind', [
     items: z.array(presentationFactSchema),
   }),
   z.object({ kind: z.literal('markdown'), markdown: z.string() }),
+  z.object({
+    kind: z.literal('citations'),
+    title: z.string(),
+    items: z.array(
+      z.object({
+        label: z.string(),
+        filename: z.string(),
+        sourceVersionId: z.string(),
+        startLine: z.number().int().positive().nullable(),
+        endLine: z.number().int().positive().nullable(),
+        headingPath: z.array(z.string()),
+        excerpt: z.string().nullable(),
+        status: z.enum(['verified', 'unavailable']),
+        reason: z.string().nullable(),
+        truncated: z.boolean(),
+      })
+    ),
+  }),
   z.object({
     kind: z.literal('table'),
     title: z.string().nullable(),

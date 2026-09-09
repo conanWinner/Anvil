@@ -71,7 +71,7 @@ Validation:
 | Project name | Có | UI nhận trực tiếp |
 | Description | Không | Chưa phải canonical source đầy đủ |
 | Product Workflow Template | Có | Hiện cố định `Customer Churn Reference` |
-| Blueprint `.md`, `.json` hoặc `.pdf` | Có trong luồng tạo project hiện tại | OP-00 tiếp nhận; parser TW-02 hiện hoàn chỉnh nhất cho Markdown |
+| Blueprint `.md`, `.json` hoặc `.pdf` | Có trong luồng tạo project hiện tại | TW-02 đọc Markdown có cấu trúc, System 2 JSON đúng phiên bản và PDF có lớp chữ; PDF dạng ảnh chưa được nhận dạng chữ |
 | Dataset `.csv` | Không ở Understanding | Cần trước baseline execution |
 | Constraints, data dictionary, user brief, supporting document | Không | OP-00 lưu riêng theo nguồn logic và phiên bản bất biến |
 | Runtime profile | Có | CPU, 8 GB RAM, POC |

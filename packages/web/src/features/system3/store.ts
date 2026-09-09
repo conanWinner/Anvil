@@ -7,12 +7,15 @@ import {
 } from '@/lib/api';
 import type {
   System3IntakeGate,
+  System3Decision,
   System3Project,
   System3Source,
   System3SourceIntakeResult,
   System3SourceIntakeReportView,
   System3SourceKind,
   System3SourceRole,
+  System3UnderstandingView,
+  System3KnowledgeSnapshot,
 } from './types';
 
 const emptyProject: System3Project = {
@@ -177,6 +180,7 @@ function toProject(
       why: decision.why,
       recommendation: decision.recommendation,
       options: decision.options,
+      binding: toDecisionBinding(decision.binding),
       affectedPhases: decision.affectedPhases,
       status: decision.status,
       answer: decision.answer,
@@ -190,6 +194,7 @@ function toProject(
     approvalId: flow.approval?.id,
     understandingRunId: flow.understandingRunId ?? undefined,
     readiness: flow.readiness ?? undefined,
+    readinessEvaluation: flow.readinessEvaluation ?? undefined,
     execution: flow.execution
       ? {
           id: flow.execution.id,
@@ -249,6 +254,21 @@ function toProject(
     deliveryReady: flow.verification?.status === 'completed' && flow.delivery === null,
     deliveryAvailable: flow.delivery !== null,
   };
+}
+
+function toDecisionBinding(value: unknown): System3Decision['binding'] {
+  if (
+    value !== null &&
+    typeof value === 'object' &&
+    'kind' in value &&
+    value.kind === 'dataset_target_column' &&
+    'allowedValues' in value &&
+    Array.isArray(value.allowedValues) &&
+    value.allowedValues.every(item => typeof item === 'string')
+  ) {
+    return { kind: 'dataset_target_column', allowedValues: value.allowedValues };
+  }
+  return null;
 }
 
 function wait(ms: number): Promise<void> {
@@ -317,6 +337,23 @@ async function watchOperation(operationId: string): Promise<void> {
       });
     };
   });
+}
+
+async function watchAutomaticVerification(executionOperationId: string): Promise<void> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const operation = current.operation;
+    if (operation?.id !== executionOperationId && operation?.type === 'verify') {
+      if (operation.status === 'accepted' || operation.status === 'running') {
+        await watchOperation(operation.id);
+      }
+      return;
+    }
+    if (current.verification?.status === 'completed' || current.verification?.status === 'failed') {
+      return;
+    }
+    await wait(250);
+    await system3Store.load(current.id);
+  }
 }
 
 async function errorMessage(response: Response, fallback: string): Promise<string> {
@@ -510,6 +547,50 @@ export const system3Store = {
       project.version
     );
   },
+  getUnderstandingView: async (): Promise<System3UnderstandingView> => {
+    const response = await fetch(
+      `/api/system3/projects/${encodeURIComponent(current.id)}/phases/understanding/view`
+    );
+    if (!response.ok) {
+      throw new Error(
+        await errorMessage(response, `Không thể tải Bản hiểu dự án (${response.status})`)
+      );
+    }
+    const view = (await response.json()) as Omit<System3UnderstandingView, 'decisions'> & {
+      decisions: readonly (Omit<System3Decision, 'binding'> & { binding: unknown })[];
+    };
+    return {
+      ...view,
+      decisions: view.decisions.map(decision => ({
+        ...decision,
+        binding: toDecisionBinding(decision.binding),
+      })),
+    };
+  },
+  activateUnderstanding: async (
+    snapshotId: string,
+    expectedVersion: number
+  ): Promise<System3KnowledgeSnapshot> => {
+    const response = await fetch(
+      `/api/system3/projects/${encodeURIComponent(current.id)}/knowledge-snapshots/${encodeURIComponent(snapshotId)}/activate`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Idempotency-Key': crypto.randomUUID(),
+        },
+        body: JSON.stringify({ expectedVersion }),
+      }
+    );
+    if (!response.ok) {
+      throw new Error(
+        await errorMessage(response, `Không thể kích hoạt Bản hiểu dự án (${response.status})`)
+      );
+    }
+    const snapshot = (await response.json()) as System3KnowledgeSnapshot;
+    await system3Store.load(current.id);
+    return snapshot;
+  },
   answerDecision: async (decisionId: string, answer?: string): Promise<void> => {
     const project = current;
     const response = await fetch(
@@ -572,6 +653,7 @@ export const system3Store = {
     };
     publish({ ...project, operation: body.operation, execution: body.execution });
     await watchOperation(body.operation.id);
+    await watchAutomaticVerification(body.operation.id);
   },
   verify: async (): Promise<void> => {
     const project = current;
