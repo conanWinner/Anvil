@@ -7,6 +7,7 @@ import { streamSSE } from 'hono/streaming';
 import { cors } from 'hono/cors';
 import type { WebAdapter } from '../adapters/web';
 import { resolvePinnedUnderstandingAnalysis } from './system3-understanding-resolution';
+import { resolveSystem3LifecycleAttemptSources } from './system3-attempt-sources';
 import { rm, readFile, writeFile, unlink, mkdir, readdir, stat } from 'fs/promises';
 import { readFileSync } from 'fs';
 import { normalize, join, sep, basename } from 'path';
@@ -277,29 +278,6 @@ function system3AttemptArtifactStorageKey(attemptId: string | null, storageKey: 
   return attemptId === null ? storageKey : join('attempts', attemptId, storageKey);
 }
 
-async function resolveSystem3LifecycleAttemptSources(input: {
-  store: System3Store;
-  projectId: string;
-}): Promise<System3SourceRecord[]> {
-  const attempt = await input.store.getActiveLifecycleAttempt(input.projectId);
-  if (attempt?.lifecycleStatus !== 'active') {
-    return input.store.listActiveSources(input.projectId);
-  }
-  const sources = await Promise.all(
-    attempt.basis.sourceVersionIds.map(sourceVersionId =>
-      input.store.getSourceVersion(input.projectId, sourceVersionId)
-    )
-  );
-  if (sources.some((source): source is null => source === null)) {
-    throw new System3ConflictError('Một Source Version đã ghim không còn khả dụng');
-  }
-  const resolved = sources as System3SourceRecord[];
-  if (resolved.some((source, index) => source.contentHash !== attempt.basis.sourceHashes[index])) {
-    throw new System3ConflictError('Source Version đã ghim không còn khớp với hash của lượt chạy');
-  }
-  return resolved;
-}
-
 async function previewSystem3LifecycleAttempt(input: {
   projectId: string;
   expectedVersion: number;
@@ -451,6 +429,11 @@ async function prepareSystem3LifecycleAttemptIsolation(input: {
   webAdapter: WebAdapter;
 }): Promise<void> {
   const store = getSystem3Store();
+  const startedAt = Date.now();
+  getLog().info(
+    { projectId: input.projectId, attemptId: input.attemptId },
+    'system3.lifecycle_attempt_isolation_started'
+  );
   try {
     const codebase = await codebaseDb.getCodebase(input.codebaseId);
     if (!codebase) throw new Error('Linked codebase no longer exists');
@@ -492,7 +475,24 @@ async function prepareSystem3LifecycleAttemptIsolation(input: {
       checkpointActivityId: null,
       nextActivityId: input.startActivityId,
     });
+    getLog().info(
+      {
+        projectId: input.projectId,
+        attemptId: input.attemptId,
+        durationMs: Date.now() - startedAt,
+      },
+      'system3.lifecycle_attempt_isolation_completed'
+    );
   } catch (error) {
+    getLog().error(
+      {
+        err: error,
+        projectId: input.projectId,
+        attemptId: input.attemptId,
+        durationMs: Date.now() - startedAt,
+      },
+      'system3.lifecycle_attempt_isolation_failed'
+    );
     await store
       .updateLifecycleAttempt(input.projectId, input.attemptId, {
         runStatus: 'failed',
@@ -5511,12 +5511,22 @@ export function registerApiRoutes(
     const projectId = c.req.param('id') ?? '';
     const body = getValidatedBody(c, createSystem3LifecycleAttemptBodySchema);
     try {
+      const store = getSystem3Store();
+      const replay = await store.getLifecycleAttemptReplay({ projectId, ...body });
+      if (replay) {
+        getLog().info({ projectId, attemptId: replay.id }, 'system3.lifecycle_attempt_replayed');
+        return c.json(replay, 201);
+      }
       const preview = await previewSystem3LifecycleAttempt({ projectId, ...body });
+      if (!preview.canStart || preview.previewHash !== body.previewHash) {
+        const concurrentReplay = await store.getLifecycleAttemptReplay({ projectId, ...body });
+        if (concurrentReplay) return c.json(concurrentReplay, 201);
+      }
       if (!preview.canStart) return apiError(c, 409, preview.blockingReasons.join(' '));
       if (preview.previewHash !== body.previewHash) {
         return apiError(c, 409, 'Dữ liệu xem trước đã thay đổi; hãy xem trước lại trước khi chạy.');
       }
-      const attempt = await getSystem3Store().createLifecycleAttempt({
+      const { attempt, existing } = await store.beginLifecycleAttempt({
         projectId,
         baseAttemptId: body.baseAttemptId,
         startActivityId: body.startActivityId,
@@ -5527,6 +5537,11 @@ export function registerApiRoutes(
         idempotencyKey: body.idempotencyKey,
         expectedVersion: body.expectedVersion,
       });
+      if (existing) {
+        getLog().info({ projectId, attemptId: attempt.id }, 'system3.lifecycle_attempt_replayed');
+        return c.json(attempt, 201);
+      }
+      getLog().info({ projectId, attemptId: attempt.id }, 'system3.lifecycle_attempt_created');
       const userId = await resolveWebUserId(c);
       void prepareSystem3LifecycleAttemptIsolation({
         projectId,

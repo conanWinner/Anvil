@@ -376,14 +376,18 @@ export const baselineCapabilityHandlers: Readonly<Record<BaselineCapabilityId, C
       ) {
         throw new Error('Dataset target column is missing');
       }
+      if (
+        typeof config.datasetContentHash !== 'string' ||
+        !/^sha256:[a-f0-9]{64}$/.test(config.datasetContentHash)
+      ) {
+        throw new Error('Dataset content hash is missing or invalid; recompile and approve again');
+      }
       const profile = await profileDatasetCsvStream({
         filename: config.sourceFilename,
         sourceVersionId: config.datasetSourceVersionId,
         chunks: createReadStream(join(projectDir, 'data', 'input.csv')),
         targetColumn: config.targetColumn,
-        ...(typeof config.datasetContentHash === 'string'
-          ? { expectedContentHash: config.datasetContentHash }
-          : {}),
+        expectedContentHash: config.datasetContentHash,
         signal: context.signal,
       });
       if (!profile.targetExists) throw new Error('Dataset target column is missing');

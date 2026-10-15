@@ -90,6 +90,22 @@ export interface System3LifecycleAttemptRecord {
   cleanedAt: string | null;
 }
 
+export interface System3LifecycleAttemptReplayInput {
+  projectId: string;
+  expectedVersion: number;
+  baseAttemptId?: string | null;
+  startActivityId: string;
+  scope: System3LifecycleAttemptScope;
+  inputMode: System3LifecycleAttemptInputMode;
+  previewHash: string;
+  idempotencyKey: string;
+}
+
+export interface System3LifecycleAttemptBeginInput extends System3LifecycleAttemptReplayInput {
+  basis: System3LifecycleAttemptBasis;
+  createdBy?: string | null;
+}
+
 export interface System3SourceRecord {
   id: string;
   sourceId: string;
@@ -1202,6 +1218,28 @@ function asLifecycleAttempt(row: LifecycleAttemptRow): System3LifecycleAttemptRe
     completedAt: row.completed_at === null ? null : iso(row.completed_at),
     cleanedAt: row.cleaned_at === null ? null : iso(row.cleaned_at),
   };
+}
+
+function assertLifecycleAttemptReplayMatches(
+  row: LifecycleAttemptRow,
+  input: System3LifecycleAttemptReplayInput,
+  basis?: System3LifecycleAttemptBasis
+): void {
+  const attempt = asLifecycleAttempt(row);
+  const persistedProjectVersion = attempt.basis.resources.projectVersion;
+  const requestMatches =
+    attempt.previewHash === input.previewHash &&
+    attempt.baseAttemptId === (input.baseAttemptId ?? null) &&
+    attempt.startActivityId === input.startActivityId &&
+    attempt.scope === input.scope &&
+    attempt.inputMode === input.inputMode &&
+    persistedProjectVersion === input.expectedVersion &&
+    (basis === undefined || canonicalJson(attempt.basis) === canonicalJson(basis));
+  if (!requestMatches) {
+    throw new System3ConflictError(
+      'Idempotency key was already used for a different Lifecycle Attempt'
+    );
+  }
 }
 
 function asSourceIntakeReport(row: SourceIntakeReportRow): System3SourceIntakeReportRecord {
@@ -6210,6 +6248,21 @@ export class System3Store {
     return row ? asLifecycleAttempt(row) : null;
   }
 
+  async getLifecycleAttemptReplay(
+    input: System3LifecycleAttemptReplayInput
+  ): Promise<System3LifecycleAttemptRecord | null> {
+    await this.ensureSchema();
+    const result = await this.database.query(
+      `SELECT * FROM remote_agent_system3_lifecycle_attempts
+       WHERE project_id = $1 AND idempotency_key = $2`,
+      [input.projectId, input.idempotencyKey]
+    );
+    const row = typedRows(result, value => value as LifecycleAttemptRow)[0];
+    if (!row) return null;
+    assertLifecycleAttemptReplayMatches(row, input);
+    return asLifecycleAttempt(row);
+  }
+
   async hasCurrentLifecycleAttemptPayload(projectId: string, attemptId: string): Promise<boolean> {
     await this.ensureSchema();
     const storagePrefix = `attempts/${attemptId}/%`;
@@ -6223,18 +6276,10 @@ export class System3Store {
     return typedRows(result, value => value as { found: number | string }).length > 0;
   }
 
-  async createLifecycleAttempt(input: {
-    projectId: string;
-    baseAttemptId?: string | null;
-    startActivityId: string;
-    scope: System3LifecycleAttemptScope;
-    inputMode: System3LifecycleAttemptInputMode;
-    basis: System3LifecycleAttemptBasis;
-    previewHash: string;
-    idempotencyKey: string;
-    expectedVersion: number;
-    createdBy?: string | null;
-  }): Promise<System3LifecycleAttemptRecord> {
+  async beginLifecycleAttempt(input: System3LifecycleAttemptBeginInput): Promise<{
+    attempt: System3LifecycleAttemptRecord;
+    existing: boolean;
+  }> {
     await this.ensureSchema();
     return this.database.withTransaction(async query => {
       await this.lockProject(query, input.projectId);
@@ -6245,12 +6290,8 @@ export class System3Store {
       );
       const idempotent = typedRows(idempotentResult, value => value as LifecycleAttemptRow)[0];
       if (idempotent) {
-        if (idempotent.preview_hash !== input.previewHash) {
-          throw new System3ConflictError(
-            'Idempotency key was already used for a different Lifecycle Attempt'
-          );
-        }
-        return asLifecycleAttempt(idempotent);
+        assertLifecycleAttemptReplayMatches(idempotent, input, input.basis);
+        return { attempt: asLifecycleAttempt(idempotent), existing: true };
       }
       const projectResult = await query(
         'SELECT version FROM remote_agent_system3_projects WHERE id = $1',
@@ -6314,8 +6355,14 @@ export class System3Store {
       );
       const row = typedRows(created, value => value as LifecycleAttemptRow)[0];
       if (!row) throw new Error('Lifecycle Attempt creation returned no row');
-      return asLifecycleAttempt(row);
+      return { attempt: asLifecycleAttempt(row), existing: false };
     });
+  }
+
+  async createLifecycleAttempt(
+    input: System3LifecycleAttemptBeginInput
+  ): Promise<System3LifecycleAttemptRecord> {
+    return (await this.beginLifecycleAttempt(input)).attempt;
   }
 
   async updateLifecycleAttempt(

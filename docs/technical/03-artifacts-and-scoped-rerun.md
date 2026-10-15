@@ -77,6 +77,48 @@ Nếu một điều kiện không đạt, hệ thống loại artifact khỏi da
 
 ## 4. Kết quả của rerun preview
 
+### Bằng chứng triển khai THA-6 — 09/09/2026
+
+`packages/server/src/routes/system3-pinned-source.integration.test.ts` kiểm tra trên SQLite và
+file thật: sau khi dataset B thay thế A trong Source Registry, scaffolder đọc đúng Source Version
+A hoặc B được chỉ định, không gọi đường đọc nguồn mới nhất. Materializer áp dụng B vào project
+đã tạo từ A, cập nhật ID/hash trong config và validator quan sát số dòng của B; file nguồn A còn
+nguyên. Test được đưa vào lệnh kiểm thử của server.
+
+Dataset validator bắt buộc hash SHA-256 hợp lệ trước khi đọc dữ liệu. Regression
+`packages/system3/src/dataset-provenance.test.ts` kiểm tra thiếu hash, hash sai định dạng,
+bytes không khớp và dữ liệu hợp lệ.
+
+Đây là bằng chứng tầng persistence/capability. E2E `system3-projects.test.ts` bổ sung luồng HTTP:
+thay A bằng B, từ chối approval cũ với 422, compile/approve lại, chạy experiment có reuse và giữ
+hash artifact A. Kiểm thử này xác nhận lineage B; kiểm tra bytes/số dòng của B nằm ở capability
+và integration test trên.
+
+Integration test còn dùng điểm đồng bộ để dừng node trước khi đọc nguồn A, finalize B trong
+SQLite rồi tiếp tục node: output vẫn chứa A. Không dùng timer để đoán thời điểm race. Compiler
+được kiểm tra với nguồn hiện hành lấy từ SQLite: delivery reuse dựa trên A bị từ chối khi B đã
+thay thế A, còn basis B tương đương được chấp nhận. Đây chưa phải kiểm thử race qua HTTP hay
+nghiệm thu toàn luồng Lifecycle Attempt replay/current; các phần đó còn cần đối chiếu trước
+khi chốt THA-6 Done.
+
+Hàm API lấy nguồn attempt (`system3-attempt-sources.ts`) được kiểm thử trực tiếp với attempt
+`current` và `replay` lưu trong SQLite: cả hai lấy đúng ID/hash từ basis. Nguồn chưa `ready`
+hoặc danh sách ID/hash không đầy đủ bị từ chối. Đây là kiểm thử resolver dùng trong API,
+chưa chứng minh toàn bộ preview → tạo isolation → compile → execute của hai chế độ.
+
+E2E nay tạo thật hai attempt phạm vi OP-00 (`current`, rồi `replay`), chờ isolation sẵn sàng,
+tiếp tục kiểm tra nguồn và xác nhận cả hai hoàn tất với branch/working path riêng, cùng
+Source Version/hash và commit đã ghim. Kiểm thử phát hiện và sửa lỗi worktree luôn đồng bộ
+`origin` dù đã có commit local cố định: task ghim SHA hiện xác minh commit rồi tạo worktree
+trực tiếp, không đồng bộ checkout nguồn. Chuỗi compile/build trong attempt vẫn cần nghiệm thu.
+
+Retry tạo attempt được tra cứu trước preview để trả lại attempt cũ ngay cả khi đang chờ
+isolation hoặc project đã thay đổi. Transaction trả cờ `existing` để request trùng không
+khởi tạo isolation lần hai; cùng key nhưng khác payload bị từ chối. Log ghi sự kiện tạo,
+replay, bắt đầu/hoàn tất/thất bại isolation cùng ID và thời lượng, không ghi request body.
+Kiểm thử HTTP retry nằm trong E2E System 3 và xác nhận request trùng trả lại attempt cũ,
+trong khi cùng key với payload khác bị từ chối.
+
 - Phạm vi sẽ chạy lại.
 - Artifact được tái sử dụng.
 - Artifact mới sẽ được tạo.

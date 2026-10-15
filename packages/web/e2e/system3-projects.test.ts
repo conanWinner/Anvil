@@ -1,6 +1,10 @@
 import { expect, test } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 const blueprintPath = fileURLToPath(
   new URL('../../../docs/system_2/DESIGN_B_2.md', import.meta.url)
@@ -145,7 +149,7 @@ test('creates a real Customer Churn project and exposes the understanding workfl
   await overviewReport.click();
   const understandingReportDialog = page.getByRole('dialog');
   await expect(
-    understandingReportDialog.getByRole('heading', { name: 'Tổng quan dự án' })
+    understandingReportDialog.getByRole('heading', { name: 'Tổng quan dự án', level: 2 })
   ).toBeVisible();
   expect(page.url()).toBe(understandingUrl);
   await expect(understandingReportDialog.locator('pre')).toHaveCount(0);
@@ -1048,6 +1052,101 @@ test('creates a real Customer Churn project and exposes the understanding workfl
   });
   for (const oldHash of datasetRerun.oldArtifactHashes) {
     expect(datasetRerun.afterArtifactHashes).toContain(oldHash);
+  }
+  const isolatedAttempts = await page.evaluate(async id => {
+    interface Attempt {
+      id: string;
+      workingPath: string | null;
+      branchName: string | null;
+      runStatus: string;
+      lifecycleStatus: string;
+      basis: { sourceVersionIds: string[]; sourceHashes: string[]; baseCommitSha: string };
+    }
+    const attempts: Attempt[] = [];
+    for (const inputMode of ['current', 'replay']) {
+      const flowResponse = await fetch(`/api/system3/projects/${id}/flow`);
+      const flow = (await flowResponse.json()) as { project: { version: number } };
+      const request = {
+        expectedVersion: flow.project.version,
+        startActivityId: 'OP-00',
+        scope: 'activity',
+        inputMode,
+        ...(attempts[0] ? { baseAttemptId: attempts[0].id } : {}),
+      };
+      const previewResponse = await fetch(`/api/system3/projects/${id}/attempts/preview`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      });
+      if (!previewResponse.ok) throw new Error(await previewResponse.text());
+      const preview = (await previewResponse.json()) as {
+        canStart: boolean;
+        blockingReasons: string[];
+        previewHash: string;
+      };
+      if (!preview.canStart) throw new Error(preview.blockingReasons.join('; '));
+      const createBody = {
+        ...request,
+        previewHash: preview.previewHash,
+        idempotencyKey: crypto.randomUUID(),
+      };
+      const createdResponse = await fetch(`/api/system3/projects/${id}/attempts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(createBody),
+      });
+      if (!createdResponse.ok) throw new Error(await createdResponse.text());
+      let attempt = (await createdResponse.json()) as Attempt;
+      const retry = await fetch(`/api/system3/projects/${id}/attempts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(createBody),
+      });
+      if (!retry.ok) throw new Error(`Attempt retry failed: ${await retry.text()}`);
+      if (((await retry.json()) as Attempt).id !== attempt.id)
+        throw new Error('Attempt retry created another attempt');
+      const mismatch = await fetch(`/api/system3/projects/${id}/attempts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...createBody, scope: 'full' }),
+      });
+      if (mismatch.status !== 409) throw new Error('Attempt retry accepted a different payload');
+      const deadline = Date.now() + 30_000;
+      while (attempt.runStatus === 'preparing' && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        const response = await fetch(`/api/system3/projects/${id}/attempts/${attempt.id}`);
+        if (!response.ok) throw new Error(await response.text());
+        attempt = (await response.json()) as Attempt;
+      }
+      if (attempt.runStatus !== 'waiting' || !attempt.workingPath || !attempt.branchName) {
+        throw new Error(`Attempt isolation not ready: ${JSON.stringify(attempt)}`);
+      }
+      const freshFlow = await fetch(`/api/system3/projects/${id}/flow`);
+      const current = (await freshFlow.json()) as { project: { version: number } };
+      const continued = await fetch(`/api/system3/projects/${id}/attempts/${attempt.id}/continue`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ expectedVersion: current.project.version }),
+      });
+      if (!continued.ok) throw new Error(await continued.text());
+      attempts.push((await continued.json()) as Attempt);
+    }
+    return attempts;
+  }, projectId);
+  expect(isolatedAttempts.map(attempt => attempt.runStatus)).toEqual(['completed', 'completed']);
+  expect(isolatedAttempts[0]?.workingPath).not.toBe(isolatedAttempts[1]?.workingPath);
+  expect(isolatedAttempts[0]?.branchName).not.toBe(isolatedAttempts[1]?.branchName);
+  expect(isolatedAttempts[1]?.basis.sourceVersionIds).toEqual(
+    isolatedAttempts[0]?.basis.sourceVersionIds
+  );
+  expect(isolatedAttempts[1]?.basis.sourceHashes).toEqual(isolatedAttempts[0]?.basis.sourceHashes);
+  expect(isolatedAttempts[1]?.basis.baseCommitSha).toBe(isolatedAttempts[0]?.basis.baseCommitSha);
+  for (const attempt of isolatedAttempts) {
+    if (!attempt.workingPath) throw new Error('Missing isolated worktree');
+    const head = await execFileAsync('git', ['-C', attempt.workingPath, 'rev-parse', 'HEAD']);
+    expect(head.stdout.trim()).toBe(attempt.basis.baseCommitSha);
+    const status = await execFileAsync('git', ['-C', attempt.workingPath, 'status', '--porcelain']);
+    expect(status.stdout).toBe('');
   }
 });
 

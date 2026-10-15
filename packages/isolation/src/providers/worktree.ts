@@ -706,7 +706,21 @@ export class WorktreeProvider implements IIsolationProvider {
 
     // Sync uses only the configured base branch (or auto-detects via getDefaultBranch).
     // request.fromBranch is the start-point for worktree creation, not a sync target.
-    const baseBranch = await this.syncWorkspaceBeforeCreate(repoPath, worktreeConfig?.baseBranch);
+    const pinnedCommit =
+      request.workflowType === 'task' &&
+      request.fromBranch &&
+      /^[a-f0-9]{40}$/.test(request.fromBranch)
+        ? request.fromBranch
+        : null;
+    // A pinned local commit is already the authoritative start-point. Syncing
+    // origin here can mutate the canonical checkout and breaks offline repos.
+    if (pinnedCommit) {
+      await execFileAsync('git', ['-C', repoPath, 'cat-file', '-e', `${pinnedCommit}^{commit}`], {
+        timeout: GIT_OPERATION_TIMEOUT_MS,
+      });
+    }
+    const baseBranch =
+      pinnedCommit ?? (await this.syncWorkspaceBeforeCreate(repoPath, worktreeConfig?.baseBranch));
 
     const override: WorktreeBaseOverride = {
       repoLocal: resolveRepoLocalOverride(worktreeConfig?.path, repoPath),

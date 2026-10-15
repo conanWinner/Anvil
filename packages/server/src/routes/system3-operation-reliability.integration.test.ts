@@ -3,7 +3,12 @@ import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SqliteAdapter } from '@anvil/core/db/adapters';
-import { System3Store, type System3Database, type System3ProjectRecord } from '@anvil/system3';
+import {
+  System3ConflictError,
+  System3Store,
+  type System3Database,
+  type System3ProjectRecord,
+} from '@anvil/system3';
 
 async function createHarness(): Promise<{
   database: SqliteAdapter;
@@ -81,6 +86,56 @@ describe('System 3 operation reliability with real SQLite', () => {
     expect(replay.existing).toBe(true);
     expect(replay.operation.id).toBe(left.operation.id);
     expect(replay.operation.status).toBe('succeeded');
+
+    await database.close();
+  });
+
+  test('serializes Lifecycle Attempt creation and validates same-key replays', async () => {
+    const { database, project, store } = await createHarness();
+    const basis = {
+      schemaVersion: 1 as const,
+      sourceVersionIds: [randomUUID()],
+      sourceHashes: [`sha256:${'a'.repeat(64)}`],
+      knowledgeSnapshotId: null,
+      readinessContractId: null,
+      compilationId: null,
+      approvalId: null,
+      executionId: null,
+      verificationId: null,
+      baseCommitSha: 'b'.repeat(40),
+      resources: { projectVersion: project.version, requestedScope: 'activity' },
+    };
+    const request = {
+      projectId: project.id,
+      expectedVersion: project.version,
+      baseAttemptId: null,
+      startActivityId: 'OP-00',
+      scope: 'activity' as const,
+      inputMode: 'current' as const,
+      basis,
+      previewHash: `sha256:${'c'.repeat(64)}`,
+      idempotencyKey: 'attempt-race-key',
+    };
+
+    const [left, right] = await Promise.all([
+      store.beginLifecycleAttempt(request),
+      store.beginLifecycleAttempt(request),
+    ]);
+
+    expect(left.attempt.id).toBe(right.attempt.id);
+    expect([left.existing, right.existing].sort()).toEqual([false, true]);
+    const count = await database.query<{ count: number }>(
+      `SELECT COUNT(*) AS count FROM remote_agent_system3_lifecycle_attempts
+       WHERE project_id = $1 AND idempotency_key = 'attempt-race-key'`,
+      [project.id]
+    );
+    expect(Number(count.rows[0]?.count)).toBe(1);
+
+    const replay = await store.getLifecycleAttemptReplay(request);
+    expect(replay?.id).toBe(left.attempt.id);
+    await expect(
+      store.getLifecycleAttemptReplay({ ...request, startActivityId: 'TW-02' })
+    ).rejects.toBeInstanceOf(System3ConflictError);
 
     await database.close();
   });

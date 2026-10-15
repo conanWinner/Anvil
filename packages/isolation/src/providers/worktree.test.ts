@@ -297,6 +297,35 @@ describe('WorktreeProvider', () => {
       );
     });
 
+    test('uses a pinned local commit without synchronizing the canonical checkout', async () => {
+      const commit = 'a'.repeat(40);
+      await provider.create({
+        ...baseRequest,
+        workflowType: 'task',
+        identifier: 'pinned',
+        fromBranch: commit,
+      });
+      expect(syncWorkspaceSpy).not.toHaveBeenCalled();
+      expect(execSpy).toHaveBeenCalledWith(
+        'git',
+        ['-C', '/workspace/repo', 'cat-file', '-e', `${commit}^{commit}`],
+        expect.any(Object)
+      );
+      expect(execSpy).toHaveBeenCalledWith(
+        'git',
+        expect.arrayContaining([
+          'worktree',
+          'add',
+          '--no-track',
+          expect.any(String),
+          '-b',
+          'anvil/task-pinned',
+          commit,
+        ]),
+        expect.any(Object)
+      );
+    });
+
     test('throws when branch already exists and fromBranch is specified', async () => {
       const alreadyExistsError = new Error('fatal: branch already exists') as Error & {
         stderr: string;
