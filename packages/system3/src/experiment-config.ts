@@ -16,7 +16,7 @@ export const experimentConfigSchema = z.object({
   /** Subset of plan variants to run; omitted means every variant the blueprint names. */
   variantIds: z.array(experimentVariantIdSchema).min(1).max(12).optional(),
   maxFixRounds: z.number().int().min(1).max(6).default(4),
-  maxReviewRounds: z.number().int().min(0).max(3).default(2),
+  maxReviewRounds: z.number().int().min(0).max(4).default(3),
   variantTimeoutMinutes: z.number().int().min(1).max(30).default(25),
 });
 export type ExperimentConfig = z.infer<typeof experimentConfigSchema>;

@@ -314,7 +314,7 @@ Report a BLOCKING finding for:
 - Data leakage (target or future information in features, fitting preprocessing on test rows, using test rows for tuning).
 - Target definition that does not match the blueprint.
 - A requested variant missing or implemented as a different algorithm.
-- Wrong output contract (predictions/<id>.csv with id,score,label; reported/<id>.json).
+- (The output contract — files, columns, row counts — was already checked by running the code in the sandbox; do not report it.)
 - Anything that would make results non-reproducible (missing seeds) or exceed the sandbox limits.
 - Degenerate data: a target that is (almost) constant in train or test, so models cannot learn or be evaluated meaningfully. Check the split statistics below.
 - Code that hides failures (e.g. returning constant predictions when training data is unusable).
@@ -325,6 +325,7 @@ Evaluation contract fixed by Anvil (do NOT ask the code to change it):
 - Anvil computes every official test metric (ROC-AUC, PR-AUC, F1, recall, …) from predictions/<id>.csv. Code must only produce predictions and may report training/cross-validation numbers.
 - Blueprint sentences such as "report metrics on the test set" are satisfied by Anvil's evaluation.
 Only flag leakage with concrete evidence (a specific column or step that uses information created after the label).
+Every blocking finding must name the concrete line, column or step that is wrong; if you cannot point to one, it is not a finding.
 Never block on something the blueprint explicitly requires (a listed feature, target rule or model). If you believe a blueprint requirement itself is risky, report a WARNING that names the requirement ID — the user decides on blueprint changes, not the code. Order-time attributes such as prices, freight, payment type, installments or product attributes are known at purchase time.
 
 Variants requested:
@@ -579,20 +580,28 @@ export async function buildExperimentCodebase(
           reason: `Review still has blocking findings after ${input.maxReviewRounds.toString()} fix rounds:\n${blocking.map(item => `- ${item.file ?? 'general'}: ${item.message}`).join('\n')}`,
           events,
         };
-      const feedback = clip(
-        `The reviewer found blocking problems; fix all of them:\n${blocking.map(item => `- ${item.file ?? 'general'}: ${item.message}`).join('\n')}`
+      // Route each finding to the stage that owns the file: data-preparation fixes go through the
+      // preparation prompt (and invalidate the split), the rest through the variant prompt.
+      const describe = (items: typeof blocking): string =>
+        clip(
+          `The reviewer found blocking problems; fix all of them:\n${items.map(item => `- ${item.file ?? 'general'}: ${item.message}`).join('\n')}`
+        );
+      const preparationFindings = blocking.filter(item =>
+        (item.file ?? '').includes('prepare_data')
       );
-      const before = files['prepare_data.py'];
-      const fixFailure = await variants(feedback);
-      if (fixFailure !== null)
-        return { status: 'failed', stage: 'variants', reason: fixFailure, events };
-      // A change to data preparation invalidates the modeling table and split.
-      if ((await listProjectFiles(input.projectDir))['prepare_data.py'] !== before) {
-        const rerunFailure = await runPrepare(`review-${round.toString()}`);
-        const rerun = rerunFailure === null ? null : await prepare(rerunFailure);
-        if (rerun !== null) return { status: 'failed', stage: 'prepare', reason: rerun, events };
-        const again = await smokeVariants();
-        if (again !== null) return { status: 'failed', stage: 'variants', reason: again, events };
+      const variantFindings = blocking.filter(item => !preparationFindings.includes(item));
+      if (preparationFindings.length > 0) {
+        const prepareFailure = await prepare(describe(preparationFindings));
+        if (prepareFailure !== null)
+          return { status: 'failed', stage: 'prepare', reason: prepareFailure, events };
+      }
+      const smokeFailure = variantFindings.length > 0 ? null : await smokeVariants();
+      if (variantFindings.length > 0 || smokeFailure !== null) {
+        const fixFailure = await variants(
+          variantFindings.length > 0 ? describe(variantFindings) : smokeFailure
+        );
+        if (fixFailure !== null)
+          return { status: 'failed', stage: 'variants', reason: fixFailure, events };
       }
     }
   } catch (error) {

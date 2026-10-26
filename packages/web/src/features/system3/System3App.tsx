@@ -1293,6 +1293,12 @@ function LifecyclePhaseDetail({
   const comparisonArtifact = [...inputs, ...outputs].find(
     resource => resource.resourceType === 'execution_artifact'
   );
+  const executionError =
+    project.execution?.status === 'failed' ? (project.execution.error ?? '') : '';
+  // Experiment builds that stop for a person carry the agent's question in the error.
+  const agentQuestion = executionError.startsWith('Cần bạn quyết định')
+    ? executionError.replace(/^Cần bạn quyết định[^:]*:\s*/u, '')
+    : null;
   const experimentResults = project.verification?.experiment;
   const deliveredVariant =
     typeof project.delivery?.manifest.evidenceMap === 'object' &&
@@ -1477,6 +1483,27 @@ function LifecyclePhaseDetail({
             Phase {phase.eyebrow} · {phase.title} · {phase.progress.toString()}% hoàn thành
           </small>
         </section>
+
+        {selectedActivity.id === 'TW-06' && agentQuestion !== null ? (
+          <section className="s3-agent-question" aria-labelledby="agent-question-title">
+            <CircleHelp size={20} aria-hidden="true" />
+            <div>
+              <h3 id="agent-question-title">Agent cần bạn quyết định</h3>
+              <p className="s3-agent-question-text">{agentQuestion}</p>
+              <p>
+                Agent thi công dừng vì blueprint chưa rõ hoặc mâu thuẫn với dữ liệu, và không tự đổi
+                đề. Cập nhật blueprint (hoặc dữ liệu) để trả lời, rồi phân tích và duyệt lại kế
+                hoạch.
+              </p>
+              <Link
+                className="s3-button no-underline"
+                to={`/console/projects/${projectId}/sources`}
+              >
+                Cập nhật blueprint hoặc dữ liệu
+              </Link>
+            </div>
+          </section>
+        ) : null}
 
         {selectedActivity.id === 'OP-05' && project.planCompiled && !project.manifestApproved ? (
           <PlanSummary

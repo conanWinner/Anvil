@@ -6349,3 +6349,30 @@
     grid-template-columns: 1fr;
   }
 }
+.s3-agent-question {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin: 16px 0;
+  padding: 18px;
+  border: 1px solid color-mix(in srgb, var(--s3-warning) 45%, var(--s3-line));
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--s3-warning) 7%, var(--s3-surface));
+  color: var(--s3-warning);
+}
+.s3-agent-question h3 {
+  margin: 0 0 6px;
+  color: var(--s3-text);
+  font-size: 16px;
+}
+.s3-agent-question p {
+  max-width: 90ch;
+  margin: 0 0 10px;
+  color: var(--s3-muted);
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+.s3-agent-question .s3-agent-question-text {
+  color: var(--s3-text);
+  font-size: 14.5px;
+}

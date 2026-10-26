@@ -118,7 +118,7 @@ const build = await buildExperimentCodebase({
   runtime,
   generate,
   maxFixRounds: 4,
-  maxReviewRounds: 2,
+  maxReviewRounds: 3,
   signal,
   onEvent: event =>
     void log(
