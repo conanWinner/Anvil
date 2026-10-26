@@ -44,9 +44,13 @@ Thiếu thông tin quan trọng (target, metric chính, cách chia) thì tạo *
 
 ### 3.2 Anvil giữ split và tự chấm (thay cho harness người dùng tự viết)
 
-- Trước khi thi công, Anvil tạo **file split cố định** (chỉ số train/test và các fold) từ dữ liệu đã pin và giao thức đánh giá, rồi ghi hash. Tập test **chỉ có chỉ số, không có nhãn** trong workspace của agent; nhãn test giữ ở vùng chỉ Anvil đọc.
-- Code của agent phải xuất **dự đoán** của từng phương án theo định dạng cố định (`predictions/<variant>.csv`) và `metrics.json` tự báo cáo.
-- TW-07 dùng **bộ đánh giá viết sẵn của Anvil** (Python, không phải code LLM) để tính lại metric từ dự đoán và nhãn giữ riêng. Lệch so với số agent tự báo thì ghi Evidence `failed`. Đây là thứ thay harness thủ công.
+Thi công chia **hai giai đoạn**, vì với dữ liệu thô nhiều bảng thì nhãn do code tạo ra (ví dụ DM-02 tạo target churn):
+
+1. **Chuẩn bị dữ liệu:** agent viết `prepare_data.py` → review → Anvil chạy trong sandbox ra **bảng mô hình hóa** (mỗi dòng một thực thể, có cột id và target). Code này bị khóa sau khi chạy.
+2. **Chia và giữ nhãn:** `anvil_eval.py split` (code của Anvil, không phải của agent) chia theo giao thức (`stratified_holdout` hoặc `time_holdout`), ghi `agent/train.csv` và `agent/test_features.csv` (**không có target**) cho agent; nhãn test nằm ở `holdout/`, không bao giờ mount vào sandbox của agent.
+3. **Phương án:** code từng phương án chỉ thấy dữ liệu của agent, tự làm cross-validation trên train, xuất `predictions/<variant>.csv` (`id,score[,label]`) và tùy chọn `reported/<variant>.json` (số liệu train/CV).
+4. **Chấm:** `anvil_eval.py evaluate` tính ROC-AUC, PR-AUC, F1, Recall, Precision, Accuracy trên tập test từ dự đoán. Đây là **số chính thức**; số agent tự báo chỉ là tham khảo, ghi rõ chưa xác minh. Dự đoán thiếu/trùng id hay score ngoài [0, 1] → `invalid_predictions`; không có file → `missing`.
+5. **Gợi ý:** `rankExperimentVariants` xếp theo metric chính, nêu ngưỡng (nếu có), các phương án gần tốt nhất nhưng nhanh hơn; phương án chưa xác minh không bao giờ được gợi ý.
 
 ### 3.3 Thi công bằng agent, mọi lệnh chạy trong sandbox
 
@@ -125,5 +129,6 @@ Thứ tự đề xuất: (1) thu nhỏ dữ liệu có ghi rõ + giới hạn tu
 | --- | --- | --- |
 | P0 | Xong 26/10 | Commit mốc `0dce48b`; layout toàn màn hình, docs trỏ về kế hoạch 13 (`9a3c986`) |
 | P1 | Xong 26/10 | `uv` 0.13.5; lock `packages/system3/runtime/requirements-ml.lock` (27 gói có hash: numpy 2.5.4, pandas 3.1.0, scikit-learn 1.9.1, xgboost-cpu 3.4.1, lightgbm 4.7.0, shap 0.54.1); `bun run system3:ml-runtime` dựng venv 526 MB tại `$ANVIL_HOME/runtimes/system3-ml/<hash>`. Host cần `libgomp1` (đã cài). `runExperimentSandbox` profile `check`/`experiment`, hàng đợi một thí nghiệm. Test opt-in `ANVIL_SANDBOX_TESTS=true`: import ML stack offline, chỉ `/work/out` ghi được, vượt RAM/thời gian bị dừng; sandbox Python cũ vẫn đạt |
+| P3 (lõi) | Xong 26/10 | `runtime/python/anvil_eval.py` + `experiment-evaluation.ts`: giao thức đánh giá (zod), split giữ nhãn, chấm lại từ dự đoán, xếp hạng gợi ý. Test: 2 test xếp hạng + 1 test sandbox (split 200→150/50, test_features không có target, oracle AUC 1, dự đoán thiếu dòng/không có bị bắt). Chưa nối vào workflow/Evidence (làm ở P4–P5) |
 
 [← Mục lục](README.md) · [Kế hoạch 11 (nền UI và luồng)](11-simplification-and-core-flow-plan.md)

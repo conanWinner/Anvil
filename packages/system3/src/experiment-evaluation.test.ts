@@ -1,0 +1,145 @@
+import { describe, expect, test } from 'bun:test';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  evaluateExperimentPredictions,
+  rankExperimentVariants,
+  splitModelingTable,
+  type EvaluationProtocol,
+  type ExperimentEvaluation,
+} from './experiment-evaluation';
+import { resolveMlRuntime } from './ml-runtime';
+
+const sandboxTest = process.env.ANVIL_SANDBOX_TESTS === 'true' ? test : test.skip;
+
+const protocol: EvaluationProtocol = {
+  task: 'binary_classification',
+  idColumn: 'customer_id',
+  targetColumn: 'churn',
+  positiveLabel: '1',
+  split: { kind: 'stratified_holdout', testFraction: 0.25, seed: 7 },
+  primaryMetric: 'roc_auc',
+};
+
+function verified(roc: number, f1: number): ExperimentEvaluation['variants'][string] {
+  return {
+    status: 'verified',
+    metrics: { roc_auc: roc, pr_auc: roc, f1, recall: f1, precision: f1, accuracy: f1 },
+    reportedTrainingMetrics: {},
+    predictionsHash: 'sha256:x',
+  };
+}
+
+describe('rankExperimentVariants', () => {
+  test('ranks verified variants by the primary metric and lists faster near-best ones', () => {
+    const suggestion = rankExperimentVariants({
+      protocol,
+      evaluation: {
+        testRows: 100,
+        variants: {
+          logistic: verified(0.81, 0.6),
+          lightgbm: verified(0.9, 0.7),
+          random_forest: verified(0.895, 0.72),
+          xgboost: { status: 'invalid_predictions', error: 'bad ids' },
+        },
+      },
+      durations: { logistic: 1_000, lightgbm: 60_000, random_forest: 20_000 },
+    });
+    expect(suggestion.ranking.map(item => item.variant)).toEqual([
+      'lightgbm',
+      'random_forest',
+      'logistic',
+    ]);
+    expect(suggestion.suggested).toBe('lightgbm');
+    expect(suggestion.reasons).toEqual(['highest_primary_metric']);
+    expect(suggestion.fasterAlternatives).toEqual(['random_forest']);
+    expect(suggestion.unverified).toEqual(['xgboost']);
+  });
+
+  test('reports thresholds and never suggests an unverified variant', () => {
+    const withThreshold = { ...protocol, thresholds: { roc_auc: 0.85 } };
+    expect(
+      rankExperimentVariants({
+        protocol: withThreshold,
+        evaluation: { testRows: 10, variants: { a: verified(0.8, 0.5), b: verified(0.7, 0.5) } },
+      }).reasons
+    ).toEqual(['highest_primary_metric', 'no_variant_meets_thresholds']);
+    expect(
+      rankExperimentVariants({
+        protocol,
+        evaluation: { testRows: 10, variants: { a: { status: 'missing', error: 'none' } } },
+      })
+    ).toMatchObject({ suggested: null, ranking: [], unverified: ['a'] });
+  });
+});
+
+sandboxTest(
+  'Anvil splits once, hides held-out labels and recomputes metrics from predictions',
+  async () => {
+    const runtime = await resolveMlRuntime();
+    const root = await mkdtemp(join(tmpdir(), 'anvil-experiment-eval-'));
+    const rows = Array.from({ length: 200 }, (_, index) => {
+      const churn = index % 4 === 0 ? 1 : 0;
+      return `c${index.toString()},${(churn * 3 + (index % 3)).toString()},2018-01-${((index % 28) + 1).toString().padStart(2, '0')},${churn.toString()}`;
+    });
+    const tablePath = join(root, 'table.csv');
+    await writeFile(tablePath, ['customer_id,feature,last_seen,churn', ...rows].join('\n') + '\n');
+
+    const split = await splitModelingTable({
+      runtime,
+      tablePath,
+      protocol,
+      workDir: join(root, 'work'),
+      signal: new AbortController().signal,
+    });
+    expect(split.summary).toMatchObject({ rows: 200, trainRows: 150, testRows: 50 });
+    expect(split.summary.testPositiveRate).toBeCloseTo(0.24, 1);
+    const testFeatures = await readFile(join(split.agentDataDir, 'test_features.csv'), 'utf8');
+    expect(testFeatures.split('\n')[0]).toBe('customer_id,feature,last_seen');
+    const labels = (await readFile(join(split.holdoutDir, 'test_labels.csv'), 'utf8'))
+      .trim()
+      .split('\n')
+      .slice(1)
+      .map(line => line.split(','));
+
+    const predictionsDir = join(root, 'agent-out', 'predictions');
+    const reportedDir = join(root, 'agent-out', 'reported');
+    await Promise.all([mkdir(predictionsDir, { recursive: true }), mkdir(reportedDir)]);
+    const perfect = ['id,score', ...labels.map(([id, target]) => `${id},${target}`)].join('\n');
+    const inverted = [
+      'id,score',
+      ...labels.map(([id, target]) => `${id},${target === '1' ? '0.1' : '0.9'}`),
+    ].join('\n');
+    await Promise.all([
+      writeFile(join(predictionsDir, 'oracle.csv'), perfect + '\n'),
+      writeFile(join(predictionsDir, 'inverted.csv'), inverted + '\n'),
+      writeFile(join(predictionsDir, 'partial.csv'), perfect.split('\n').slice(0, 10).join('\n')),
+      writeFile(join(reportedDir, 'oracle.json'), JSON.stringify({ cv_roc_auc: 0.99 })),
+    ]);
+
+    const evaluation = await evaluateExperimentPredictions({
+      runtime,
+      variants: ['oracle', 'inverted', 'partial', 'absent'],
+      holdoutDir: split.holdoutDir,
+      predictionsDir,
+      reportedDir,
+      workDir: join(root, 'work'),
+      signal: new AbortController().signal,
+    });
+    expect(evaluation.testRows).toBe(50);
+    expect(evaluation.variants.oracle).toMatchObject({
+      status: 'verified',
+      metrics: { roc_auc: 1, f1: 1, accuracy: 1 },
+      reportedTrainingMetrics: { cv_roc_auc: 0.99 },
+    });
+    expect(evaluation.variants.inverted).toMatchObject({
+      status: 'verified',
+      metrics: { roc_auc: 0, recall: 0 },
+    });
+    expect(evaluation.variants.partial?.status).toBe('invalid_predictions');
+    expect(evaluation.variants.absent?.status).toBe('missing');
+    expect(rankExperimentVariants({ protocol, evaluation }).suggested).toBe('oracle');
+  },
+  180_000
+);
