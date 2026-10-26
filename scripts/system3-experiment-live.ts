@@ -126,6 +126,10 @@ const build = await buildExperimentCodebase({
     ),
 });
 await writeFile(join(work, 'build.json'), JSON.stringify(build, null, 2));
+if (build.status === 'needs_decision') {
+  await log(`BUILD NEEDS A DECISION at ${build.stage}: ${build.question}`);
+  process.exit(2);
+}
 if (build.status !== 'ready') {
   await log(`BUILD FAILED at ${build.stage}: ${build.reason.slice(0, 2000)}`);
   process.exit(1);

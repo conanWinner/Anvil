@@ -78,15 +78,21 @@ def split() -> None:
         fail(f"Unsupported split kind {method['kind']!r}")
     if len(test_idx) == 0 or y.iloc[test_idx].nunique() != 2:
         fail('Held-out test set must contain both classes')
+    warnings = []
     for name, idx in (('train', train_idx), ('test', test_idx)):
         rate = float(y.iloc[idx].mean())
         minority = min(rate, 1 - rate)
-        if minority * len(idx) < 5 or minority < 0.005:
+        if round(minority * len(idx)) < 5:
             fail(
                 f'The {name} split is degenerate: {rate:.4f} of {len(idx)} rows are positive, '
                 'so no model can learn or be evaluated. Revisit the target definition or cutoff '
                 f'so both classes occur (positive rate train/test = '
                 f'{float(y.iloc[train_idx].mean()):.4f}/{float(y.iloc[test_idx].mean()):.4f}).'
+            )
+        if minority < 0.01:
+            warnings.append(
+                f'Severe class imbalance in {name}: minority class is {minority:.2%} '
+                f'({round(minority * len(idx))} rows). Prefer PR-AUC/recall over accuracy.'
             )
 
     agent_dir, holdout_dir = OUT / 'agent', OUT / 'holdout'
@@ -106,6 +112,7 @@ def split() -> None:
         'testRows': int(len(test)),
         'trainPositiveRate': float(y.iloc[train_idx].mean()),
         'testPositiveRate': float(y.iloc[test_idx].mean()),
+        'warnings': warnings,
         'files': {
             'agent/train.csv': sha256(agent_dir / 'train.csv'),
             'agent/test_features.csv': sha256(agent_dir / 'test_features.csv'),

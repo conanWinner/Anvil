@@ -589,19 +589,24 @@ export const baselineCapabilityHandlers: Readonly<Record<BaselineCapabilityId, C
       assertNotAborted(context);
       const input = gateInputSchema.parse(raw);
       const passed = input.evidenceMap.executionStatus === 'passed';
+      const kind = input.evidenceMap.kind;
       const gate = {
         id: 'G5',
         name:
-          input.evidenceMap.kind === 'model_comparison'
+          kind === 'model_comparison'
             ? 'Ready for Model Comparison Delivery'
-            : 'Ready for MVP Baseline Delivery',
+            : kind === 'experiment'
+              ? 'Ready for Experiment Delivery'
+              : 'Ready for MVP Baseline Delivery',
         status: passed ? 'passed' : 'blocked',
         limitations:
-          input.evidenceMap.kind === 'model_comparison'
+          kind === 'model_comparison'
             ? []
-            : ['Full DESIGN_B_2 requirement coverage remains not verified'],
+            : kind === 'experiment'
+              ? ['Requirement-level coverage is not verified; held-out metrics are']
+              : ['Full DESIGN_B_2 requirement coverage remains not verified'],
       };
-      if (!passed && input.evidenceMap.kind !== 'model_comparison')
+      if (!passed && kind !== 'model_comparison' && kind !== 'experiment')
         throw new Error('G5 baseline delivery gate is blocked');
       return result({ gate });
     },
@@ -610,7 +615,11 @@ export const baselineCapabilityHandlers: Readonly<Record<BaselineCapabilityId, C
       const input = packageInputSchema.parse(raw);
       if (input.gate.status !== 'passed') throw new Error('Cannot package before G5 passes');
       const projectDir = await assertExecutionPath(input.projectDir, context);
-      if (input.gate.name !== 'Ready for Model Comparison Delivery') {
+      // Comparison and experiment packages ship their own reproduction instructions.
+      if (
+        input.gate.name !== 'Ready for Model Comparison Delivery' &&
+        input.gate.name !== 'Ready for Experiment Delivery'
+      ) {
         const reproducingPath = join(projectDir, 'REPRODUCING.md');
         const reproducing =
           '# Reproducing this project\n\n' +

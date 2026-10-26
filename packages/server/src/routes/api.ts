@@ -106,6 +106,15 @@ import {
   system3ReadinessEvaluationSchema,
   system3ReadinessContractBodySchema,
   modelComparisonConfigSchema,
+  EXPERIMENT_CONFIG_FILENAME,
+  deriveExperimentPlan,
+  experimentConfigSchema,
+  hashExperimentPlan,
+  mlRuntimeLockHash,
+  parsePinnedExperimentConfig,
+  type BlueprintAnalysis,
+  type ExperimentConfig,
+  type ExperimentPin,
   modelComparisonCodeSchema,
   parsePinnedModelComparisonConfig,
 } from '@anvil/system3';
@@ -267,6 +276,41 @@ async function readPinnedModelComparisonConfig(
     storageKey: source.storageKey,
   });
   return parsePinnedModelComparisonConfig(bytes, source.contentHash);
+}
+
+async function readPinnedExperimentConfig(
+  projectId: string,
+  sources: readonly System3SourceRecord[]
+): Promise<ExperimentConfig | undefined> {
+  const matches = sources.filter(
+    source => source.kind === 'constraints' && source.filename === EXPERIMENT_CONFIG_FILENAME
+  );
+  if (matches.length > 1) throw new Error(`Use one ${EXPERIMENT_CONFIG_FILENAME} Source Version`);
+  const source = matches[0];
+  if (!source) return undefined;
+  const bytes = await readSystem3Source({
+    artifactsRoot: await getSystem3ArtifactsRoot(projectId),
+    storageKey: source.storageKey,
+  });
+  return parsePinnedExperimentConfig(bytes, source.contentHash);
+}
+
+/** Pins what an experiment run depends on; Readiness freezes it and Compile re-checks it. */
+async function buildExperimentPin(input: {
+  config: ExperimentConfig;
+  analysis: BlueprintAnalysis;
+  sources: readonly System3SourceRecord[];
+}): Promise<ExperimentPin> {
+  const plan = deriveExperimentPlan(input.analysis);
+  return {
+    config: input.config,
+    variantIds: input.config.variantIds ?? plan.variants.map(variant => variant.id),
+    planHash: hashExperimentPlan(plan),
+    runtimeLockHash: await mlRuntimeLockHash(),
+    datasetSourceVersionIds: input.sources
+      .filter(source => source.kind === 'dataset')
+      .map(source => source.id),
+  };
 }
 
 async function resolveUnderstandingAnalysis(input: {
@@ -7772,6 +7816,7 @@ export function registerApiRoutes(
     const datasetSourceVersionId =
       primaryDatasets.length === 1 ? (primaryDatasets[0]?.id ?? null) : null;
     const modelComparison = await readPinnedModelComparisonConfig(projectId, activeSources);
+    const experimentConfig = await readPinnedExperimentConfig(projectId, activeSources);
     const codebase = await codebaseDb.getCodebase(project.codebaseId);
     if (!codebase) throw new System3ReadinessPreflightError('Linked codebase no longer exists');
     await assertSystem3LifecycleAttemptNextActivity(projectId, 'TW-03');
@@ -7800,19 +7845,28 @@ export function registerApiRoutes(
             userId,
             webAdapter,
           });
+          const readinessAnalysis = await resolveUnderstandingAnalysis({
+            projectId,
+            analysis: snapshot.analysis,
+            inputSnapshotId: snapshot.inputSnapshotId,
+            decisions: activeDecisions.map(decision => ({
+              binding: decision.binding,
+              status: decision.status,
+              answer: decision.answer,
+            })),
+          });
+          const experiment = experimentConfig
+            ? await buildExperimentPin({
+                config: experimentConfig,
+                analysis: readinessAnalysis,
+                sources: activeSources,
+              })
+            : undefined;
           const workflow = workflowDefinitionSchema.parse(
             buildReadinessContractWorkflow({
-              analysis: await resolveUnderstandingAnalysis({
-                projectId,
-                analysis: snapshot.analysis,
-                inputSnapshotId: snapshot.inputSnapshotId,
-                decisions: activeDecisions.map(decision => ({
-                  binding: decision.binding,
-                  status: decision.status,
-                  answer: decision.answer,
-                })),
-              }),
+              analysis: readinessAnalysis,
               ...(modelComparison ? { modelComparison } : {}),
+              ...(experiment ? { experiment } : {}),
               decisions: activeDecisions.map(decision => ({
                 id: decision.id,
                 status: decision.status,
@@ -8054,9 +8108,26 @@ export function registerApiRoutes(
               )
             : [];
           const modelComparison = await readPinnedModelComparisonConfig(projectId, sources);
-          if (readinessBody.data.schemaVersion === 3) {
+          const experimentConfig = await readPinnedExperimentConfig(projectId, sources);
+          const readinessExperiment =
+            readinessBody.data.schemaVersion === 3 && 'experiment' in readinessBody.data
+              ? readinessBody.data.experiment
+              : undefined;
+          if (readinessExperiment || experimentConfig) {
+            if (
+              !readinessExperiment ||
+              !experimentConfig ||
+              hashSystem3Definition(readinessExperiment.config) !==
+                hashSystem3Definition(experimentConfigSchema.parse(experimentConfig))
+            ) {
+              throw new System3CompilationPreflightError(
+                'Pinned experiment config differs from the current Readiness Contract; run readiness again'
+              );
+            }
+          } else if (readinessBody.data.schemaVersion === 3) {
             if (
               !modelComparison ||
+              !('modelComparison' in readinessBody.data) ||
               hashSystem3Definition(readinessBody.data.modelComparison) !==
                 hashSystem3Definition(modelComparison)
             ) {
@@ -8079,6 +8150,7 @@ export function registerApiRoutes(
             sources,
             analysis: resolvedAnalysis,
             modelComparison,
+            ...(readinessExperiment ? { experiment: readinessExperiment } : {}),
             availableCapabilities: getSystem3CapabilityRegistry().snapshot(),
             rerunScope:
               affectedPhases.length > 0
@@ -8476,7 +8548,8 @@ export function registerApiRoutes(
       });
       const targetColumn = resolvedAnalysis.dataset?.targetColumn;
       const requiresTargetColumn =
-        compilation.plan.schemaVersion !== 3 || !compilation.plan.modelComparison;
+        compilation.plan.schemaVersion !== 3 ||
+        (!compilation.plan.modelComparison && !compilation.plan.experiment);
       if (
         requiresTargetColumn &&
         (!targetColumn || resolvedAnalysis.dataset?.targetExists !== true)

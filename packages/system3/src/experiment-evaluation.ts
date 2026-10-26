@@ -51,6 +51,8 @@ export const splitSummarySchema = z.object({
   testRows: z.number().int(),
   trainPositiveRate: z.number(),
   testPositiveRate: z.number(),
+  /** Non-blocking data quality notes (e.g. severe imbalance) shown with the results. */
+  warnings: z.array(z.string()).default([]),
   files: z.record(z.string(), z.string()),
 });
 export type SplitSummary = z.infer<typeof splitSummarySchema>;

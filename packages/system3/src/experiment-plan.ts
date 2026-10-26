@@ -1,4 +1,5 @@
 import { z } from '@hono/zod-openapi';
+import { createHash } from 'node:crypto';
 import type { BlueprintAnalysis } from './contracts';
 import {
   evaluationProtocolSchema,
@@ -239,4 +240,22 @@ export function deriveExperimentPlan(analysis: BlueprintAnalysis): ExperimentPla
     reportedMetrics,
     gaps,
   });
+}
+
+function canonical(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value !== null && typeof value === 'object')
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map(key => [key, canonical((value as Record<string, unknown>)[key])])
+    );
+  return value;
+}
+
+/** Stable hash of a derived plan; approval pins it so a changed blueprint needs a new review. */
+export function hashExperimentPlan(plan: ExperimentPlan): string {
+  return `sha256:${createHash('sha256')
+    .update(JSON.stringify(canonical(plan)))
+    .digest('hex')}`;
 }

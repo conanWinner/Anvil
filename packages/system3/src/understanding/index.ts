@@ -227,6 +227,8 @@ function datasetUnderstanding(input: {
   extraction: BlueprintExtractionResult;
   profile: Awaited<ReturnType<typeof profileDatasetCsvStream>> | null;
   modelComparison?: ModelComparisonConfig;
+  /** Experiment mode builds the target in its data-preparation stage, not from a CSV column. */
+  targetFromPreparation?: boolean;
 }): DatasetUnderstanding {
   const issues: UnderstandingIssue[] = [];
   if (input.profile === null) {
@@ -239,10 +241,8 @@ function datasetUnderstanding(input: {
     };
   }
   const declaration = input.extraction.datasetDeclaration;
-  if (
-    input.modelComparison === undefined &&
-    (declaration?.targetColumn === null || declaration === null)
-  ) {
+  const targetFromColumn = input.modelComparison === undefined && !input.targetFromPreparation;
+  if (targetFromColumn && (declaration?.targetColumn === null || declaration === null)) {
     issues.push(
       datasetIssue({
         key: 'target-not-declared',
@@ -258,7 +258,7 @@ function datasetUnderstanding(input: {
         sourcePointers: declaration?.sourcePointers ?? [],
       })
     );
-  } else if (input.modelComparison === undefined && declaration && !input.profile.targetExists) {
+  } else if (targetFromColumn && declaration && !input.profile.targetExists) {
     issues.push(
       datasetIssue({
         key: `missing-target:${declaration.targetColumn}`,
@@ -537,6 +537,7 @@ export async function understandProjectSources(input: {
   sources: readonly PinnedUnderstandingSource[];
   datasetSource?: StreamedPinnedUnderstandingSource;
   modelComparison?: ModelComparisonConfig;
+  targetFromPreparation?: boolean;
   previousAnalysis?: BlueprintAnalysis | null;
   semanticFallback?: UnderstandingSemanticFallback;
   signal?: AbortSignal;
@@ -621,6 +622,7 @@ export async function understandProjectSources(input: {
     extraction: parsed.extraction,
     profile,
     ...(modelComparison ? { modelComparison } : {}),
+    ...(input.targetFromPreparation ? { targetFromPreparation: true } : {}),
   });
   datasetResult.issues.push(
     ...supplementalIssues,

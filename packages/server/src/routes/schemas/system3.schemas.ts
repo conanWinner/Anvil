@@ -1,6 +1,7 @@
 import { createRoute, z } from '@hono/zod-openapi';
 import {
   blueprintAnalysisSchema,
+  experimentEvidenceViewSchema,
   system3AttentionSchema,
   system3FreshnessSchema,
   system3PhaseSchema,
@@ -478,7 +479,10 @@ export const system3FlowSchema = z
         validatorVersion: z.string(),
         basisHash: z.string().startsWith('sha256:'),
         evidenceMap: z
-          .object({ models: z.array(modelComparisonModelReportSchema).optional() })
+          .object({
+            models: z.array(modelComparisonModelReportSchema).optional(),
+            ...experimentEvidenceViewSchema.partial().shape,
+          })
           .catchall(z.unknown())
           .nullable(),
         gate: z.record(z.string(), z.unknown()).nullable(),

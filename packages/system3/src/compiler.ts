@@ -13,6 +13,8 @@ import type {
 } from './contracts';
 import type { System3SourceRecord } from './store';
 import { modelComparisonConfigSchema, type ModelComparisonConfig } from './model-comparison';
+import { experimentPinSchema, type ExperimentPin } from './experiment-config';
+import { deriveExperimentPlan, hashExperimentPlan, type ExperimentPlan } from './experiment-plan';
 import type { System3ReadinessContractBody } from './contracts';
 import { customerChurnCapabilityDescriptors } from './capabilities';
 import { system3PhaseOrder, type System3PhaseId } from './invalidation';
@@ -234,7 +236,15 @@ export function compileSystem3WorkflowBundles(input: {
     executionMode: 'full' | 'experiment' | 'delivery';
     reusedArtifacts: readonly System3ReusableArtifact[];
   };
+  /** Required when `plan.experiment` is set: the derived plan and the pinned sources it reads. */
+  experimentInputs?: {
+    plan: ExperimentPlan;
+    blueprintSource: { id: string; contentHash: string };
+    datasetSources: readonly { id: string; contentHash: string }[];
+  };
 }): System3WorkflowBundleSnapshot[] {
+  if (input.plan.experiment && !input.experimentInputs)
+    throw new Error('Experiment plans need their derived plan and pinned sources to compile');
   const execution = buildCustomerChurnExecutionWorkflows({
     projectId: input.projectId,
     executionId: bindingMarker('executionId'),
@@ -252,6 +262,9 @@ export function compileSystem3WorkflowBundles(input: {
             inputHash: hashSystem3Definition(input.plan.inputSnapshot),
           },
         }
+      : {}),
+    ...(input.plan.experiment && input.experimentInputs
+      ? { experiment: { pin: input.plan.experiment, ...input.experimentInputs } }
       : {}),
     rerunScope: input.rerunScope,
   });
@@ -273,6 +286,7 @@ export function compileSystem3WorkflowBundles(input: {
           },
         }
       : {}),
+    ...(input.plan.experiment ? { experiment: true } : {}),
   });
   const delivery = buildCustomerChurnDeliveryWorkflows({
     projectId: input.projectId,
@@ -528,6 +542,7 @@ export function compileCustomerChurnReference(input: {
   sources: readonly System3SourceRecord[];
   analysis: BlueprintAnalysis;
   modelComparison?: ModelComparisonConfig;
+  experiment?: ExperimentPin;
   rerunScope?: {
     impactManifestIds?: readonly string[];
     impactManifestId?: string;
@@ -570,22 +585,81 @@ export function compileCustomerChurnReference(input: {
   const modelComparison = input.modelComparison
     ? modelComparisonConfigSchema.parse(input.modelComparison)
     : undefined;
-  if (input.readinessContractBody?.schemaVersion === 3 && !modelComparison) {
+  const experiment = input.experiment ? experimentPinSchema.parse(input.experiment) : undefined;
+  const readinessBody = input.readinessContractBody;
+  const comparisonBody =
+    readinessBody?.schemaVersion === 3 && 'modelComparison' in readinessBody
+      ? readinessBody
+      : undefined;
+  const experimentBody =
+    readinessBody?.schemaVersion === 3 && 'experiment' in readinessBody ? readinessBody : undefined;
+  if (comparisonBody && !modelComparison) {
     throw new Error('Comparison Readiness Contract requires its pinned model comparison config');
+  }
+  if (experimentBody && !experiment) {
+    throw new Error('Experiment Readiness Contract requires its pinned experiment config');
+  }
+  if (modelComparison && experiment) {
+    throw new Error('A plan cannot combine model comparison and experiment mode');
+  }
+  let experimentInputs:
+    | {
+        plan: ExperimentPlan;
+        blueprintSource: { id: string; contentHash: string };
+        datasetSources: { id: string; contentHash: string }[];
+      }
+    | undefined;
+  if (experiment) {
+    const datasetSources = activeSources.filter(source => source.kind === 'dataset');
+    const blueprintSources = activeSources.filter(source => source.kind === 'blueprint');
+    const experimentPlan = deriveExperimentPlan(input.analysis);
+    if (
+      !experimentBody ||
+      hashSystem3Definition(experimentBody.experiment) !== hashSystem3Definition(experiment) ||
+      experimentBody.knowledgeSnapshotId !== input.knowledgeSnapshotId ||
+      (input.projectVersion !== undefined &&
+        experimentBody.projectVersion !== input.projectVersion - 1) ||
+      canonicalJson([...experiment.datasetSourceVersionIds].sort()) !==
+        canonicalJson(datasetSources.map(source => source.id).sort()) ||
+      hashExperimentPlan(experimentPlan) !== experiment.planHash
+    ) {
+      throw new Error('Experiment mode requires a matching pinned experiment Readiness Contract');
+    }
+    if (experimentPlan.gaps.some(gap => gap.blocking) || experimentPlan.protocol === null)
+      throw new Error('Experiment plan still has blocking gaps');
+    const blueprintSource = blueprintSources[0];
+    if (blueprintSources.length !== 1 || !blueprintSource)
+      throw new Error('Experiment mode needs exactly one blueprint Source Version');
+    if (
+      input.rerunScope &&
+      (resolveSystem3ExecutionMode(input.rerunScope.affectedPhases) !== 'full' ||
+        input.rerunScope.reusableArtifact)
+    )
+      throw new Error(
+        'Experiment mode supports full execution only; scoped reruns are not supported.'
+      );
+    experimentInputs = {
+      plan: experimentPlan,
+      blueprintSource: { id: blueprintSource.id, contentHash: blueprintSource.contentHash },
+      datasetSources: datasetSources.map(source => ({
+        id: source.id,
+        contentHash: source.contentHash,
+      })),
+    };
   }
   if (modelComparison) {
     if (
-      input.readinessContractBody?.schemaVersion !== 3 ||
-      hashSystem3Definition(input.readinessContractBody.modelComparison) !==
+      comparisonBody === undefined ||
+      hashSystem3Definition(comparisonBody.modelComparison) !==
         hashSystem3Definition(modelComparison) ||
-      input.readinessContractBody.knowledgeSnapshotId !== input.knowledgeSnapshotId ||
-      input.readinessContractBody.datasetSourceVersionId !== primaryDatasetSources[0]?.id ||
+      comparisonBody.knowledgeSnapshotId !== input.knowledgeSnapshotId ||
+      comparisonBody.datasetSourceVersionId !== primaryDatasetSources[0]?.id ||
       (input.projectVersion !== undefined &&
-        input.readinessContractBody.projectVersion !== input.projectVersion - 1) ||
-      canonicalJson(input.readinessContractBody.requirementIds) !==
+        comparisonBody.projectVersion !== input.projectVersion - 1) ||
+      canonicalJson(comparisonBody.requirementIds) !==
         canonicalJson(modelComparison.requirementIds) ||
-      input.readinessContractBody.runtime.cpuOnly !== input.analysis.runtime.cpuOnly ||
-      input.readinessContractBody.runtime.ramGb !== input.analysis.runtime.ramGb
+      comparisonBody.runtime.cpuOnly !== input.analysis.runtime.cpuOnly ||
+      comparisonBody.runtime.ramGb !== input.analysis.runtime.ramGb
     ) {
       throw new Error('Model comparison requires a matching pinned comparison Readiness Contract');
     }
@@ -635,6 +709,7 @@ export function compileCustomerChurnReference(input: {
       sourceIds,
       sourceHashes,
       modelComparison: modelComparison ?? null,
+      ...(experiment ? { experiment } : {}),
       compilerVersion: 'system3-compiler@3',
     });
   const runtimeProfileHash = hashSystem3Definition(resourceProfile);
@@ -720,6 +795,7 @@ export function compileCustomerChurnReference(input: {
     buildReadinessContractWorkflow({
       analysis: input.analysis,
       ...(modelComparison ? { modelComparison } : {}),
+      ...(experiment ? { experiment } : {}),
       decisions: [],
       knowledgeSnapshotId: input.knowledgeSnapshotId,
       projectVersion: input.projectVersion ?? 1,
@@ -752,6 +828,7 @@ export function compileCustomerChurnReference(input: {
     runtimeProfile: resourceProfile,
     inputSnapshot: { sourceIds, sourceHashes },
     ...(modelComparison ? { modelComparison } : {}),
+    ...(experiment ? { experiment } : {}),
     knowledgeSnapshotId: input.knowledgeSnapshotId,
     ...(input.readinessContract ? { readinessContract: input.readinessContract } : {}),
     capabilityRegistry: capabilityRegistry.map(capability => ({ ...capability })),
@@ -762,7 +839,8 @@ export function compileCustomerChurnReference(input: {
     projectId: projectIdentity,
     compilationId,
     projectName: 'Customer Churn',
-    targetColumn: input.analysis.dataset?.targetColumn ?? (modelComparison ? null : 'target'),
+    targetColumn:
+      input.analysis.dataset?.targetColumn ?? (modelComparison || experiment ? null : 'target'),
     datasetSource: { id: datasetSource.id, contentHash: datasetSource.contentHash },
     plan: provisionalPlan,
     analysis: input.analysis,
@@ -772,6 +850,7 @@ export function compileCustomerChurnReference(input: {
       executionMode,
       reusedArtifacts: rerunScope.reusedArtifacts,
     },
+    ...(experimentInputs ? { experimentInputs } : {}),
   });
   const provisionalPhases = projectWorkflowPhases({
     workflows: [
@@ -801,6 +880,7 @@ export function compileCustomerChurnReference(input: {
     runtimeProfileVersionId,
     readinessContract: input.readinessContract ?? null,
     modelComparison: modelComparison ?? null,
+    ...(experiment ? { experiment } : {}),
     compilerVersion: 'system3-compiler@3',
   });
   const executionPlanSnapshotId = snapshotId({
@@ -821,7 +901,8 @@ export function compileCustomerChurnReference(input: {
     projectId: projectIdentity,
     compilationId,
     projectName: 'Customer Churn',
-    targetColumn: input.analysis.dataset?.targetColumn ?? (modelComparison ? null : 'target'),
+    targetColumn:
+      input.analysis.dataset?.targetColumn ?? (modelComparison || experiment ? null : 'target'),
     datasetSource: { id: datasetSource.id, contentHash: datasetSource.contentHash },
     plan,
     analysis: input.analysis,
@@ -831,6 +912,7 @@ export function compileCustomerChurnReference(input: {
       executionMode,
       reusedArtifacts: rerunScope.reusedArtifacts,
     },
+    ...(experimentInputs ? { experimentInputs } : {}),
   });
   const projectedPhases = projectWorkflowPhases({
     workflows: [

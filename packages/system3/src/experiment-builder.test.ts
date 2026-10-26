@@ -123,11 +123,13 @@ sandboxTest(
             { path: 'prepare_data.py', content: prepareCalls === 1 ? brokenPrepare : prepare },
           ],
           notes: `prepare ${prepareCalls.toString()}`,
+          question: null,
         });
       }
       return Promise.resolve({
         files: [{ path: 'train_variant.py', content: trainVariant }],
         notes: 'variants',
+        question: null,
       });
     };
 

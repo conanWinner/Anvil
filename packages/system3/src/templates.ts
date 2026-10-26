@@ -1,3 +1,5 @@
+import type { ExperimentPin } from './experiment-config';
+import type { ExperimentPlan } from './experiment-plan';
 import type { ModelComparisonConfig } from './model-comparison';
 
 /**
@@ -81,6 +83,7 @@ export function buildUnderstandProjectWorkflow(input: {
 export function buildReadinessContractWorkflow(input: {
   analysis: unknown;
   modelComparison?: ModelComparisonConfig;
+  experiment?: ExperimentPin;
   decisions: readonly { id: string; status: 'pending' | 'answered'; answer: string | null }[];
   knowledgeSnapshotId: string;
   projectVersion: number;
@@ -123,6 +126,7 @@ export function buildReadinessContractWorkflow(input: {
           input: {
             analysis: input.analysis,
             ...(input.modelComparison ? { modelComparison: input.modelComparison } : {}),
+            ...(input.experiment ? { experiment: input.experiment } : {}),
             pendingDecisionCount: input.decisions.filter(decision => decision.status === 'pending')
               .length,
             knowledgeSnapshotId: input.knowledgeSnapshotId,
@@ -152,6 +156,7 @@ export function buildReadinessContractWorkflow(input: {
           input: {
             analysis: input.analysis,
             ...(input.modelComparison ? { modelComparison: input.modelComparison } : {}),
+            ...(input.experiment ? { experiment: input.experiment } : {}),
             evaluation: '$evaluate-gates.output.evaluation',
             datasetSourceVersionId: input.datasetSourceVersionId,
             resolvedDecisions: '$resolve-decisions.output.resolvedDecisions',
@@ -198,6 +203,12 @@ export function buildCustomerChurnExecutionWorkflows(input: {
     config: ModelComparisonConfig;
     inputHash: string;
   };
+  experiment?: {
+    pin: ExperimentPin;
+    plan: ExperimentPlan;
+    blueprintSource: { id: string; contentHash: string };
+    datasetSources: readonly { id: string; contentHash: string }[];
+  };
   rerunScope: {
     executionMode: 'full' | 'experiment' | 'delivery';
     reusedArtifacts: readonly {
@@ -210,6 +221,9 @@ export function buildCustomerChurnExecutionWorkflows(input: {
 }): { root: TechnicalWorkflow; definitions: TechnicalWorkflow[] } {
   if (input.modelComparison && input.rerunScope.executionMode !== 'full') {
     throw new Error('Model comparison supports full execution only; remove scoped rerun settings.');
+  }
+  if (input.experiment && input.rerunScope.executionMode !== 'full') {
+    throw new Error('Experiment mode supports full execution only; remove scoped rerun settings.');
   }
   const common = {
     provider: 'claude',
@@ -509,6 +523,27 @@ export function buildCustomerChurnExecutionWorkflows(input: {
         },
       ]
     : [];
+  // Experiment mode (plan 13): one long action builds, runs and scores; a second archives it.
+  const experimentModeNodes: Record<string, unknown>[] = input.experiment
+    ? [
+        {
+          id: 'execute-experiment',
+          action: {
+            executor: 'system3.experiment-execute',
+            input: {
+              projectId: input.projectId,
+              config: input.experiment.pin.config,
+              plan: input.experiment.plan,
+              variantIds: input.experiment.pin.variantIds,
+              blueprintSource: input.experiment.blueprintSource,
+              datasetSources: input.experiment.datasetSources,
+            },
+          },
+          timeout: 4 * 60 * 60_000,
+          output_type: 'system3-experiment-package',
+        },
+      ]
+    : [];
   const root: TechnicalWorkflow = {
     ...common,
     name: 'system3-customer-churn-execution',
@@ -524,40 +559,55 @@ export function buildCustomerChurnExecutionWorkflows(input: {
       },
       required: ['projectDir', 'testResult', 'dataResult', 'experiment'],
     },
-    outputs: input.modelComparison
+    outputs: input.experiment
       ? {
-          projectDir: '$package-model-comparison.output.projectDir',
-          testResult: '$package-model-comparison.output.testResult',
-          dataResult: '$package-model-comparison.output.dataResult',
-          experiment: '$package-model-comparison.output.experiment',
-          packagePath: '$package-model-comparison.output.packagePath',
+          projectDir: '$execute-experiment.output.projectDir',
+          testResult: '$execute-experiment.output.testResult',
+          dataResult: '$execute-experiment.output.dataResult',
+          experiment: '$execute-experiment.output.experiment',
+          packagePath: '$execute-experiment.output.packagePath',
         }
-      : input.rerunScope.executionMode === 'full' || input.rerunScope.executionMode === 'experiment'
+      : input.modelComparison
         ? {
-            projectDir: '$baseline-experiment.output.projectDir',
-            testResult: '$baseline-experiment.output.testResult',
-            dataResult: '$baseline-experiment.output.dataResult',
-            experiment: '$baseline-experiment.output.experiment',
-            packagePath: '$baseline-experiment.output.packagePath',
+            projectDir: '$package-model-comparison.output.projectDir',
+            testResult: '$package-model-comparison.output.testResult',
+            dataResult: '$package-model-comparison.output.dataResult',
+            experiment: '$package-model-comparison.output.experiment',
+            packagePath: '$package-model-comparison.output.packagePath',
           }
-        : {
-            projectDir: '$reuse-experiment-artifact.output.projectDir',
-            testResult: '$reuse-experiment-artifact.output.testResult',
-            dataResult: '$reuse-experiment-artifact.output.dataResult',
-            experiment: '$reuse-experiment-artifact.output.experiment',
-            packagePath: '$reuse-experiment-artifact.output.packagePath',
-          },
-    nodes: input.modelComparison
-      ? comparisonNodes
-      : input.rerunScope.executionMode === 'full'
-        ? fullNodes
-        : input.rerunScope.executionMode === 'experiment'
-          ? experimentNodes
-          : deliveryNodes,
+        : input.rerunScope.executionMode === 'full' ||
+            input.rerunScope.executionMode === 'experiment'
+          ? {
+              projectDir: '$baseline-experiment.output.projectDir',
+              testResult: '$baseline-experiment.output.testResult',
+              dataResult: '$baseline-experiment.output.dataResult',
+              experiment: '$baseline-experiment.output.experiment',
+              packagePath: '$baseline-experiment.output.packagePath',
+            }
+          : {
+              projectDir: '$reuse-experiment-artifact.output.projectDir',
+              testResult: '$reuse-experiment-artifact.output.testResult',
+              dataResult: '$reuse-experiment-artifact.output.dataResult',
+              experiment: '$reuse-experiment-artifact.output.experiment',
+              packagePath: '$reuse-experiment-artifact.output.packagePath',
+            },
+    nodes: input.experiment
+      ? experimentModeNodes
+      : input.modelComparison
+        ? comparisonNodes
+        : input.rerunScope.executionMode === 'full'
+          ? fullNodes
+          : input.rerunScope.executionMode === 'experiment'
+            ? experimentNodes
+            : deliveryNodes,
   };
   const definitions =
     input.rerunScope.executionMode === 'full'
-      ? [root, ...modelCandidateWorkflows, ...(input.modelComparison ? [] : [build, experiment])]
+      ? [
+          root,
+          ...modelCandidateWorkflows,
+          ...(input.modelComparison || input.experiment ? [] : [build, experiment]),
+        ]
       : input.rerunScope.executionMode === 'experiment'
         ? [root, reuse, experiment]
         : [root, reuse];
@@ -622,6 +672,7 @@ export function buildCustomerChurnVerificationWorkflows(input: {
   analysis: unknown;
   artifact: ImmutableBaselineArtifact;
   modelComparison?: { config: ModelComparisonConfig; inputHash: string; datasetHash: string };
+  experiment?: boolean;
 }): { root: TechnicalWorkflow; definitions: TechnicalWorkflow[] } {
   const reuse = buildBaselineReuseWorkflow(input);
   const verify: TechnicalWorkflow = {
@@ -641,43 +692,57 @@ export function buildCustomerChurnVerificationWorkflows(input: {
       gate: '$evaluate-baseline-gate.output.gate',
     },
     nodes: [
-      {
-        id: 'validate-artifact-schemas',
-        action: {
-          executor: input.modelComparison
-            ? 'system3.model-comparison-validator'
-            : 'system3.artifact-schema-validator',
-          input: {
-            projectDir: '$INPUTS.projectDir',
-            analysis: input.analysis,
-            testResult: '$INPUTS.testResult',
-            dataResult: '$INPUTS.dataResult',
-            experiment: '$INPUTS.experiment',
-            ...(input.modelComparison ? { modelComparison: input.modelComparison } : {}),
-          },
-        },
-        timeout: input.modelComparison ? 150_000 : 10_000,
-        output_type: 'system3-artifact-validation',
-      },
-      {
-        id: 'build-evidence-map',
-        depends_on: ['validate-artifact-schemas'],
-        action: {
-          executor: input.modelComparison
-            ? 'system3.model-comparison-evidence'
-            : 'system3.evidence-map-builder',
-          input: {
-            projectDir: '$INPUTS.projectDir',
-            analysis: input.analysis,
-            testResult: '$INPUTS.testResult',
-            dataResult: '$INPUTS.dataResult',
-            experiment: '$INPUTS.experiment',
-            ...(input.modelComparison ? { modelComparison: input.modelComparison } : {}),
-          },
-        },
-        timeout: input.modelComparison ? 150_000 : 10_000,
-        output_type: 'system3-evidence-map',
-      },
+      ...(input.experiment
+        ? [
+            {
+              id: 'build-evidence-map',
+              action: {
+                executor: 'system3.experiment-verify',
+                input: { projectDir: '$INPUTS.projectDir', experiment: '$INPUTS.experiment' },
+              },
+              timeout: 30 * 60_000,
+              output_type: 'system3-evidence-map',
+            },
+          ]
+        : [
+            {
+              id: 'validate-artifact-schemas',
+              action: {
+                executor: input.modelComparison
+                  ? 'system3.model-comparison-validator'
+                  : 'system3.artifact-schema-validator',
+                input: {
+                  projectDir: '$INPUTS.projectDir',
+                  analysis: input.analysis,
+                  testResult: '$INPUTS.testResult',
+                  dataResult: '$INPUTS.dataResult',
+                  experiment: '$INPUTS.experiment',
+                  ...(input.modelComparison ? { modelComparison: input.modelComparison } : {}),
+                },
+              },
+              timeout: input.modelComparison ? 150_000 : 10_000,
+              output_type: 'system3-artifact-validation',
+            },
+            {
+              id: 'build-evidence-map',
+              depends_on: ['validate-artifact-schemas'],
+              action: {
+                executor: input.modelComparison
+                  ? 'system3.model-comparison-evidence'
+                  : 'system3.evidence-map-builder',
+                input: {
+                  projectDir: '$INPUTS.projectDir',
+                  analysis: input.analysis,
+                  testResult: '$INPUTS.testResult',
+                  dataResult: '$INPUTS.dataResult',
+                  experiment: '$INPUTS.experiment',
+                  ...(input.modelComparison ? { modelComparison: input.modelComparison } : {}),
+                },
+              },
+              timeout: input.modelComparison ? 150_000 : 10_000,
+              output_type: 'system3-evidence-map',
+            },
+          ]),
       {
         id: 'evaluate-baseline-gate',
         depends_on: ['build-evidence-map'],

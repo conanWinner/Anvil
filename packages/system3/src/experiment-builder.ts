@@ -29,8 +29,10 @@ export const builderFileSchema = z.object({
 });
 
 export const builderResponseSchema = z.object({
-  files: z.array(builderFileSchema).min(1).max(MAX_FILES),
+  files: z.array(builderFileSchema).max(MAX_FILES),
   notes: z.string().max(4_000),
+  /** Set when the blueprint cannot be implemented as written; the user must decide. */
+  question: z.string().max(4_000).nullable(),
 });
 export type BuilderResponse = z.infer<typeof builderResponseSchema>;
 
@@ -51,11 +53,11 @@ export type ReviewResponse = z.infer<typeof reviewResponseSchema>;
 export const BUILDER_OUTPUT_JSON_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['files', 'notes'],
+  required: ['files', 'notes', 'question'],
   properties: {
+    question: { type: ['string', 'null'] },
     files: {
       type: 'array',
-      minItems: 1,
       maxItems: MAX_FILES,
       items: {
         type: 'object',
@@ -133,7 +135,14 @@ export type ExperimentBuildResult =
       files: Record<string, string>;
       events: BuildEvent[];
     }
-  | { status: 'failed'; stage: BuildEvent['stage']; reason: string; events: BuildEvent[] };
+  | { status: 'failed'; stage: BuildEvent['stage']; reason: string; events: BuildEvent[] }
+  | {
+      /** The builder could not follow the blueprint as written; a person must decide. */
+      status: 'needs_decision';
+      stage: BuildEvent['stage'];
+      question: string;
+      events: BuildEvent[];
+    };
 
 function clip(text: string, limit = FEEDBACK_LIMIT): string {
   return text.length <= limit ? text : `…${text.slice(text.length - limit)}`;
@@ -213,7 +222,11 @@ const SANDBOX_RULES = `Runtime rules (enforced by the sandbox):
 - Python 3.12 with only: numpy, pandas, scipy, scikit-learn, xgboost, lightgbm, imbalanced-learn, shap, matplotlib, joblib, pyarrow.
 - No network, no package installation, no GPU. Memory 2 GB, 2 CPU threads (use n_jobs=2 at most).
 - The project folder (/work/project) and /work/data are read-only. Write only under /work/out.
-- Use fixed random seeds. Keep hyper-parameter search small: each variant must finish in under 20 minutes.`;
+- Use fixed random seeds. Keep hyper-parameter search small: each variant must finish in under 20 minutes.
+
+Scope rules (the user owns these decisions):
+- Never change the blueprint's target definition, positive class, entity population, time window or evaluation metric, even if the data makes them hard (e.g. extreme class imbalance).
+- If the blueprint cannot be implemented as written with the given data, return no files and put a short, specific question for the user in \`question\` (what is wrong, with numbers, and the options you see). Otherwise set \`question\` to null.`;
 
 function preparePrompt(
   input: ExperimentBuildInput,
@@ -343,6 +356,14 @@ export async function buildExperimentCodebase(
   await mkdir(input.projectDir, { recursive: true });
   const rawData = await describeCsvFolder(input.rawDataDir);
 
+  class NeedsDecision extends Error {
+    constructor(
+      readonly stage: BuildEvent['stage'],
+      readonly question: string
+    ) {
+      super(question);
+    }
+  }
   const generate = async (
     role: 'builder' | 'reviewer',
     prompt: string
@@ -354,7 +375,15 @@ export async function buildExperimentCodebase(
       schema: role === 'builder' ? BUILDER_OUTPUT_JSON_SCHEMA : REVIEW_OUTPUT_JSON_SCHEMA,
       signal: input.signal,
     });
-    return role === 'builder' ? builderResponseSchema.parse(raw) : reviewResponseSchema.parse(raw);
+    if (role === 'reviewer') return reviewResponseSchema.parse(raw);
+    const response = builderResponseSchema.parse(raw);
+    if (response.question !== null && response.question.trim().length > 0)
+      throw new NeedsDecision(
+        prompt.includes('DATA PREPARATION') ? 'prepare' : 'variants',
+        response.question.trim()
+      );
+    if (response.files.length === 0) throw new Error('Builder returned no files and no question');
+    return response;
   };
 
   // Stage 1: data preparation until the modeling table satisfies Anvil's split.
@@ -482,56 +511,69 @@ export async function buildExperimentCodebase(
     return feedback ?? 'Variant code did not converge';
   };
 
-  const prepareFailure = await prepare(null);
-  if (prepareFailure !== null)
-    return { status: 'failed', stage: 'prepare', reason: prepareFailure, events };
-  const variantFailure = await variants(null);
-  if (variantFailure !== null)
-    return { status: 'failed', stage: 'variants', reason: variantFailure, events };
+  try {
+    const prepareFailure = await prepare(null);
+    if (prepareFailure !== null)
+      return { status: 'failed', stage: 'prepare', reason: prepareFailure, events };
+    const variantFailure = await variants(null);
+    if (variantFailure !== null)
+      return { status: 'failed', stage: 'variants', reason: variantFailure, events };
 
-  // Stage 3: independent review; blocking findings go back to the builder a bounded number of times.
-  for (let round = 1; ; round += 1) {
-    const files = await listProjectFiles(input.projectDir);
-    const review = (await generate(
-      'reviewer',
-      reviewPrompt(
-        input,
-        files,
-        `Data preparation produced a modeling table that Anvil split as: ${JSON.stringify(state.split?.summary ?? null)}. Every variant produced valid predictions on a stratified sample.`
-      )
-    )) as ReviewResponse;
-    const blocking = review.findings.filter(finding => finding.severity === 'blocking');
-    emit({
-      stage: 'review',
-      round,
-      kind: 'review',
-      detail: `${review.verdict}: ${blocking.length.toString()} blocking, ${(review.findings.length - blocking.length).toString()} warnings`,
-    });
-    if (review.verdict === 'pass' && blocking.length === 0) {
-      if (state.split === null) throw new Error('Split missing after a successful build');
-      return { status: 'ready', split: state.split, review, files, events };
-    }
-    if (round > input.maxReviewRounds)
-      return {
-        status: 'failed',
+    // Stage 3: independent review; blocking findings go back to the builder a bounded number of times.
+    for (let round = 1; ; round += 1) {
+      const files = await listProjectFiles(input.projectDir);
+      const review = (await generate(
+        'reviewer',
+        reviewPrompt(
+          input,
+          files,
+          `Data preparation produced a modeling table that Anvil split as: ${JSON.stringify(state.split?.summary ?? null)}. Every variant produced valid predictions on a stratified sample.`
+        )
+      )) as ReviewResponse;
+      const blocking = review.findings.filter(finding => finding.severity === 'blocking');
+      emit({
         stage: 'review',
-        reason: `Review still has blocking findings after ${input.maxReviewRounds.toString()} fix rounds:\n${blocking.map(item => `- ${item.file ?? 'general'}: ${item.message}`).join('\n')}`,
-        events,
-      };
-    const feedback = clip(
-      `The reviewer found blocking problems; fix all of them:\n${blocking.map(item => `- ${item.file ?? 'general'}: ${item.message}`).join('\n')}`
-    );
-    const before = files['prepare_data.py'];
-    const fixFailure = await variants(feedback);
-    if (fixFailure !== null)
-      return { status: 'failed', stage: 'variants', reason: fixFailure, events };
-    // A change to data preparation invalidates the modeling table and split.
-    if ((await listProjectFiles(input.projectDir))['prepare_data.py'] !== before) {
-      const rerunFailure = await runPrepare(`review-${round.toString()}`);
-      const rerun = rerunFailure === null ? null : await prepare(rerunFailure);
-      if (rerun !== null) return { status: 'failed', stage: 'prepare', reason: rerun, events };
-      const again = await smokeVariants();
-      if (again !== null) return { status: 'failed', stage: 'variants', reason: again, events };
+        round,
+        kind: 'review',
+        detail: `${review.verdict}: ${blocking.length.toString()} blocking, ${(review.findings.length - blocking.length).toString()} warnings`,
+      });
+      if (review.verdict === 'pass' && blocking.length === 0) {
+        if (state.split === null) throw new Error('Split missing after a successful build');
+        return { status: 'ready', split: state.split, review, files, events };
+      }
+      if (round > input.maxReviewRounds)
+        return {
+          status: 'failed',
+          stage: 'review',
+          reason: `Review still has blocking findings after ${input.maxReviewRounds.toString()} fix rounds:\n${blocking.map(item => `- ${item.file ?? 'general'}: ${item.message}`).join('\n')}`,
+          events,
+        };
+      const feedback = clip(
+        `The reviewer found blocking problems; fix all of them:\n${blocking.map(item => `- ${item.file ?? 'general'}: ${item.message}`).join('\n')}`
+      );
+      const before = files['prepare_data.py'];
+      const fixFailure = await variants(feedback);
+      if (fixFailure !== null)
+        return { status: 'failed', stage: 'variants', reason: fixFailure, events };
+      // A change to data preparation invalidates the modeling table and split.
+      if ((await listProjectFiles(input.projectDir))['prepare_data.py'] !== before) {
+        const rerunFailure = await runPrepare(`review-${round.toString()}`);
+        const rerun = rerunFailure === null ? null : await prepare(rerunFailure);
+        if (rerun !== null) return { status: 'failed', stage: 'prepare', reason: rerun, events };
+        const again = await smokeVariants();
+        if (again !== null) return { status: 'failed', stage: 'variants', reason: again, events };
+      }
     }
+  } catch (error) {
+    if (error instanceof NeedsDecision) {
+      emit({
+        stage: error.stage,
+        round: 0,
+        kind: 'generated',
+        detail: `Question: ${error.question}`,
+      });
+      return { status: 'needs_decision', stage: error.stage, question: error.question, events };
+    }
+    throw error;
   }
 }

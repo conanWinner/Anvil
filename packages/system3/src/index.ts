@@ -21,3 +21,5 @@ export * from './experiment-evaluation';
 export * from './experiment-plan';
 export * from './experiment-builder';
 export * from './experiment-runner';
+export * from './experiment-config';
+export * from './experiment-capabilities';

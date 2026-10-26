@@ -32,6 +32,14 @@ import {
   runModelCandidate,
 } from './model-comparison-runner';
 import { modelComparisonConfigSchema, parsePinnedModelComparisonConfig } from './model-comparison';
+import {
+  EXPERIMENT_CONFIG_FILENAME,
+  experimentPinSchema,
+  parsePinnedExperimentConfig,
+} from './experiment-config';
+import { deriveExperimentPlan, hashExperimentPlan } from './experiment-plan';
+import { resolveMlRuntime } from './ml-runtime';
+import { executeExperiment, verifyExperiment } from './experiment-capabilities';
 
 function descriptor<const T extends string>(
   id: T,
@@ -90,6 +98,18 @@ export const customerChurnCapabilityDescriptors = [
     'delivery',
     ['artifact:read', 'artifact:write', 'process:python'],
     150_000
+  ),
+  descriptor(
+    'system3.experiment-execute',
+    'build',
+    ['source:read', 'artifact:read', 'artifact:write', 'process:python', 'process:tar'],
+    4 * 60 * 60_000
+  ),
+  descriptor(
+    'system3.experiment-verify',
+    'delivery',
+    ['artifact:read', 'artifact:write', 'process:python'],
+    30 * 60_000
   ),
   ...baselineCapabilityDescriptors,
 ] as const;
@@ -175,6 +195,7 @@ const decisionsInputSchema = z.object({ analysis: blueprintAnalysisSchema });
 const readinessGateInputSchema = z.object({
   analysis: blueprintAnalysisSchema,
   modelComparison: modelComparisonConfigSchema.optional(),
+  experiment: experimentPinSchema.optional(),
   pendingDecisionCount: z.number().int().nonnegative(),
   knowledgeSnapshotId: z.string().uuid(),
   projectVersion: z.number().int().positive(),
@@ -194,6 +215,7 @@ const resolvedDecisionsInputSchema = z.object({
 const readinessContractInputSchema = z.object({
   analysis: blueprintAnalysisSchema,
   modelComparison: modelComparisonConfigSchema.optional(),
+  experiment: experimentPinSchema.optional(),
   evaluation: system3ReadinessEvaluationSchema,
   datasetSourceVersionId: z.string().min(1).nullable(),
   resolvedDecisions: z.array(z.object({ id: z.string(), answer: z.string() })),
@@ -326,8 +348,30 @@ const handlers: Readonly<Partial<Record<System3CapabilityId, CapabilityHandler>>
       input.modelComparison.requirementIds.every(id =>
         input.analysis.requirements.some(requirement => requirement.id === id)
       );
+    const experimentPlan =
+      input.experiment === undefined ? null : deriveExperimentPlan(input.analysis);
+    const experimentGaps = experimentPlan?.gaps.filter(gap => gap.blocking) ?? [];
+    const experimentPlanCurrent =
+      input.experiment === undefined ||
+      (experimentPlan !== null &&
+        hashExperimentPlan(experimentPlan) === input.experiment.planHash &&
+        input.experiment.variantIds.every(id =>
+          experimentPlan.variants.some(variant => variant.id === id)
+        ));
+    let runtimeInstalled = input.experiment === undefined;
+    if (input.experiment !== undefined) {
+      try {
+        runtimeInstalled = (await resolveMlRuntime()).lockHash === input.experiment.runtimeLockHash;
+      } catch {
+        // Reported as a failed readiness check below; installing the runtime is the fix.
+        runtimeInstalled = false;
+      }
+    }
     const targetReady =
       input.modelComparison !== undefined ||
+      (input.experiment !== undefined &&
+        input.analysis.targetDefinition !== null &&
+        input.analysis.targetDefinition.trim().length > 0) ||
       (input.analysis.targetDefinition !== null &&
         input.analysis.targetDefinition.trim().length > 0 &&
         dataset?.targetExists === true &&
@@ -395,10 +439,36 @@ const handlers: Readonly<Partial<Record<System3CapabilityId, CapabilityHandler>>
         passed: targetReady,
         passedMessage: input.modelComparison
           ? 'Comparison chạy các yêu cầu đã chọn, không cần target dự đoán.'
-          : 'Target đã được xác định và tồn tại trong Dataset Profile.',
+          : input.experiment
+            ? 'Định nghĩa target có trong blueprint; bước chuẩn bị dữ liệu sẽ tạo cột target.'
+            : 'Target đã được xác định và tồn tại trong Dataset Profile.',
         failedMessage: 'Target chưa rõ hoặc không tồn tại trong Dataset Profile hiện hành.',
         nextAction: datasetNeedsLink ? 'link_dataset' : 'review_understanding',
       }),
+      ...(input.experiment === undefined
+        ? []
+        : [
+            readinessCheck({
+              id: 'experiment_plan',
+              label: 'Phương án thí nghiệm',
+              passed: experimentGaps.length === 0 && experimentPlanCurrent,
+              passedMessage: `${input.experiment.variantIds.length.toString()} phương án và giao thức đánh giá đã được xác định từ blueprint.`,
+              failedMessage:
+                experimentGaps.length > 0
+                  ? experimentGaps.map(gap => gap.message).join(' ')
+                  : 'Kế hoạch thí nghiệm đã đổi so với cấu hình được ghim; hãy chạy lại Readiness.',
+              nextAction: 'review_understanding',
+            }),
+            readinessCheck({
+              id: 'ml_runtime',
+              label: 'Runtime thí nghiệm',
+              passed: runtimeInstalled,
+              passedMessage: 'Runtime ML có khóa phiên bản đã được cài.',
+              failedMessage:
+                'Runtime ML chưa được cài hoặc khác phiên bản khóa. Chạy `bun run system3:ml-runtime` trên máy chủ.',
+              nextAction: 'configure_runtime',
+            }),
+          ]),
       readinessCheck({
         id: 'runtime',
         label: 'Runtime Profile',
@@ -478,6 +548,23 @@ const handlers: Readonly<Partial<Record<System3CapabilityId, CapabilityHandler>>
     if (ramGb === null) {
       throw new Error('Passed readiness evaluation is inconsistent with its frozen inputs');
     }
+    if (input.experiment !== undefined) {
+      return result({
+        evaluation: input.evaluation,
+        contract: system3ReadinessContractBodySchema.parse({
+          schemaVersion: 3,
+          status: 'passed',
+          knowledgeSnapshotId: input.evaluation.knowledgeSnapshotId,
+          projectVersion: input.evaluation.projectVersion,
+          requirementIds: input.analysis.requirements.map(requirement => requirement.id),
+          datasetSourceVersionId: input.datasetSourceVersionId,
+          runtime: { cpuOnly: input.analysis.runtime.cpuOnly, ramGb },
+          decisions: input.resolvedDecisions,
+          checks: input.evaluation.checks,
+          experiment: input.experiment,
+        }),
+      });
+    }
     if (input.modelComparison !== undefined) {
       const unknownIds = input.modelComparison.requirementIds.filter(
         id => !input.analysis.requirements.some(requirement => requirement.id === id)
@@ -552,6 +639,26 @@ export class System3CapabilityRegistry {
           ? 'system3.artifact-schema-validator'
           : 'system3.evidence-map-builder'
       ](input, context);
+    }
+    if (executorId === 'system3.experiment-execute') {
+      const readSourceVersion = this.sourcePort?.readSourceVersion?.bind(this.sourcePort);
+      const generateStructured = this.sourcePort?.generateStructured?.bind(this.sourcePort);
+      if (!readSourceVersion || !generateStructured)
+        throw new Error('Experiment execution needs pinned source reads and model access');
+      const executed = await executeExperiment(input, context, {
+        readSourceVersion,
+        generateStructured,
+      });
+      // Archive the self-contained package exactly like the baseline flow does.
+      const archive = await baselineCapabilityHandlers['system3.baseline-artifact-packager'](
+        { projectDir: executed.projectDir },
+        context
+      );
+      const archiveOutput = z.object({ packagePath: z.string() }).parse(archive.structuredOutput);
+      return result({ ...executed, ...archiveOutput });
+    }
+    if (executorId === 'system3.experiment-verify') {
+      return result(await verifyExperiment(input, context));
     }
     if (
       executorId === 'system3.model-candidate' ||
@@ -653,6 +760,18 @@ export class System3CapabilityRegistry {
       if (JSON.stringify(pinnedModelComparison) !== JSON.stringify(suppliedModelComparison)) {
         throw new Error('Understanding model comparison does not match its pinned Source Version');
       }
+      const experimentSources = sources.filter(
+        source => source.kind === 'constraints' && source.filename === EXPERIMENT_CONFIG_FILENAME
+      );
+      if (experimentSources.length > 1)
+        throw new Error(
+          `Understanding input contains multiple ${EXPERIMENT_CONFIG_FILENAME} files`
+        );
+      const experimentSource = experimentSources[0];
+      if (experimentSource)
+        parsePinnedExperimentConfig(experimentSource.bytes, experimentSource.contentHash);
+      if (experimentSource && pinnedModelComparison)
+        throw new Error('A project cannot pin both model comparison and experiment configs');
       const semanticFallback =
         await this.sourcePort.createUnderstandingSemanticFallback?.(projectId);
       const previousAnalysis = await this.sourcePort.getActiveUnderstandingAnalysis?.(projectId);
@@ -661,6 +780,7 @@ export class System3CapabilityRegistry {
           sources,
           ...(datasetSource ? { datasetSource } : {}),
           ...(pinnedModelComparison ? { modelComparison: pinnedModelComparison } : {}),
+          ...(experimentSource ? { targetFromPreparation: true } : {}),
           ...(previousAnalysis ? { previousAnalysis } : {}),
           ...(semanticFallback ? { semanticFallback } : {}),
           signal: context.signal,
