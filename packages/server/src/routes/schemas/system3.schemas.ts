@@ -2,6 +2,7 @@ import { createRoute, z } from '@hono/zod-openapi';
 import {
   blueprintAnalysisSchema,
   experimentEvidenceViewSchema,
+  experimentPinSchema,
   system3AttentionSchema,
   system3FreshnessSchema,
   system3PhaseSchema,
@@ -438,7 +439,10 @@ export const system3FlowSchema = z
         projectId: z.string().uuid(),
         knowledgeSnapshotId: z.string().uuid(),
         plan: z
-          .object({ modelComparison: modelComparisonConfigSchema.optional() })
+          .object({
+            modelComparison: modelComparisonConfigSchema.optional(),
+            experiment: experimentPinSchema.optional(),
+          })
           .catchall(z.unknown()),
         definitionHash: z.string(),
         capabilityRegistryHash: z.string(),
@@ -576,7 +580,14 @@ export const startSystem3VerificationBodySchema = z
   .object({ expectedVersion: z.number().int().positive() })
   .openapi('StartSystem3VerificationBody');
 export const startSystem3DeliveryBodySchema = z
-  .object({ expectedVersion: z.number().int().positive() })
+  .object({
+    expectedVersion: z.number().int().positive(),
+    /** Experiment mode: the variant the user chose; recorded in the delivery manifest. */
+    selectedVariant: z
+      .string()
+      .regex(/^[a-z0-9][a-z0-9_-]{0,63}$/u)
+      .optional(),
+  })
   .openapi('StartSystem3DeliveryBody');
 
 export const system3ExecutionSchema = z
@@ -672,7 +683,10 @@ export const system3CompilationSchema = z
     projectId: z.string().uuid(),
     knowledgeSnapshotId: z.string().uuid(),
     plan: z
-      .object({ modelComparison: modelComparisonConfigSchema.optional() })
+      .object({
+        modelComparison: modelComparisonConfigSchema.optional(),
+        experiment: experimentPinSchema.optional(),
+      })
       .catchall(z.unknown()),
     definitionHash: z.string().startsWith('sha256:'),
     capabilityRegistryHash: z.string().startsWith('sha256:'),

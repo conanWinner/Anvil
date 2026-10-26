@@ -22,6 +22,7 @@ const MAX_TOTAL_BYTES = 600 * 1024;
 const FEEDBACK_LIMIT = 6_000;
 const SMOKE_TRAIN_ROWS = 3_000;
 const SMOKE_TEST_ROWS = 500;
+const GENERATION_RETRIES = 2;
 
 export const builderFileSchema = z.object({
   path: z.string().regex(FILE_PATH),
@@ -226,7 +227,9 @@ const SANDBOX_RULES = `Runtime rules (enforced by the sandbox):
 
 Scope rules (the user owns these decisions):
 - Never change the blueprint's target definition, positive class, entity population, time window or evaluation metric, even if the data makes them hard (e.g. extreme class imbalance).
-- If the blueprint cannot be implemented as written with the given data, return no files and put a short, specific question for the user in \`question\` (what is wrong, with numbers, and the options you see). Otherwise set \`question\` to null.`;
+- If the blueprint's problem definition is contradictory or impossible with the given data, return no files and put a short, specific question for the user in \`question\` (what is wrong, with numbers, and the options you see). Otherwise set \`question\` to null.
+
+How this works: you cannot run code or open files yourself. The headers and sample rows above are what the data looks like; Anvil runs your code in the sandbox and sends back any error or contract violation for you to fix. So never ask about file access, verification or permission — write the best code you can and let Anvil's run check it. Reasonable implementation choices the blueprint leaves open (e.g. how to aggregate several payments per order) are yours to make; mention them in \`notes\`.`;
 
 function preparePrompt(
   input: ExperimentBuildInput,
@@ -317,6 +320,13 @@ Report a BLOCKING finding for:
 - Code that hides failures (e.g. returning constant predictions when training data is unusable).
 Use WARNING for deviations that do not invalidate results. Verdict \`pass\` only when there is no blocking finding.
 
+Evaluation contract fixed by Anvil (do NOT ask the code to change it):
+- Anvil splits the modeling table and keeps the held-out test labels; the code never sees them.
+- Anvil computes every official test metric (ROC-AUC, PR-AUC, F1, recall, …) from predictions/<id>.csv. Code must only produce predictions and may report training/cross-validation numbers.
+- Blueprint sentences such as "report metrics on the test set" are satisfied by Anvil's evaluation.
+Only flag leakage with concrete evidence (a specific column or step that uses information created after the label).
+Never block on something the blueprint explicitly requires (a listed feature, target rule or model). If you believe a blueprint requirement itself is risky, report a WARNING that names the requirement ID — the user decides on blueprint changes, not the code. Order-time attributes such as prices, freight, payment type, installments or product attributes are known at purchase time.
+
 Variants requested:
 ${variantList(input.plan, input.variantIds)}
 
@@ -368,13 +378,34 @@ export async function buildExperimentCodebase(
     role: 'builder' | 'reviewer',
     prompt: string
   ): Promise<BuilderResponse | ReviewResponse> => {
-    input.signal.throwIfAborted();
-    const raw = await input.generate({
-      role,
-      prompt,
-      schema: role === 'builder' ? BUILDER_OUTPUT_JSON_SCHEMA : REVIEW_OUTPUT_JSON_SCHEMA,
-      signal: input.signal,
-    });
+    // Best-effort structured output can arrive truncated or malformed; retry a bounded number of
+    // times with a reminder. Aborts and errors after the last attempt propagate.
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= GENERATION_RETRIES; attempt += 1) {
+      input.signal.throwIfAborted();
+      try {
+        const raw = await input.generate({
+          role,
+          prompt:
+            attempt === 0
+              ? prompt
+              : `${prompt}\n\nYour previous answer was not complete, valid JSON for the required schema. Return the complete JSON object only.`,
+          schema: role === 'builder' ? BUILDER_OUTPUT_JSON_SCHEMA : REVIEW_OUTPUT_JSON_SCHEMA,
+          signal: input.signal,
+        });
+        return parseResponse(role, prompt, raw);
+      } catch (error) {
+        if (input.signal.aborted || error instanceof NeedsDecision) throw error;
+        lastError = error;
+      }
+    }
+    throw lastError;
+  };
+  const parseResponse = (
+    role: 'builder' | 'reviewer',
+    prompt: string,
+    raw: unknown
+  ): BuilderResponse | ReviewResponse => {
     if (role === 'reviewer') return reviewResponseSchema.parse(raw);
     const response = builderResponseSchema.parse(raw);
     if (response.question !== null && response.question.trim().length > 0)

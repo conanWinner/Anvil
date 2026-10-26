@@ -1,4 +1,12 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
+
+/** The create form defaults to experiment mode; older flows pick their mode explicitly. */
+async function selectProjectMode(page: Page, mode: 'comparison' | 'legacy'): Promise<void> {
+  const advanced = page.getByText('Cấu hình bộ kiểm tra và nâng cao', { exact: true });
+  if (!(await advanced.evaluate(element => element.parentElement?.hasAttribute('open') ?? false)))
+    await advanced.click();
+  await page.getByLabel('Chế độ dự án').selectOption(mode);
+}
 
 const catalogModels = [
   {
@@ -63,6 +71,7 @@ test('catalog retry preserves the draft and invalid model selections never creat
     });
   });
   await page.goto('/console/projects/new');
+  await selectProjectMode(page, 'comparison');
   await page.getByLabel('Tên dự án').fill('Kept draft');
   await page.getByLabel('Blueprint Markdown').setInputFiles({
     name: 'draft.md',
@@ -74,7 +83,6 @@ test('catalog retry preserves the draft and invalid model selections never creat
   await expect(page.getByLabel('Test Model A')).toBeVisible();
   await expect(page.getByLabel('Tên dự án')).toHaveValue('Kept draft');
   await expect(page.getByLabel('Blueprint Markdown')).toHaveValue(/draft.md$/u);
-  await page.getByText('Cấu hình bộ kiểm tra và nâng cao', { exact: true }).click();
   await page.getByLabel('Prompt chung').fill('Read the pinned CSV and print JSON.');
   await page.getByLabel('Requirement IDs (phân cách bằng dấu phẩy hoặc xuống dòng)').fill('FR-01');
   await page.getByLabel('Harness Python (.py, tối đa 64 KiB)').setInputFiles({

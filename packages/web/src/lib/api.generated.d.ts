@@ -10641,6 +10641,40 @@ export interface components {
             harness: string;
             requirementIds: string[];
           };
+          experiment?: {
+            config: {
+              /** @enum {number} */
+              schemaVersion: 1;
+              builderModel: string;
+              reviewerModel: string;
+              variantIds?: string[];
+              /** @default 4 */
+              maxFixRounds: number;
+              /** @default 2 */
+              maxReviewRounds: number;
+              /** @default 25 */
+              variantTimeoutMinutes: number;
+            };
+            variantIds: string[];
+            planHash: string;
+            runtimeLockHash: string;
+            datasetSourceVersionIds: string[];
+            summary: {
+              variants: {
+                id: string;
+                name: string;
+                /** @enum {string} */
+                role: 'baseline' | 'candidate';
+                recommended: boolean;
+              }[];
+              primaryMetric: string;
+              thresholds: {
+                [key: string]: number;
+              } | null;
+              split: string;
+              gaps: string[];
+            };
+          };
         } & {
           [key: string]: unknown;
         };
@@ -10720,6 +10754,58 @@ export interface components {
                     }[]
                   | null;
               }[];
+              /** @enum {string} */
+              kind?: 'experiment';
+              /** @enum {string} */
+              primaryMetric?: 'roc_auc' | 'pr_auc' | 'f1' | 'recall' | 'precision' | 'accuracy';
+              variants?: {
+                id: string;
+                name: string;
+                /** @enum {string} */
+                role: 'baseline' | 'candidate';
+                recommended: boolean;
+                /** @enum {string} */
+                status: 'verified' | 'missing' | 'invalid_predictions';
+                metrics: {
+                  [key: string]: number;
+                } | null;
+                error: string | null;
+                /** @enum {string|null} */
+                runStatus: 'completed' | 'failed' | 'resource_limit' | null;
+                durationMs: number | null;
+              }[];
+              suggestion?: {
+                suggested: string | null;
+                reasons: string[];
+                fasterAlternatives: string[];
+                thresholds: {
+                  [key: string]: number;
+                } | null;
+              };
+              review?: {
+                /** @enum {string} */
+                verdict: 'pass' | 'changes_required';
+                summary: string;
+                findings: {
+                  /** @enum {string} */
+                  severity: 'blocking' | 'warning';
+                  file: string | null;
+                  message: string;
+                }[];
+              };
+              split?: {
+                rows: number;
+                trainRows: number;
+                testRows: number;
+                trainPositiveRate: number;
+                testPositiveRate: number;
+                warnings: string[];
+              };
+              agents?: {
+                builder: string;
+                reviewer: string;
+              };
+              mismatches?: string[];
             } & {
               [key: string]: unknown;
             })
@@ -11276,6 +11362,40 @@ export interface components {
           prompt: string;
           harness: string;
           requirementIds: string[];
+        };
+        experiment?: {
+          config: {
+            /** @enum {number} */
+            schemaVersion: 1;
+            builderModel: string;
+            reviewerModel: string;
+            variantIds?: string[];
+            /** @default 4 */
+            maxFixRounds: number;
+            /** @default 2 */
+            maxReviewRounds: number;
+            /** @default 25 */
+            variantTimeoutMinutes: number;
+          };
+          variantIds: string[];
+          planHash: string;
+          runtimeLockHash: string;
+          datasetSourceVersionIds: string[];
+          summary: {
+            variants: {
+              id: string;
+              name: string;
+              /** @enum {string} */
+              role: 'baseline' | 'candidate';
+              recommended: boolean;
+            }[];
+            primaryMetric: string;
+            thresholds: {
+              [key: string]: number;
+            } | null;
+            split: string;
+            gaps: string[];
+          };
         };
       } & {
         [key: string]: unknown;

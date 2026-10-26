@@ -17,6 +17,7 @@ import type {
   System3SourceRole,
   System3UnderstandingView,
   System3KnowledgeSnapshot,
+  System3ExperimentResults,
 } from './types';
 
 const emptyProject: System3Project = {
@@ -156,6 +157,33 @@ function compilationSummary(
     ...(compilation.plan.modelComparison === undefined
       ? {}
       : { modelComparison: compilation.plan.modelComparison }),
+    ...(compilation.plan.experiment === undefined
+      ? {}
+      : { experiment: compilation.plan.experiment }),
+  };
+}
+
+function experimentResults(
+  map: NonNullable<NonNullable<System3ProjectFlowResponse['verification']>['evidenceMap']> | null
+): System3ExperimentResults | undefined {
+  if (
+    map?.kind !== 'experiment' ||
+    !map.primaryMetric ||
+    !map.variants ||
+    !map.suggestion ||
+    !map.review ||
+    !map.split ||
+    !map.agents
+  )
+    return undefined;
+  return {
+    primaryMetric: map.primaryMetric,
+    variants: map.variants,
+    suggestion: map.suggestion,
+    review: map.review,
+    split: map.split,
+    agents: map.agents,
+    mismatches: map.mismatches ?? [],
   };
 }
 
@@ -257,6 +285,9 @@ function toProject(
           status: flow.verification.status,
           error: flow.verification.error,
           modelReports: flow.verification.evidenceMap?.models ?? [],
+          ...(experimentResults(flow.verification.evidenceMap)
+            ? { experiment: experimentResults(flow.verification.evidenceMap) }
+            : {}),
         }
       : undefined,
     operation: operation
@@ -548,12 +579,13 @@ function waitUntilVisible(signal: AbortSignal): Promise<void> {
 
 async function startProjectOperation(
   path: string,
-  expectedVersion: number
+  expectedVersion: number,
+  extraBody: Record<string, unknown> = {}
 ): Promise<System3OperationResponse> {
   const response = await fetch(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
-    body: JSON.stringify({ expectedVersion }),
+    body: JSON.stringify({ ...extraBody, expectedVersion }),
   });
   if (!response.ok) {
     throw new Error(
@@ -565,8 +597,12 @@ async function startProjectOperation(
   return body.operation;
 }
 
-async function runProjectOperation(path: string, expectedVersion: number): Promise<void> {
-  const operation = await startProjectOperation(path, expectedVersion);
+async function runProjectOperation(
+  path: string,
+  expectedVersion: number,
+  extraBody: Record<string, unknown> = {}
+): Promise<void> {
+  const operation = await startProjectOperation(path, expectedVersion, extraBody);
   await watchOperation(operation.id);
 }
 
@@ -919,12 +955,14 @@ export const system3Store = {
       project.version
     );
   },
-  deliver: async (): Promise<void> => {
+  /** `selectedVariant` records the user's experiment choice in the delivery manifest. */
+  deliver: async (selectedVariant?: string): Promise<void> => {
     const project = current;
     if (!project.verification) throw new Error('Chưa có verification để tạo delivery');
     await runProjectOperation(
       `/api/system3/projects/${project.id}/verifications/${project.verification.id}/deliveries`,
-      project.version
+      project.version,
+      selectedVariant === undefined ? {} : { selectedVariant }
     );
   },
   abandonUnknownOperation: async (): Promise<void> => {

@@ -369,9 +369,9 @@ const handlers: Readonly<Partial<Record<System3CapabilityId, CapabilityHandler>>
     }
     const targetReady =
       input.modelComparison !== undefined ||
-      (input.experiment !== undefined &&
-        input.analysis.targetDefinition !== null &&
-        input.analysis.targetDefinition.trim().length > 0) ||
+      // Experiment mode: the data-preparation stage builds the target from the blueprint's
+      // requirements; a classification protocol is what readiness can check here.
+      (input.experiment !== undefined && experimentPlan?.protocol !== null) ||
       (input.analysis.targetDefinition !== null &&
         input.analysis.targetDefinition.trim().length > 0 &&
         dataset?.targetExists === true &&
@@ -440,7 +440,7 @@ const handlers: Readonly<Partial<Record<System3CapabilityId, CapabilityHandler>>
         passedMessage: input.modelComparison
           ? 'Comparison chạy các yêu cầu đã chọn, không cần target dự đoán.'
           : input.experiment
-            ? 'Định nghĩa target có trong blueprint; bước chuẩn bị dữ liệu sẽ tạo cột target.'
+            ? 'Blueprint mô tả bài toán phân loại; bước chuẩn bị dữ liệu sẽ tạo cột target.'
             : 'Target đã được xác định và tồn tại trong Dataset Profile.',
         failedMessage: 'Target chưa rõ hoặc không tồn tại trong Dataset Profile hiện hành.',
         nextAction: datasetNeedsLink ? 'link_dataset' : 'review_understanding',

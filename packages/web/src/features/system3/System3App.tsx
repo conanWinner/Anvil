@@ -46,6 +46,7 @@ import { UnderstandingWorkspace } from './UnderstandingWorkspace';
 import { LifecycleAttemptBar } from './LifecycleAttemptBar';
 import { buildJourney } from './journey';
 import { JourneySteps } from './JourneySteps';
+import { ExperimentResultsView, metricLabel } from './ExperimentResults';
 import { presentProjectCard } from './project-card';
 import type {
   PhaseStatus,
@@ -916,6 +917,84 @@ function comparisonSummary(
 function PlanSummary({ onOpenDetails }: { onOpenDetails: () => void }): ReactElement {
   const project = useSystem3Project();
   const comparison = project.compilation?.modelComparison;
+  const experiment = project.compilation?.experiment;
+  if (experiment) {
+    const { summary, config } = experiment;
+    const thresholds = Object.entries(summary.thresholds ?? {});
+    return (
+      <section className="s3-plan-summary" aria-labelledby="plan-summary-title">
+        <header>
+          <h3 id="plan-summary-title">Kế hoạch thí nghiệm</h3>
+          <button type="button" className="s3-text-button" onClick={onOpenDetails}>
+            Xem chi tiết kế hoạch
+          </button>
+        </header>
+        <dl className="s3-plan-summary-grid">
+          <div className="s3-plan-summary-wide">
+            <dt>Phương án từ blueprint ({summary.variants.length.toString()})</dt>
+            <dd>
+              <span className="s3-pill-row">
+                {summary.variants.map(variant => (
+                  <span key={variant.id} className="s3-pill">
+                    {variant.name}
+                    {variant.role === 'baseline' ? ' · baseline' : ''}
+                    {variant.recommended ? ' · System 2 khuyến nghị' : ''}
+                  </span>
+                ))}
+              </span>
+            </dd>
+          </div>
+          <div>
+            <dt>Cách đánh giá</dt>
+            <dd>
+              {metricLabel(summary.primaryMetric)} là metric chính
+              {thresholds.length > 0
+                ? ` · ngưỡng ${thresholds.map(([name, value]) => `${metricLabel(name)} ≥ ${value.toString()}`).join(', ')}`
+                : ' · chưa có ngưỡng'}
+              <br />
+              <small>
+                {summary.split === 'time_holdout'
+                  ? 'Chia theo thời gian 80/20'
+                  : 'Chia ngẫu nhiên phân tầng 80/20, seed cố định'}
+                ; Anvil giữ nhãn kiểm tra và tự chấm
+              </small>
+            </dd>
+          </div>
+          <div>
+            <dt>Agent</dt>
+            <dd>
+              {config.builderModel.replace(/^router9\//u, '')} viết code ·{' '}
+              {config.reviewerModel.replace(/^router9\//u, '')} review
+            </dd>
+          </div>
+          <div>
+            <dt>Dữ liệu</dt>
+            <dd>
+              {experiment.datasetSourceVersionIds.length.toString()} bảng CSV đã ghim phiên bản
+            </dd>
+          </div>
+          <div>
+            <dt>Giới hạn</dt>
+            <dd>
+              Sandbox không mạng · 2 GB RAM · 2 CPU · {config.variantTimeoutMinutes.toString()}{' '}
+              phút/phương án · tối đa {config.maxFixRounds.toString()} vòng sửa lỗi
+            </dd>
+          </div>
+        </dl>
+        {summary.gaps.length > 0 ? (
+          <ul className="s3-data-warnings">
+            {summary.gaps.map(gap => (
+              <li key={gap}>{gap}</li>
+            ))}
+          </ul>
+        ) : null}
+        <p className="s3-plan-summary-note">
+          Agent chỉ trả về nội dung file; mọi lệnh chạy trong sandbox. Nếu blueprint mơ hồ, agent
+          dừng lại hỏi bạn thay vì tự đổi đề. Anvil gợi ý theo metric chính, bạn là người chọn.
+        </p>
+      </section>
+    );
+  }
   return (
     <section className="s3-plan-summary" aria-labelledby="plan-summary-title">
       <header>
@@ -1131,6 +1210,7 @@ function LifecyclePhaseDetail({
   const [reviewOpen, setReviewOpen] = useState(false);
   const [performing, setPerforming] = useState(false);
   const [modelView, setModelView] = useState<ModelResourceView | undefined>();
+  const [selectedVariant, setSelectedVariant] = useState<string | null>(null);
   const [understandingError, setUnderstandingError] = useState<string | null>(null);
   const [selectedResource, setSelectedResource] = useState<System3ResourceDescriptor | null>(null);
   const [resourceOpener, setResourceOpener] = useState<HTMLElement | null>(null);
@@ -1213,9 +1293,19 @@ function LifecyclePhaseDetail({
   const comparisonArtifact = [...inputs, ...outputs].find(
     resource => resource.resourceType === 'execution_artifact'
   );
+  const experimentResults = project.verification?.experiment;
+  const deliveredVariant =
+    typeof project.delivery?.manifest.evidenceMap === 'object' &&
+    project.delivery.manifest.evidenceMap !== null &&
+    'selectedVariant' in project.delivery.manifest.evidenceMap &&
+    typeof project.delivery.manifest.evidenceMap.selectedVariant === 'string'
+      ? project.delivery.manifest.evidenceMap.selectedVariant
+      : null;
+  const chosenVariant =
+    deliveredVariant ?? selectedVariant ?? experimentResults?.suggestion.suggested ?? null;
   const hasComparisonResults =
     (selectedActivity.id === 'TW-06' || selectedActivity.id === 'TW-07') &&
-    comparisonReports.length > 0;
+    (comparisonReports.length > 0 || experimentResults !== undefined);
   // Results lead once they exist; an activity with nothing produced yet keeps its inputs one click away.
   const resourcesCollapsed =
     hasComparisonResults ||
@@ -1306,13 +1396,18 @@ function LifecyclePhaseDetail({
             className="s3-button"
             onClick={() => {
               runAction(async () => {
-                await system3Store.deliver();
+                await system3Store.deliver(
+                  experimentResults && chosenVariant !== null ? chosenVariant : undefined
+                );
                 if (system3Store.getSnapshot().deliveryAvailable)
                   window.location.assign(`/api/system3/projects/${projectId}/delivery/package`);
               });
             }}
           >
-            <PackageCheck size={15} aria-hidden="true" /> Tạo và tải gói kết quả
+            <PackageCheck size={15} aria-hidden="true" />{' '}
+            {experimentResults && chosenVariant !== null
+              ? `Chọn ${experimentResults.variants.find(item => item.id === chosenVariant)?.name ?? chosenVariant} và tải gói`
+              : 'Tạo và tải gói kết quả'}
           </button>
         );
       return (
@@ -1342,13 +1437,19 @@ function LifecyclePhaseDetail({
               <h2 id="selected-activity-title">
                 {hasComparisonResults
                   ? project.freshness === 'current'
-                    ? 'Kết quả so sánh'
-                    : 'Kết quả so sánh cũ'
+                    ? experimentResults
+                      ? 'Kết quả thí nghiệm'
+                      : 'Kết quả so sánh'
+                    : experimentResults
+                      ? 'Kết quả thí nghiệm cũ'
+                      : 'Kết quả so sánh cũ'
                   : selectedActivity.label}
               </h2>
               <p>
                 {hasComparisonResults
-                  ? 'Cùng bài toán và dữ liệu; mỗi model có code, output và kết quả kiểm tra riêng.'
+                  ? experimentResults
+                    ? 'Các phương án từ blueprint chạy trên cùng dữ liệu; Anvil tự chấm trên tập kiểm tra giữ riêng.'
+                    : 'Cùng bài toán và dữ liệu; mỗi model có code, output và kết quả kiểm tra riêng.'
                   : selectedActivity.description}
               </p>
             </div>
@@ -1385,7 +1486,17 @@ function LifecyclePhaseDetail({
           />
         ) : null}
 
-        {hasComparisonResults ? (
+        {hasComparisonResults && experimentResults ? (
+          <ExperimentResultsView
+            results={experimentResults}
+            stale={project.freshness !== 'current'}
+            selected={chosenVariant}
+            locked={deliveredVariant !== null || project.deliveryAvailable}
+            onSelect={setSelectedVariant}
+          />
+        ) : null}
+
+        {hasComparisonResults && !experimentResults ? (
           <section
             className="s3-comparison-results"
             aria-labelledby="model-comparison-results-title"
@@ -3521,13 +3632,36 @@ function FilePicker({
   );
 }
 
+type CreateMode = 'experiment' | 'comparison' | 'legacy';
+
+const EXPERIMENT_SAMPLE_BLUEPRINT_URL = '/samples/olist/review-risk-blueprint.md';
+const EXPERIMENT_SAMPLE_TABLES = [
+  'olist_orders_dataset.csv',
+  'olist_order_items_dataset.csv',
+  'olist_order_payments_dataset.csv',
+  'olist_order_reviews_dataset.csv',
+  'olist_products_dataset.csv',
+] as const;
+
+async function fetchSampleFile(url: string, name: string, type: string): Promise<File> {
+  const response = await fetch(url, { signal: AbortSignal.timeout(30_000) });
+  if (!response.ok) throw new Error('Không tải được bộ mẫu Olist. Hãy thử lại.');
+  const blob = await response.blob();
+  if (blob.size === 0 || blob.size > 8 * 1024 * 1024 || blob.type.includes('text/html'))
+    throw new Error('Tệp mẫu Olist không hợp lệ. Hãy tải lại trang và thử lại.');
+  return new File([blob], name, { type });
+}
+
 function NewProjectPage(): ReactElement {
+  const [mode, setMode] = useState<CreateMode>('experiment');
   const [projectName, setProjectName] = useState('');
   const [blueprintFile, setBlueprintFile] = useState<File | null>(null);
   const [datasetFile, setDatasetFile] = useState<File | null>(null);
+  const [datasetFiles, setDatasetFiles] = useState<File[]>([]);
+  const [builderModel, setBuilderModel] = useState('');
+  const [reviewerModel, setReviewerModel] = useState('');
   const [sampleSelected, setSampleSelected] = useState(false);
   const [loadingSample, setLoadingSample] = useState(false);
-  const [modelComparisonEnabled, setModelComparisonEnabled] = useState(true);
   const [modelRefs, setModelRefs] = useState('');
   const [catalog, setCatalog] = useState<PiModelInfo[]>([]);
   const [catalogError, setCatalogError] = useState<string | null>(null);
@@ -3537,10 +3671,10 @@ function NewProjectPage(): ReactElement {
   const [requirementIds, setRequirementIds] = useState('');
   const [harnessFile, setHarnessFile] = useState<File | null>(null);
   const comparisonDetails = useRef<HTMLDetailsElement>(null);
-  const [comparisonUploaded, setComparisonUploaded] = useState(false);
+  const [configUploaded, setConfigUploaded] = useState(false);
   const [createdProjectId, setCreatedProjectId] = useState<string | null>(null);
   const [blueprintUploaded, setBlueprintUploaded] = useState(false);
-  const [datasetUploaded, setDatasetUploaded] = useState(false);
+  const [uploadedDatasets, setUploadedDatasets] = useState(0);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const navigate = useNavigate();
@@ -3553,6 +3687,10 @@ function NewProjectPage(): ReactElement {
       .then(models => {
         const available = models.filter(model => model.ref.startsWith('router9/'));
         setCatalog(available);
+        // Prefill only from the configured catalog; the user can change both before creating.
+        const first = available[0]?.ref ?? '';
+        setBuilderModel(current => current || first);
+        setReviewerModel(current => current || first);
         if (available.length === 0)
           setCatalogError(
             'Chưa tải được model 9router đã cấu hình. Thử tải lại hoặc nhập mã model trong phần nâng cao.'
@@ -3580,27 +3718,40 @@ function NewProjectPage(): ReactElement {
     setSubmitError(message);
   };
   const locked = submitting || createdProjectId !== null;
+  const experiment = mode === 'experiment';
+  const datasets = experiment ? datasetFiles : datasetFile ? [datasetFile] : [];
 
   async function selectOlistSample(): Promise<void> {
     setLoadingSample(true);
     setSubmitError(null);
     try {
-      const [blueprint, dataset, comparison] = await Promise.all(
-        [
-          OLIST_BLUEPRINT_URL,
-          OLIST_DATASET_URL,
+      if (experiment) {
+        const [blueprint, ...tables] = await Promise.all([
+          fetchSampleFile(
+            EXPERIMENT_SAMPLE_BLUEPRINT_URL,
+            'review-risk-blueprint.md',
+            'text/markdown'
+          ),
+          ...EXPERIMENT_SAMPLE_TABLES.map(name =>
+            fetchSampleFile(`/samples/olist/review-risk/${name}`, name, 'text/csv')
+          ),
+        ]);
+        if (!blueprint) throw new Error('Bộ mẫu Olist thiếu tệp đầu vào.');
+        setBlueprintFile(blueprint);
+        setDatasetFiles(tables);
+        setProjectName(current => current || 'Dự đoán đơn hàng bị đánh giá thấp');
+        setSampleSelected(true);
+        return;
+      }
+      const [blueprint, dataset, comparison] = await Promise.all([
+        fetchSampleFile(OLIST_BLUEPRINT_URL, 'customer-summary-blueprint.md', 'text/markdown'),
+        fetchSampleFile(OLIST_DATASET_URL, 'olist-customers-sample.csv', 'text/csv'),
+        fetchSampleFile(
           '/samples/olist/customer-summary-comparison.json',
-        ].map(async url => {
-          const response = await fetch(url, { signal: AbortSignal.timeout(15_000) });
-          if (!response.ok) throw new Error('Không tải được bộ mẫu Olist. Hãy thử lại.');
-          const file = await response.blob();
-          if (file.size === 0 || file.size > 1024 * 1024 || file.type.includes('text/html')) {
-            throw new Error('Tệp mẫu Olist không hợp lệ. Hãy tải lại trang và thử lại.');
-          }
-          return file;
-        })
-      );
-      if (!blueprint || !dataset || !comparison) throw new Error('Bộ mẫu Olist thiếu tệp đầu vào.');
+          'customer-summary-comparison.json',
+          'application/json'
+        ),
+      ]);
       const config: unknown = JSON.parse(await comparison.text());
       if (
         typeof config !== 'object' ||
@@ -3622,7 +3773,6 @@ function NewProjectPage(): ReactElement {
         new File([config.harness], 'customer-summary-harness.py', { type: 'text/x-python' })
       );
       setRequirementIds(config.requirementIds.join('\n'));
-      setModelComparisonEnabled(true);
       if (!selectedModels.length)
         setModelRefs(
           catalog
@@ -3630,10 +3780,8 @@ function NewProjectPage(): ReactElement {
             .map(model => model.ref)
             .join('\n')
         );
-      setBlueprintFile(
-        new File([blueprint], 'customer-summary-blueprint.md', { type: 'text/markdown' })
-      );
-      setDatasetFile(new File([dataset], 'olist-customers-sample.csv', { type: 'text/csv' }));
+      setBlueprintFile(blueprint);
+      setDatasetFile(dataset);
       setProjectName(current => current || 'Tổng hợp khách hàng Olist');
       setSampleSelected(true);
     } catch (error) {
@@ -3647,6 +3795,7 @@ function NewProjectPage(): ReactElement {
     setSampleSelected(false);
     setBlueprintFile(null);
     setDatasetFile(null);
+    setDatasetFiles([]);
     setComparisonPrompt('');
     setRequirementIds('');
     setHarnessFile(null);
@@ -3664,11 +3813,22 @@ function NewProjectPage(): ReactElement {
       .split(/[\r\n,]+/u)
       .map(id => id.trim())
       .filter(Boolean);
-    if (modelComparisonEnabled) {
+    const modelRef = /^router9\/[^\s/][^\s]*$/u;
+    if (experiment) {
+      if (datasets.length === 0) {
+        setSubmitError('Thí nghiệm cần ít nhất một tệp dữ liệu CSV.');
+        return;
+      }
+      if (!modelRef.test(builderModel) || !modelRef.test(reviewerModel)) {
+        setSubmitError('Chọn agent thi công và agent review.');
+        return;
+      }
+    }
+    if (mode === 'comparison') {
       if (
         models.length < 2 ||
         models.length > 4 ||
-        models.some(model => !/^router9\/[^\s/][^\s]*$/u.test(model)) ||
+        models.some(model => !modelRef.test(model)) ||
         new Set(models).size !== models.length
       ) {
         showConfigurationError('Chọn 2–4 model khác nhau hoặc kiểm tra mã model bên dưới.');
@@ -3707,29 +3867,44 @@ function NewProjectPage(): ReactElement {
         await system3Store.uploadSource('blueprint', blueprintFile);
         setBlueprintUploaded(true);
       }
-      if (datasetFile !== null && !datasetUploaded) {
-        await system3Store.uploadSource('dataset', datasetFile);
-        setDatasetUploaded(true);
+      // The first table is the primary dataset; the rest are supplemental tables of the same data.
+      for (let index = uploadedDatasets; index < datasets.length; index += 1) {
+        const file = datasets[index];
+        if (!file) continue;
+        await system3Store.uploadSource('dataset', file, {
+          role: index === 0 ? 'primary' : 'supplemental',
+        });
+        setUploadedDatasets(index + 1);
       }
-      if (modelComparisonEnabled && !comparisonUploaded) {
-        if (harnessFile === null) throw new Error('Chọn harness Python (.py) để so sánh.');
-        const harness = await harnessFile.text();
-        const config = {
-          schemaVersion: 1,
-          models,
-          prompt: comparisonPrompt,
-          harness,
-          requirementIds: requirements,
-        };
-        const file = new File(
-          [JSON.stringify({ modelComparison: config })],
-          'model-comparison.json',
-          {
-            type: 'application/json',
-          }
-        );
+      if (!configUploaded && mode !== 'legacy') {
+        const file =
+          mode === 'experiment'
+            ? new File(
+                [
+                  JSON.stringify({
+                    experiment: { schemaVersion: 1, builderModel, reviewerModel },
+                  }),
+                ],
+                'experiment-config.json',
+                { type: 'application/json' }
+              )
+            : new File(
+                [
+                  JSON.stringify({
+                    modelComparison: {
+                      schemaVersion: 1,
+                      models,
+                      prompt: comparisonPrompt,
+                      harness: (await harnessFile?.text()) ?? '',
+                      requirementIds: requirements,
+                    },
+                  }),
+                ],
+                'model-comparison.json',
+                { type: 'application/json' }
+              );
         await system3Store.uploadSource('constraints', file);
-        setComparisonUploaded(true);
+        setConfigUploaded(true);
       }
       // Starting analysis is the explicit action of this button. When intake needs the user
       // (failed or unresolved OP-00/OP-01), the workspace opens on that blocker instead.
@@ -3750,6 +3925,31 @@ function NewProjectPage(): ReactElement {
     !loadingSample &&
     blueprintFile !== null &&
     (createdProjectId !== null || projectName.trim().length > 0);
+  const modelSelect = (
+    label: string,
+    value: string,
+    onChange: (value: string) => void
+  ): ReactElement => (
+    <label className="s3-field">
+      <span>{label}</span>
+      <select
+        value={value}
+        disabled={locked}
+        onChange={event => {
+          onChange(event.target.value);
+        }}
+      >
+        {value !== '' && !catalog.some(model => model.ref === value) ? (
+          <option value={value}>{value}</option>
+        ) : null}
+        {catalog.map(model => (
+          <option key={model.ref} value={model.ref}>
+            {model.name}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
 
   return (
     <Shell>
@@ -3761,8 +3961,9 @@ function NewProjectPage(): ReactElement {
           <header className="s3-create-head">
             <h1>Tạo dự án</h1>
             <p>
-              Đưa một bài toán và dữ liệu, chọn các LLM; Anvil chạy từng model riêng và chấm bằng
-              cùng bộ kiểm tra.
+              {experiment
+                ? 'Đưa blueprint thí nghiệm từ System 2 và dữ liệu. Anvil cho agent viết code từng phương án, review, chạy trong sandbox, tự chấm và gợi ý — bạn chọn phương án.'
+                : 'Đưa một bài toán và dữ liệu, chọn các LLM; Anvil chạy từng model riêng và chấm bằng cùng bộ kiểm tra.'}
             </p>
           </header>
           <form
@@ -3794,7 +3995,11 @@ function NewProjectPage(): ReactElement {
                 </span>
                 <span>
                   <strong>{loadingSample ? 'Đang tải bộ mẫu…' : 'Bộ mẫu Olist'}</strong>
-                  <small>1.000 khách hàng theo bang · có sẵn bài toán, CSV và bộ kiểm tra</small>
+                  <small>
+                    {experiment
+                      ? 'Dự đoán đơn bị đánh giá 1–2 sao · 8.000 đơn, 5 bảng, 4 phương án mô hình'
+                      : '1.000 khách hàng theo bang · có sẵn bài toán, CSV và bộ kiểm tra'}
+                  </small>
                 </span>
                 {sampleSelected ? (
                   <CheckCircle2 size={18} className="s3-choice-check" aria-hidden="true" />
@@ -3815,7 +4020,11 @@ function NewProjectPage(): ReactElement {
                 </span>
                 <span>
                   <strong>Tệp của tôi</strong>
-                  <small>Mô tả bài toán .md, CSV và bộ kiểm tra Python</small>
+                  <small>
+                    {experiment
+                      ? 'Blueprint System 2 (.md/.json/.pdf) và các bảng dữ liệu CSV'
+                      : 'Mô tả bài toán .md, CSV và bộ kiểm tra Python'}
+                  </small>
                 </span>
                 {sampleSelected ? null : (
                   <CheckCircle2 size={18} className="s3-choice-check" aria-hidden="true" />
@@ -3843,7 +4052,11 @@ function NewProjectPage(): ReactElement {
                 <input
                   required
                   maxLength={120}
-                  placeholder="Ví dụ: Tổng hợp khách hàng theo bang"
+                  placeholder={
+                    experiment
+                      ? 'Ví dụ: Dự đoán khách hàng rời bỏ'
+                      : 'Ví dụ: Tổng hợp khách hàng theo bang'
+                  }
                   disabled={locked}
                   value={projectName}
                   onChange={event => {
@@ -3853,119 +4066,166 @@ function NewProjectPage(): ReactElement {
               </label>
               {sampleSelected ? (
                 <div className="s3-sample-files">
-                  <a
-                    className="s3-sample-file"
-                    href={OLIST_BLUEPRINT_URL}
-                    download="customer-summary-blueprint.md"
-                  >
+                  <div className="s3-sample-file">
                     <FileCheck2 size={16} aria-hidden="true" />
                     <span>
-                      <strong>customer-summary-blueprint.md</strong>
-                      <small>Mô tả bài toán</small>
+                      <strong>{blueprintFile?.name ?? ''}</strong>
+                      <small>Blueprint</small>
                     </span>
-                  </a>
-                  <a className="s3-sample-file" href={OLIST_DATASET_URL} download>
+                  </div>
+                  <div className="s3-sample-file">
                     <FileCheck2 size={16} aria-hidden="true" />
                     <span>
-                      <strong>olist-customers-sample.csv · 1.000 khách hàng</strong>
-                      <small>Dataset CSV</small>
+                      <strong>
+                        {datasets.length === 1
+                          ? (datasets[0]?.name ?? '')
+                          : `${datasets.length.toString()} bảng CSV`}
+                      </strong>
+                      <small>{datasets.map(file => file.name).join(', ')}</small>
                     </span>
-                  </a>
+                  </div>
                 </div>
               ) : (
                 <div className="s3-file-grid">
                   <FilePicker
-                    label="Mô tả bài toán (.md)"
-                    hint="Blueprint Markdown"
+                    label={experiment ? 'Blueprint System 2' : 'Mô tả bài toán (.md)'}
+                    hint={experiment ? '.md, .json hoặc .pdf' : 'Blueprint Markdown'}
                     ariaLabel="Blueprint Markdown"
-                    accept=".md,text/markdown"
+                    accept={
+                      experiment
+                        ? '.md,.json,.pdf,text/markdown,application/json,application/pdf'
+                        : '.md,text/markdown'
+                    }
                     required
                     file={blueprintFile}
                     disabled={submitting || loadingSample || createdProjectId !== null}
                     onChange={setBlueprintFile}
                   />
-                  <FilePicker
-                    label={
-                      <>
-                        Dataset CSV <small>(tùy chọn)</small>
-                      </>
-                    }
-                    hint="Có thể bổ sung sau khi phân tích"
-                    accept=".csv,text/csv"
-                    file={datasetFile}
-                    disabled={submitting || loadingSample || createdProjectId !== null}
-                    onChange={setDatasetFile}
-                  />
+                  {experiment ? (
+                    <MultiFilePicker
+                      files={datasetFiles}
+                      disabled={submitting || loadingSample || createdProjectId !== null}
+                      onChange={setDatasetFiles}
+                    />
+                  ) : (
+                    <FilePicker
+                      label={
+                        <>
+                          Dataset CSV <small>(tùy chọn)</small>
+                        </>
+                      }
+                      hint="Có thể bổ sung sau khi phân tích"
+                      accept=".csv,text/csv"
+                      file={datasetFile}
+                      disabled={submitting || loadingSample || createdProjectId !== null}
+                      onChange={setDatasetFile}
+                    />
+                  )}
                 </div>
               )}
             </section>
 
-            <section className="s3-create-section" aria-labelledby="create-model-title">
-              <fieldset className="s3-model-picker" disabled={locked}>
-                <legend id="create-model-title">
+            {experiment ? (
+              <section className="s3-create-section" aria-labelledby="create-agent-title">
+                <h2 id="create-agent-title">
                   <span className="s3-step-index" aria-hidden="true">
                     2
                   </span>{' '}
-                  Chọn các LLM{' '}
-                  <small>
-                    {selectedModels.length.toString()}/4 đã chọn · cần 2–4 model qua 9router
-                  </small>
-                </legend>
+                  Agent thực hiện
+                </h2>
+                <div className="s3-agent-grid">
+                  {modelSelect('Agent thi công (viết code)', builderModel, setBuilderModel)}
+                  {modelSelect('Agent review (kiểm tra code)', reviewerModel, setReviewerModel)}
+                </div>
                 {catalogLoading ? <p role="status">Đang tải danh sách model…</p> : null}
                 {catalogError ? <p role="status">{catalogError}</p> : null}
-                <div className="s3-model-options">
-                  {catalog.map(model => (
-                    <label className="s3-model-option" key={model.ref}>
-                      <input
-                        type="checkbox"
-                        checked={selectedModels.includes(model.ref)}
-                        disabled={!selectedModels.includes(model.ref) && selectedModels.length >= 4}
-                        onChange={event => {
-                          setModelRefs(
-                            (event.target.checked
-                              ? [...selectedModels, model.ref]
-                              : selectedModels.filter(ref => ref !== model.ref)
-                            ).join('\n')
-                          );
-                        }}
-                      />
-                      <span>{model.name}</span>
-                    </label>
-                  ))}
-                </div>
-                <button
-                  type="button"
-                  className="s3-text-button"
-                  disabled={catalogLoading}
-                  onClick={() => {
-                    setCatalogRequest(value => value + 1);
-                  }}
-                >
-                  Tải lại danh sách model
-                </button>
-              </fieldset>
-            </section>
+                <ul className="s3-agent-explainer">
+                  <li>
+                    Agent thi công viết code chuẩn bị dữ liệu và từng phương án trong blueprint.
+                  </li>
+                  <li>
+                    Agent review đọc code và thống kê dữ liệu, chặn rò rỉ dữ liệu hay sai định nghĩa
+                    trước khi chạy thật. Có thể dùng cùng model (phiên làm việc riêng).
+                  </li>
+                  <li>
+                    Anvil tự chia dữ liệu, giữ nhãn kiểm tra và tự chấm metric — bạn không cần viết
+                    bộ kiểm tra.
+                  </li>
+                </ul>
+              </section>
+            ) : (
+              <section className="s3-create-section" aria-labelledby="create-model-title">
+                <fieldset className="s3-model-picker" disabled={locked || mode === 'legacy'}>
+                  <legend id="create-model-title">
+                    <span className="s3-step-index" aria-hidden="true">
+                      2
+                    </span>{' '}
+                    Chọn các LLM{' '}
+                    <small>
+                      {selectedModels.length.toString()}/4 đã chọn · cần 2–4 model qua 9router
+                    </small>
+                  </legend>
+                  {catalogLoading ? <p role="status">Đang tải danh sách model…</p> : null}
+                  {catalogError ? <p role="status">{catalogError}</p> : null}
+                  <div className="s3-model-options">
+                    {catalog.map(model => (
+                      <label className="s3-model-option" key={model.ref}>
+                        <input
+                          type="checkbox"
+                          checked={selectedModels.includes(model.ref)}
+                          disabled={
+                            !selectedModels.includes(model.ref) && selectedModels.length >= 4
+                          }
+                          onChange={event => {
+                            setModelRefs(
+                              (event.target.checked
+                                ? [...selectedModels, model.ref]
+                                : selectedModels.filter(ref => ref !== model.ref)
+                              ).join('\n')
+                            );
+                          }}
+                        />
+                        <span>{model.name}</span>
+                      </label>
+                    ))}
+                  </div>
+                  <button
+                    type="button"
+                    className="s3-text-button"
+                    disabled={catalogLoading}
+                    onClick={() => {
+                      setCatalogRequest(value => value + 1);
+                    }}
+                  >
+                    Tải lại danh sách model
+                  </button>
+                </fieldset>
+              </section>
+            )}
 
             <details ref={comparisonDetails} className="s3-create-constraints">
               <summary>Cấu hình bộ kiểm tra và nâng cao</summary>
-              {!sampleSelected ? (
-                <p className="s3-note">
-                  Bài toán riêng cần prompt chung, requirement IDs và bộ kiểm tra Python.
-                </p>
-              ) : null}
-              <label className="s3-checkbox-row">
-                <input
-                  type="checkbox"
-                  checked={!modelComparisonEnabled}
-                  disabled={locked}
+              <label className="s3-field">
+                <span>Chế độ dự án</span>
+                <select
+                  value={mode}
+                  disabled={locked || sampleSelected}
                   onChange={event => {
-                    setModelComparisonEnabled(!event.target.checked);
+                    setMode(event.target.value as CreateMode);
                   }}
-                />
-                <span>Tạo dự án tham chiếu cũ (không so sánh nhiều LLM)</span>
+                >
+                  <option value="experiment">Thí nghiệm theo System 2 (mặc định)</option>
+                  <option value="comparison">So sánh nhiều LLM trên một bài toán (cũ)</option>
+                  <option value="legacy">Baseline tham chiếu Customer Churn (cũ)</option>
+                </select>
               </label>
-              {modelComparisonEnabled ? (
+              {mode === 'comparison' ? (
                 <div className="s3-form-grid">
+                  {!sampleSelected ? (
+                    <p className="s3-note">
+                      Bài toán riêng cần prompt chung, requirement IDs và bộ kiểm tra Python.
+                    </p>
+                  ) : null}
                   <label>
                     <span>Mã model thủ công (2–4, mỗi dòng một model)</span>
                     <textarea
@@ -4017,6 +4277,12 @@ function NewProjectPage(): ReactElement {
                   </p>
                 </div>
               ) : null}
+              {experiment ? (
+                <p className="s3-note">
+                  Mỗi phương án chạy trong sandbox không mạng, tối đa 2 GB RAM, 2 CPU và 25 phút.
+                  Bảng CSV đầu tiên là nguồn chính; các bảng còn lại là nguồn bổ sung.
+                </p>
+              ) : null}
             </details>
 
             {submitError !== null ? (
@@ -4034,7 +4300,11 @@ function NewProjectPage(): ReactElement {
               </div>
             ) : null}
             <footer className="s3-create-actions">
-              <p>Phân tích chỉ đọc tài liệu. Các LLM chỉ chạy sau khi bạn phê duyệt kế hoạch.</p>
+              <p>
+                {experiment
+                  ? 'Phân tích chỉ đọc tài liệu. Agent chỉ viết và chạy code sau khi bạn phê duyệt kế hoạch.'
+                  : 'Phân tích chỉ đọc tài liệu. Các LLM chỉ chạy sau khi bạn phê duyệt kế hoạch.'}
+              </p>
               <div>
                 <button
                   className="s3-text-button"
@@ -4063,6 +4333,52 @@ function NewProjectPage(): ReactElement {
         </section>
       </main>
     </Shell>
+  );
+}
+
+function MultiFilePicker({
+  files,
+  disabled,
+  onChange,
+}: {
+  files: readonly File[];
+  disabled: boolean;
+  onChange: (files: File[]) => void;
+}): ReactElement {
+  return (
+    <label className={`s3-file-picker ${files.length > 0 ? 'selected' : ''}`}>
+      <span className="s3-file-picker-label">Dữ liệu CSV (một hoặc nhiều bảng)</span>
+      <span className="s3-file-picker-box">
+        {files.length > 0 ? (
+          <FileCheck2 size={18} aria-hidden="true" />
+        ) : (
+          <Upload size={18} aria-hidden="true" />
+        )}
+        <span>
+          <strong>
+            {files.length === 0
+              ? 'Chọn tệp'
+              : files.length === 1
+                ? (files[0]?.name ?? '')
+                : `${files.length.toString()} bảng CSV`}
+          </strong>
+          <small>
+            {files.length === 0 ? 'Mỗi tệp tối đa 25 MB' : files.map(file => file.name).join(', ')}
+          </small>
+        </span>
+      </span>
+      <input
+        className="s3-file-picker-input"
+        type="file"
+        multiple
+        aria-label="Dữ liệu CSV"
+        accept=".csv,text/csv"
+        disabled={disabled}
+        onChange={event => {
+          onChange(Array.from(event.target.files ?? []));
+        }}
+      />
+    </label>
   );
 }
 

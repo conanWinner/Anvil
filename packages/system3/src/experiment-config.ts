@@ -43,5 +43,20 @@ export const experimentPinSchema = z.object({
   planHash: z.string().startsWith('sha256:'),
   runtimeLockHash: z.string().startsWith('sha256:'),
   datasetSourceVersionIds: z.array(z.string().min(1)).min(1),
+  /** Readable projection of the pinned plan for the approval screen (derived, hash-covered). */
+  summary: z.object({
+    variants: z.array(
+      z.object({
+        id: experimentVariantIdSchema,
+        name: z.string(),
+        role: z.enum(['baseline', 'candidate']),
+        recommended: z.boolean(),
+      })
+    ),
+    primaryMetric: z.string(),
+    thresholds: z.record(z.string(), z.number()).nullable(),
+    split: z.string(),
+    gaps: z.array(z.string()),
+  }),
 });
 export type ExperimentPin = z.infer<typeof experimentPinSchema>;

@@ -62,11 +62,15 @@ const liveComparisonHarness =
   'out = json.load(open("/work/candidate-output.json"))\n' +
   'print(json.dumps({"checks": [{"requirementId": "FR-01", "passed": out.get("rows") == len(rows), "detail": "Row count matches"}]}))\n';
 
-async function enableLegacyProjectMode(page: Page): Promise<void> {
+async function selectProjectMode(page: Page, mode: 'comparison' | 'legacy'): Promise<void> {
   const advanced = page.getByText('Cấu hình bộ kiểm tra và nâng cao', { exact: true });
   if (!(await advanced.evaluate(element => element.parentElement?.hasAttribute('open') ?? false)))
     await advanced.click();
-  await page.getByLabel('Tạo dự án tham chiếu cũ (không so sánh nhiều LLM)').check();
+  await page.getByLabel('Chế độ dự án').selectOption(mode);
+}
+
+async function enableLegacyProjectMode(page: Page): Promise<void> {
+  await selectProjectMode(page, 'legacy');
 }
 
 async function openSecondaryRoute(page: Page, name: string): Promise<void> {
@@ -1498,6 +1502,7 @@ test('runs live pinned model comparison through Delivery @comparison', async ({ 
   test.setTimeout(180_000);
   const projectName = `Live model comparison ${Date.now().toString()}`;
   await page.goto('/console/projects/new');
+  await selectProjectMode(page, 'comparison');
   await expect(page.getByRole('heading', { name: 'Tạo dự án', level: 1 })).toBeVisible();
   await page.getByLabel('Tên dự án').fill(projectName);
   await page.getByLabel('Blueprint Markdown').setInputFiles({

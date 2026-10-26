@@ -302,9 +302,19 @@ async function buildExperimentPin(input: {
   sources: readonly System3SourceRecord[];
 }): Promise<ExperimentPin> {
   const plan = deriveExperimentPlan(input.analysis);
+  const variantIds = input.config.variantIds ?? plan.variants.map(variant => variant.id);
   return {
     config: input.config,
-    variantIds: input.config.variantIds ?? plan.variants.map(variant => variant.id),
+    variantIds,
+    summary: {
+      variants: plan.variants
+        .filter(variant => variantIds.includes(variant.id))
+        .map(({ id, name, role, recommended }) => ({ id, name, role, recommended })),
+      primaryMetric: plan.protocol?.primaryMetric ?? 'unknown',
+      thresholds: plan.protocol?.thresholds ?? null,
+      split: plan.protocol?.split.kind ?? 'unknown',
+      gaps: plan.gaps.map(gap => gap.message),
+    },
     planHash: hashExperimentPlan(plan),
     runtimeLockHash: await mlRuntimeLockHash(),
     datasetSourceVersionIds: input.sources
@@ -9181,8 +9191,30 @@ export function registerApiRoutes(
       if (!verification.evidenceMap || !verification.gate) {
         return apiError(c, 422, 'Verification evidence is not available for delivery');
       }
-      const verificationEvidenceMap = verification.evidenceMap;
+      let verificationEvidenceMap = verification.evidenceMap;
       const verificationGate = verification.gate;
+      if (body.selectedVariant !== undefined) {
+        const variants = Array.isArray(verificationEvidenceMap.variants)
+          ? (verificationEvidenceMap.variants as unknown[])
+          : [];
+        const chosen = variants.find(
+          variant =>
+            variant !== null &&
+            typeof variant === 'object' &&
+            'id' in variant &&
+            variant.id === body.selectedVariant &&
+            'status' in variant &&
+            variant.status === 'verified'
+        );
+        if (verificationEvidenceMap.kind !== 'experiment' || chosen === undefined)
+          return apiError(c, 422, 'Only a verified experiment variant can be selected');
+        // The user's choice travels with the delivery manifest; suggestions never decide for them.
+        verificationEvidenceMap = {
+          ...verificationEvidenceMap,
+          selectedVariant: body.selectedVariant,
+          selectedBy: (await resolveWebUserId(c)) ?? null,
+        };
+      }
       const [execution, artifact, codebase] = await Promise.all([
         store.getExecution(verification.executionId),
         store.getBaselineArtifact(verification.executionId),

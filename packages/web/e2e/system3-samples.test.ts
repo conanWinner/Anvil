@@ -1,5 +1,13 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import type { paths } from '../src/lib/api.generated';
+
+/** The create form defaults to experiment mode; older flows pick their mode explicitly. */
+async function selectProjectMode(page: Page, mode: 'comparison' | 'legacy'): Promise<void> {
+  const advanced = page.getByText('Cấu hình bộ kiểm tra và nâng cao', { exact: true });
+  if (!(await advanced.evaluate(element => element.parentElement?.hasAttribute('open') ?? false)))
+    await advanced.click();
+  await page.getByLabel('Chế độ dự án').selectOption(mode);
+}
 
 const catalogModels = [
   {
@@ -50,6 +58,7 @@ test('selects the Olist comparison sample and uploads pinned sources without cal
     }
   });
   await page.goto('/console/projects/new');
+  await selectProjectMode(page, 'comparison');
   await expect(page.getByRole('heading', { name: 'Tạo dự án', level: 1 })).toBeVisible();
   await expect(page.getByText('Test Model A', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Dùng bộ mẫu Olist' }).focus();
@@ -143,6 +152,7 @@ test('sample download failure preserves selected uploads and allows retry', asyn
     route.fulfill({ json: { models: catalogModels } })
   );
   await page.goto('/console/projects/new');
+  await selectProjectMode(page, 'comparison');
   await page.getByLabel('Blueprint Markdown').setInputFiles({
     name: 'my-blueprint.md',
     mimeType: 'text/markdown',
@@ -165,4 +175,50 @@ test('sample download failure preserves selected uploads and allows retry', asyn
   await page.unroute('**/samples/olist/olist-customers-sample.csv');
   await page.getByRole('button', { name: 'Dùng bộ mẫu Olist' }).click();
   await expect(page.getByRole('status')).toContainText('Đã chọn bộ mẫu');
+});
+
+test('experiment mode is the default and the Olist sample pins blueprint, tables and agents', async ({
+  page,
+}) => {
+  test.setTimeout(90_000);
+  await page.route('**/api/providers/pi/models', route =>
+    route.fulfill({ json: { models: catalogModels } })
+  );
+  const executionRequests: string[] = [];
+  page.on('request', request => {
+    if (request.method() === 'POST' && /\/executions$/u.test(new URL(request.url()).pathname))
+      executionRequests.push(request.url());
+  });
+  await page.goto('/console/projects/new');
+  await expect(page.getByLabel('Agent thi công (viết code)')).toHaveValue('router9/test/model-a');
+  await page.getByLabel('Agent review (kiểm tra code)').selectOption('router9/test/model-b');
+  await page.getByRole('button', { name: 'Dùng bộ mẫu Olist' }).click();
+  await expect(page.getByRole('status')).toContainText('Đã chọn bộ mẫu');
+  await expect(page.getByText('5 bảng CSV', { exact: true })).toBeVisible();
+  const projectName = `Olist review risk ${Date.now().toString()}`;
+  await page.getByLabel('Tên dự án').fill(projectName);
+  await page.getByRole('button', { name: 'Chỉ tạo dự án', exact: true }).click();
+  await expect(page.getByRole('heading', { name: projectName })).toBeVisible({ timeout: 30_000 });
+  const projectId = new URL(page.url()).pathname.split('/')[3];
+  const response = await page.request.get(`/api/system3/projects/${projectId ?? ''}/sources`);
+  const sources: paths['/api/system3/projects/{id}/sources']['get']['responses'][200]['content']['application/json'] =
+    await response.json();
+  const datasets = sources.sources.filter(source => source.kind === 'dataset');
+  expect(datasets).toHaveLength(5);
+  expect(
+    datasets.filter(source => source.role === 'primary').map(source => source.filename)
+  ).toEqual(['olist_orders_dataset.csv']);
+  const config = sources.sources.find(source => source.filename === 'experiment-config.json');
+  expect(config?.kind).toBe('constraints');
+  const configResponse = await page.request.get(
+    `/api/system3/projects/${projectId ?? ''}/source-versions/${config?.id ?? ''}/content`
+  );
+  expect(await configResponse.json()).toEqual({
+    experiment: {
+      schemaVersion: 1,
+      builderModel: 'router9/test/model-a',
+      reviewerModel: 'router9/test/model-b',
+    },
+  });
+  expect(executionRequests).toEqual([]);
 });

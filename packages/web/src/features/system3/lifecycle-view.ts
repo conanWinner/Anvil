@@ -514,7 +514,10 @@ export function selectSuggestedLifecycleActivity(
   if (project.planCompiled && !project.manifestApproved) {
     return { activityId: 'OP-05', reason: 'approval' };
   }
-  if ((project.verification?.modelReports.length ?? 0) > 0) {
+  if (
+    (project.verification?.modelReports.length ?? 0) > 0 ||
+    project.verification?.experiment !== undefined
+  ) {
     return { activityId: 'TW-07', reason: 'verification_results' };
   }
   return { activityId: nextIncomplete().id, reason: 'next_activity' };

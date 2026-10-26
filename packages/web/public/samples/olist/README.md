@@ -3,6 +3,16 @@
 Nguồn: [Brazilian E-Commerce Public Dataset by Olist](https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce), được nêu trong [DESIGN_B_2.md](../../../../../docs/system_2/DESIGN_B_2.md).
 Dữ liệu gốc và CSV dẫn xuất áp dụng [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/), tách biệt với giấy phép mã nguồn Anvil.
 
+## Mẫu thí nghiệm (mặc định): dự đoán đơn hàng bị đánh giá thấp
+
+**Tạo dự án** → **Bộ mẫu Olist** (chế độ *Thí nghiệm theo System 2*) điền sẵn `review-risk-blueprint.md` và 5 bảng trong `review-risk/` (8.000 đơn hàng có đánh giá, ~14,6% bị chấm 1–2 sao). Blueprint theo đúng 6 phần của System 2, nêu 4 phương án mô hình (Logistic Regression baseline, Random Forest, XGBoost, LightGBM), metric chính ROC-AUC và ngưỡng ROC-AUC ≥ 0.70. Không cần prompt hay bộ kiểm tra: Anvil tự chia dữ liệu, giữ nhãn và tự chấm.
+
+Tập con được tạo tất định từ archive Kaggle gốc bằng `python3 scripts/prepare-olist-experiment-sample.py <thư-mục-9-csv> packages/web/public/samples/olist/review-risk 8000` (chọn 8.000 `order_id` có đánh giá theo thứ tự SHA-256, giữ items/payments/reviews/products tương ứng).
+
+## Mẫu so sánh LLM (chế độ cũ)
+
+Chọn chế độ *So sánh nhiều LLM* trong **Cấu hình bộ kiểm tra và nâng cao** trước khi bấm **Bộ mẫu Olist**.
+
 ## Dùng trong giao diện
 
 **Tạo dự án** → **Dùng bộ mẫu Olist** → chọn 2–4 LLM → **Tạo dự án**. Mẫu điền sẵn bài toán tổng hợp theo bang, CSV, prompt và bộ kiểm tra. Tiếp tục **Bắt đầu phân tích**, xem và chấp nhận Bản hiểu, rồi **Xem và phê duyệt kế hoạch** → **Phê duyệt và chạy**. Kết quả có code/output riêng cho từng model; **Yêu cầu bàn giao** tạo gói chạy lại.

@@ -4,6 +4,22 @@ import type { paths } from '../../lib/api.generated';
 export type System3ModelComparisonConfig = NonNullable<
   NonNullable<System3ProjectFlowResponse['compilation']>['plan']['modelComparison']
 >;
+export type System3ExperimentPin = NonNullable<
+  NonNullable<System3ProjectFlowResponse['compilation']>['plan']['experiment']
+>;
+type System3EvidenceMap = NonNullable<
+  NonNullable<System3ProjectFlowResponse['verification']>['evidenceMap']
+>;
+/** Experiment results as recorded by TW-07 (kind `experiment`). */
+export interface System3ExperimentResults {
+  primaryMetric: NonNullable<System3EvidenceMap['primaryMetric']>;
+  variants: NonNullable<System3EvidenceMap['variants']>;
+  suggestion: NonNullable<System3EvidenceMap['suggestion']>;
+  review: NonNullable<System3EvidenceMap['review']>;
+  split: NonNullable<System3EvidenceMap['split']>;
+  agents: NonNullable<System3EvidenceMap['agents']>;
+  mismatches: NonNullable<System3EvidenceMap['mismatches']>;
+}
 export type System3ModelComparisonModelReport = NonNullable<
   NonNullable<NonNullable<System3ProjectFlowResponse['verification']>['evidenceMap']>['models']
 >[number];
@@ -206,6 +222,7 @@ export interface System3Verification {
   status: 'accepted' | 'running' | 'completed' | 'failed';
   error: string | null;
   modelReports: readonly System3ModelComparisonModelReport[];
+  experiment?: System3ExperimentResults;
 }
 
 export interface System3Delivery {
@@ -338,6 +355,7 @@ export interface System3Project {
     skippedPhases: readonly string[];
     reusedArtifactCount: number;
     modelComparison?: System3ModelComparisonConfig;
+    experiment?: System3ExperimentPin;
   };
   deliveryReady: boolean;
   deliveryAvailable: boolean;

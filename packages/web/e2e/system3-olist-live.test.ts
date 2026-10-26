@@ -1,5 +1,13 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import type { paths } from '../src/lib/api.generated';
+
+/** The create form defaults to experiment mode; older flows pick their mode explicitly. */
+async function selectProjectMode(page: Page, mode: 'comparison' | 'legacy'): Promise<void> {
+  const advanced = page.getByText('Cấu hình bộ kiểm tra và nâng cao', { exact: true });
+  if (!(await advanced.evaluate(element => element.parentElement?.hasAttribute('open') ?? false)))
+    await advanced.click();
+  await page.getByLabel('Chế độ dự án').selectOption(mode);
+}
 
 type ProjectFlow =
   paths['/api/system3/projects/{id}/flow']['get']['responses'][200]['content']['application/json'];
@@ -11,6 +19,7 @@ test('runs the Olist sample with two LLMs through the minimal workspace @olist-l
   test.setTimeout(240_000);
   const models = ['router9/cx/gpt-6-luna', 'router9/cx/gpt-5.6-luna'];
   await page.goto('/console/projects/new');
+  await selectProjectMode(page, 'comparison');
   await expect(page.getByLabel('cx/gpt-6-luna', { exact: true })).toBeVisible({ timeout: 20_000 });
   await page.getByRole('button', { name: 'Dùng bộ mẫu Olist' }).click();
   await expect(page.getByRole('status')).toContainText('Đã chọn bộ mẫu');
