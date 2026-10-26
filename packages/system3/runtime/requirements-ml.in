@@ -1,0 +1,13 @@
+# Python packages available to System 3 experiment code inside the sandbox.
+# Regenerate the lock with: bun run system3:ml-lock
+numpy
+pandas
+scipy
+scikit-learn
+xgboost-cpu
+lightgbm
+imbalanced-learn
+shap
+matplotlib
+joblib
+pyarrow

@@ -119,4 +119,11 @@ Trên VPS, với `DESIGN_B_2.md` + Olist (bản thu nhỏ có tái lập nếu b
 
 Thứ tự đề xuất: (1) thu nhỏ dữ liệu có ghi rõ + giới hạn tuning; (2) nâng VPS lên 4 CPU / 8–16 GB (đúng giả định 8 GB của blueprint); (3) runner từ xa qua SSH tới máy mạnh hơn, dùng cùng runtime lock và giao thức. (3) chỉ làm khi có máy cụ thể.
 
+## 9. Tiến độ
+
+| Giai đoạn | Trạng thái | Bằng chứng / ghi chú |
+| --- | --- | --- |
+| P0 | Xong 26/10 | Commit mốc `0dce48b`; layout toàn màn hình, docs trỏ về kế hoạch 13 (`9a3c986`) |
+| P1 | Xong 26/10 | `uv` 0.13.5; lock `packages/system3/runtime/requirements-ml.lock` (27 gói có hash: numpy 2.5.4, pandas 3.1.0, scikit-learn 1.9.1, xgboost-cpu 3.4.1, lightgbm 4.7.0, shap 0.54.1); `bun run system3:ml-runtime` dựng venv 526 MB tại `$ANVIL_HOME/runtimes/system3-ml/<hash>`. Host cần `libgomp1` (đã cài). `runExperimentSandbox` profile `check`/`experiment`, hàng đợi một thí nghiệm. Test opt-in `ANVIL_SANDBOX_TESTS=true`: import ML stack offline, chỉ `/work/out` ghi được, vượt RAM/thời gian bị dừng; sandbox Python cũ vẫn đạt |
+
 [← Mục lục](README.md) · [Kế hoạch 11 (nền UI và luồng)](11-simplification-and-core-flow-plan.md)

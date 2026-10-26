@@ -15,3 +15,5 @@ export * from './invalidation';
 export * from './understanding';
 export * from './model-comparison';
 export * from './project-archive';
+export * from './ml-runtime';
+export * from './experiment-sandbox';
