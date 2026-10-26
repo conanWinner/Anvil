@@ -27,7 +27,7 @@ export const EXPERIMENT_SANDBOX_PROFILES = {
   },
   experiment: {
     limits: {
-      memoryMax: '2560M',
+      memoryMax: '2048M',
       cpuQuota: '200%',
       tasksMax: 64,
       fileSizeBytes: 512 * 1024 * 1024,

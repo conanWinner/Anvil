@@ -4,7 +4,7 @@ import { createReadStream } from 'node:fs';
 import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, normalize } from 'node:path';
 import { createInterface } from 'node:readline';
-import { splitModelingTable, type SplitSummary } from './experiment-evaluation';
+import { sampleAgentData, splitModelingTable, type SplitSummary } from './experiment-evaluation';
 import { MODELING_TABLE_COLUMNS, type ExperimentPlan } from './experiment-plan';
 import { runExperimentSandbox, type ExperimentSandboxResult } from './experiment-sandbox';
 import type { MlRuntime } from './ml-runtime';
@@ -193,18 +193,6 @@ async function describeCsvFolder(dir: string, rows = 3): Promise<string> {
   return parts.join('\n\n');
 }
 
-/** First `rows` data lines of a CSV (header kept); enough for a smoke run, not for metrics. */
-async function headCsv(source: string, target: string, rows: number): Promise<void> {
-  const lines: string[] = [];
-  const reader = createInterface({ input: createReadStream(source) });
-  for await (const line of reader) {
-    lines.push(line);
-    if (lines.length > rows) break;
-  }
-  reader.close();
-  await writeFile(target, `${lines.join('\n')}\n`);
-}
-
 function filesBlock(files: Record<string, string>): string {
   return Object.entries(files)
     .map(([path, content]) => `--- ${path}\n${content}`)
@@ -223,7 +211,7 @@ function variantList(plan: ExperimentPlan, ids: readonly string[]): string {
 
 const SANDBOX_RULES = `Runtime rules (enforced by the sandbox):
 - Python 3.12 with only: numpy, pandas, scipy, scikit-learn, xgboost, lightgbm, imbalanced-learn, shap, matplotlib, joblib, pyarrow.
-- No network, no package installation, no GPU. Memory 2.5 GB, 2 CPU threads (use n_jobs=2 at most).
+- No network, no package installation, no GPU. Memory 2 GB, 2 CPU threads (use n_jobs=2 at most).
 - The project folder (/work/project) and /work/data are read-only. Write only under /work/out.
 - Use fixed random seeds. Keep hyper-parameter search small: each variant must finish in under 20 minutes.`;
 
@@ -312,6 +300,8 @@ Report a BLOCKING finding for:
 - A requested variant missing or implemented as a different algorithm.
 - Wrong output contract (predictions/<id>.csv with id,score,label; reported/<id>.json).
 - Anything that would make results non-reproducible (missing seeds) or exceed the sandbox limits.
+- Degenerate data: a target that is (almost) constant in train or test, so models cannot learn or be evaluated meaningfully. Check the split statistics below.
+- Code that hides failures (e.g. returning constant predictions when training data is unusable).
 Use WARNING for deviations that do not invalidate results. Verdict \`pass\` only when there is no blocking finding.
 
 Variants requested:
@@ -319,7 +309,7 @@ ${variantList(input.plan, input.variantIds)}
 
 ${SANDBOX_RULES}
 
-## Sandbox checks already passed
+## Sandbox checks and data statistics
 ${checks}
 
 ## Blueprint
@@ -368,7 +358,8 @@ export async function buildExperimentCodebase(
   };
 
   // Stage 1: data preparation until the modeling table satisfies Anvil's split.
-  let split: Awaited<ReturnType<typeof splitModelingTable>> | null = null;
+  // Closures below update the split; a holder object keeps TypeScript's narrowing honest.
+  const state: { split: Awaited<ReturnType<typeof splitModelingTable>> | null } = { split: null };
   const runPrepare = async (tag: string): Promise<string | null> => {
     const outputDir = join(input.workDir, `prepare-${tag}`);
     await rm(outputDir, { recursive: true, force: true });
@@ -386,7 +377,7 @@ export async function buildExperimentCodebase(
     );
     if (failure !== null) return failure;
     try {
-      split = await splitModelingTable({
+      state.split = await splitModelingTable({
         runtime: input.runtime,
         tablePath: join(outputDir, 'modeling_table.csv'),
         protocol,
@@ -421,20 +412,19 @@ export async function buildExperimentCodebase(
 
   // Stage 2: variant code until every variant produces valid predictions on smoke data.
   const smokeVariants = async (): Promise<string | null> => {
-    if (split === null) return 'No split available';
+    if (state.split === null) return 'No split available';
     const smokeData = join(input.workDir, 'smoke-data');
     await rm(smokeData, { recursive: true, force: true });
-    await mkdir(smokeData, { recursive: true });
-    await headCsv(
-      join(split.agentDataDir, 'train.csv'),
-      join(smokeData, 'train.csv'),
-      SMOKE_TRAIN_ROWS
-    );
-    await headCsv(
-      join(split.agentDataDir, 'test_features.csv'),
-      join(smokeData, 'test_features.csv'),
-      SMOKE_TEST_ROWS
-    );
+    await sampleAgentData({
+      runtime: input.runtime,
+      agentDataDir: state.split.agentDataDir,
+      protocol,
+      trainRows: SMOKE_TRAIN_ROWS,
+      testRows: SMOKE_TEST_ROWS,
+      outputDir: smokeData,
+      workDir: join(input.workDir, 'smoke-sample'),
+      signal: input.signal,
+    });
     const expectedRows =
       (await readFile(join(smokeData, 'test_features.csv'), 'utf8')).trim().split('\n').length - 1;
     for (const variant of input.variantIds) {
@@ -469,7 +459,7 @@ export async function buildExperimentCodebase(
   };
   const variants = async (initialFeedback: string | null): Promise<string | null> => {
     let feedback = initialFeedback;
-    const agentData = split === null ? '' : await describeCsvFolder(split.agentDataDir);
+    const agentData = state.split === null ? '' : await describeCsvFolder(state.split.agentDataDir);
     for (let round = 1; round <= input.maxFixRounds; round += 1) {
       const response = (await generate(
         'builder',
@@ -507,7 +497,7 @@ export async function buildExperimentCodebase(
       reviewPrompt(
         input,
         files,
-        'Data preparation produced a valid modeling table; every variant produced valid predictions on a sample.'
+        `Data preparation produced a modeling table that Anvil split as: ${JSON.stringify(state.split?.summary ?? null)}. Every variant produced valid predictions on a stratified sample.`
       )
     )) as ReviewResponse;
     const blocking = review.findings.filter(finding => finding.severity === 'blocking');
@@ -518,8 +508,8 @@ export async function buildExperimentCodebase(
       detail: `${review.verdict}: ${blocking.length.toString()} blocking, ${(review.findings.length - blocking.length).toString()} warnings`,
     });
     if (review.verdict === 'pass' && blocking.length === 0) {
-      if (split === null) throw new Error('Split missing after a successful build');
-      return { status: 'ready', split, review, files, events };
+      if (state.split === null) throw new Error('Split missing after a successful build');
+      return { status: 'ready', split: state.split, review, files, events };
     }
     if (round > input.maxReviewRounds)
       return {

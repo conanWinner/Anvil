@@ -6,6 +6,7 @@ and `evaluate` recomputes every metric from the agents' saved predictions.
 
 Usage (inside the sandbox, data mounted at /work/data, output at /work/out):
   python anvil_eval.py split
+  python anvil_eval.py sample      (small stratified train/test sample for smoke runs)
   python anvil_eval.py evaluate
 """
 
@@ -77,6 +78,16 @@ def split() -> None:
         fail(f"Unsupported split kind {method['kind']!r}")
     if len(test_idx) == 0 or y.iloc[test_idx].nunique() != 2:
         fail('Held-out test set must contain both classes')
+    for name, idx in (('train', train_idx), ('test', test_idx)):
+        rate = float(y.iloc[idx].mean())
+        minority = min(rate, 1 - rate)
+        if minority * len(idx) < 5 or minority < 0.005:
+            fail(
+                f'The {name} split is degenerate: {rate:.4f} of {len(idx)} rows are positive, '
+                'so no model can learn or be evaluated. Revisit the target definition or cutoff '
+                f'so both classes occur (positive rate train/test = '
+                f'{float(y.iloc[train_idx].mean()):.4f}/{float(y.iloc[test_idx].mean()):.4f}).'
+            )
 
     agent_dir, holdout_dir = OUT / 'agent', OUT / 'holdout'
     agent_dir.mkdir(parents=True, exist_ok=True)
@@ -103,6 +114,24 @@ def split() -> None:
     }
     (OUT / 'split.json').write_text(json.dumps(summary, indent=2) + '\n', encoding='utf-8')
     print(json.dumps(summary))
+
+
+def sample() -> None:
+    """Small smoke-run sample that keeps both classes; never used for metrics."""
+    settings = load_protocol()
+    target = settings['targetColumn']
+    train = pd.read_csv(DATA / 'train.csv', dtype={settings['idColumn']: str})
+    test = pd.read_csv(DATA / 'test_features.csv', dtype={settings['idColumn']: str})
+    train_rows = min(int(settings['trainRows']), len(train))
+    if train[target].nunique() > 1 and train_rows < len(train):
+        train, _ = train_test_split(
+            train, train_size=train_rows, random_state=0, stratify=train[target].astype(str)
+        )
+    test = test.sample(n=min(int(settings['testRows']), len(test)), random_state=0)
+    OUT.mkdir(parents=True, exist_ok=True)
+    train.sort_index().to_csv(OUT / 'train.csv', index=False)
+    test.sort_index().to_csv(OUT / 'test_features.csv', index=False)
+    print(json.dumps({'trainRows': len(train), 'testRows': len(test)}))
 
 
 def metrics_for(y: np.ndarray, score: np.ndarray, label: np.ndarray) -> dict:
@@ -170,7 +199,9 @@ if __name__ == '__main__':
     command = sys.argv[1] if len(sys.argv) > 1 else ''
     if command == 'split':
         split()
+    elif command == 'sample':
+        sample()
     elif command == 'evaluate':
         evaluate()
     else:
-        fail('Usage: anvil_eval.py split|evaluate')
+        fail('Usage: anvil_eval.py split|sample|evaluate')

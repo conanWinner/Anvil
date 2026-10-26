@@ -18,6 +18,7 @@ const pointer = {
   jsonPointer: null,
   page: null,
   boundingBox: null,
+  excerptHash: 'sha256:excerpt',
 };
 
 const plan: ExperimentPlan = {

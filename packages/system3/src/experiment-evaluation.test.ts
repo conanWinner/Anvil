@@ -71,6 +71,12 @@ describe('rankExperimentVariants', () => {
         evaluation: { testRows: 10, variants: { a: { status: 'missing', error: 'none' } } },
       })
     ).toMatchObject({ suggested: null, ranking: [], unverified: ['a'] });
+    expect(
+      rankExperimentVariants({
+        protocol,
+        evaluation: { testRows: 10, variants: { a: verified(0.5, 0.9), b: verified(0.49, 0.9) } },
+      }).reasons
+    ).toEqual(['highest_primary_metric', 'no_better_than_chance']);
   });
 });
 

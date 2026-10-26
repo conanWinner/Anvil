@@ -809,6 +809,49 @@ async function createUnderstandingSemanticFallback(
   };
 }
 
+/**
+ * One tool-less Pi call with JSON-schema output for System 3 (model comparison, experiment build
+ * and review). Any tool event is rejected: generated code only ever runs in Anvil's sandbox.
+ */
+async function generateSystem3Structured(input: {
+  projectId: string;
+  model: string;
+  prompt: string;
+  schema: Record<string, unknown>;
+  maxResponseBytes: number;
+  signal: AbortSignal;
+}): Promise<unknown> {
+  const project = await getSystem3Store().getProject(input.projectId);
+  const codebase = project ? await codebaseDb.getCodebase(project.codebaseId) : null;
+  if (!codebase) throw new Error('System 3 project workspace is unavailable');
+  const config = await loadConfig(codebase.default_cwd);
+  const provider = getAgentProvider('pi');
+  let text = '';
+  let structured: unknown;
+  for await (const chunk of provider.sendQuery(input.prompt, codebase.default_cwd, undefined, {
+    model: input.model,
+    persistSession: false,
+    abortSignal: input.signal,
+    assistantConfig: { ...(config.assistants.pi ?? {}), enableExtensions: false },
+    nodeConfig: { allowed_tools: [], denied_tools: [], thinking: 'off' },
+    outputFormat: { type: 'json_schema', schema: input.schema },
+  })) {
+    input.signal.throwIfAborted();
+    if (chunk.type === 'tool' || chunk.type === 'tool_result')
+      throw new Error('System 3 model attempted a forbidden tool');
+    if (chunk.type === 'assistant') {
+      text += chunk.content;
+      if (Buffer.byteLength(text) > input.maxResponseBytes)
+        throw new Error('System 3 model response exceeded its size limit');
+    }
+    if (chunk.type === 'result') {
+      if (chunk.isError) throw new Error('9router request failed');
+      if (chunk.structuredOutput !== undefined) structured = chunk.structuredOutput;
+    }
+  }
+  return structured ?? (JSON.parse(text) as unknown);
+}
+
 function getSystem3CapabilityRegistry(): System3CapabilityRegistry {
   cachedSystem3CapabilityRegistry ??= new System3CapabilityRegistry({
     listSourceRefs: async (
@@ -881,45 +924,23 @@ function getSystem3CapabilityRegistry(): System3CapabilityRegistry {
       return snapshot?.analysis ?? null;
     },
     createUnderstandingSemanticFallback,
-    generateModelCode: async ({ projectId, model, prompt, signal }): Promise<unknown> => {
-      const project = await getSystem3Store().getProject(projectId);
-      const codebase = project ? await codebaseDb.getCodebase(project.codebaseId) : null;
-      if (!codebase) throw new Error('Model comparison project workspace is unavailable');
-      const config = await loadConfig(codebase.default_cwd);
-      const provider = getAgentProvider('pi');
-      let text = '';
-      let structured: unknown;
-      for await (const chunk of provider.sendQuery(prompt, codebase.default_cwd, undefined, {
-        model,
-        persistSession: false,
-        abortSignal: signal,
-        assistantConfig: { ...(config.assistants.pi ?? {}), enableExtensions: false },
-        nodeConfig: { allowed_tools: [], denied_tools: [], thinking: 'off' },
-        outputFormat: {
-          type: 'json_schema',
+    generateModelCode: async ({ projectId, model, prompt, signal }): Promise<unknown> =>
+      modelComparisonCodeSchema.parse(
+        await generateSystem3Structured({
+          projectId,
+          model,
+          prompt,
+          signal,
+          maxResponseBytes: 128 * 1024,
           schema: {
             type: 'object',
             additionalProperties: false,
             required: ['code'],
             properties: { code: { type: 'string', minLength: 1, maxLength: 65536 } },
           },
-        },
-      })) {
-        signal.throwIfAborted();
-        if (chunk.type === 'tool' || chunk.type === 'tool_result')
-          throw new Error('Model comparison provider attempted a forbidden tool');
-        if (chunk.type === 'assistant') {
-          text += chunk.content;
-          if (Buffer.byteLength(text) > 128 * 1024)
-            throw new Error('Model comparison response exceeded its size limit');
-        }
-        if (chunk.type === 'result') {
-          if (chunk.isError) throw new Error('9router model comparison request failed');
-          if (chunk.structuredOutput !== undefined) structured = chunk.structuredOutput;
-        }
-      }
-      return modelComparisonCodeSchema.parse(structured ?? JSON.parse(text));
-    },
+        })
+      ),
+    generateStructured: generateSystem3Structured,
     readArtifact: async (
       projectId,
       storageKey

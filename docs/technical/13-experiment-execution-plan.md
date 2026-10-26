@@ -66,7 +66,7 @@ Thi công chia **hai giai đoạn**, vì với dữ liệu thô nhiều bảng t
 | Profile | RAM | CPU | Thời gian | Dùng cho |
 | --- | --- | --- | --- | --- |
 | `check` | 512 MiB | 1 | 60 giây | Kiểm tra nhanh trên mẫu nhỏ trong vòng thi công |
-| `experiment` | 2,5 GiB | 2 | 30 phút/phương án | Chạy thí nghiệm thật |
+| `experiment` | 2 GiB | 2 | 30 phút/phương án | Chạy thí nghiệm thật (VPS 4 GB còn ~2,4 GB trống khi server chạy) |
 
 - **Một thí nghiệm tại một thời điểm** trên toàn máy (hàng đợi); phương án vượt giới hạn được ghi `failed: resource_limit`, không bị coi là kém về chất lượng.
 

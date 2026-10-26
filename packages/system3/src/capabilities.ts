@@ -137,6 +137,14 @@ export interface System3CapabilitySourcePort {
     prompt: string;
     signal: AbortSignal;
   }): Promise<unknown>;
+  generateStructured?(input: {
+    projectId: string;
+    model: string;
+    prompt: string;
+    schema: Record<string, unknown>;
+    maxResponseBytes: number;
+    signal: AbortSignal;
+  }): Promise<unknown>;
   readArtifact(projectId: string, storageKey: string): Promise<Uint8Array>;
 }
 

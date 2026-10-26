@@ -77,7 +77,7 @@ export type ExperimentEvaluation = z.infer<typeof experimentEvaluationSchema>;
 
 async function runEvaluator(input: {
   runtime: MlRuntime;
-  command: 'split' | 'evaluate';
+  command: 'split' | 'sample' | 'evaluate';
   dataDir: string;
   outputDir: string;
   timeoutMs: number;
@@ -135,6 +135,42 @@ export async function splitModelingTable(input: {
     holdoutDir: join(outputDir, 'holdout'),
     summary,
   };
+}
+
+/** Stratified smoke sample of the agent data (both classes kept); for smoke runs only. */
+export async function sampleAgentData(input: {
+  runtime: MlRuntime;
+  agentDataDir: string;
+  protocol: EvaluationProtocol;
+  trainRows: number;
+  testRows: number;
+  outputDir: string;
+  workDir: string;
+  signal: AbortSignal;
+}): Promise<void> {
+  const dataDir = join(input.workDir, 'sample-input');
+  await mkdir(dataDir, { recursive: true });
+  await Promise.all([
+    copyFile(join(input.agentDataDir, 'train.csv'), join(dataDir, 'train.csv')),
+    copyFile(join(input.agentDataDir, 'test_features.csv'), join(dataDir, 'test_features.csv')),
+    writeFile(
+      join(dataDir, 'protocol.json'),
+      JSON.stringify({
+        idColumn: input.protocol.idColumn,
+        targetColumn: input.protocol.targetColumn,
+        trainRows: input.trainRows,
+        testRows: input.testRows,
+      })
+    ),
+  ]);
+  await runEvaluator({
+    runtime: input.runtime,
+    command: 'sample',
+    dataDir,
+    outputDir: input.outputDir,
+    timeoutMs: 5 * 60_000,
+    signal: input.signal,
+  });
 }
 
 /**
@@ -208,13 +244,20 @@ export interface VariantSuggestion {
   ranking: RankedVariant[];
   /** Suggested variant; the user still decides. Null when nothing was verified. */
   suggested: string | null;
-  reasons: ('highest_primary_metric' | 'meets_thresholds' | 'no_variant_meets_thresholds')[];
+  reasons: (
+    | 'highest_primary_metric'
+    | 'meets_thresholds'
+    | 'no_variant_meets_thresholds'
+    | 'no_better_than_chance'
+  )[];
   /** Variants within `NEAR_BEST` of the best primary metric that ran faster. */
   fasterAlternatives: string[];
   unverified: string[];
 }
 
 const NEAR_BEST = 0.01;
+/** Ranking metrics where 0.5 is a coin flip; a best score this close says the models learned nothing. */
+const CHANCE_LEVEL: Partial<Record<ExperimentMetric, number>> = { roc_auc: 0.55 };
 
 /** Ranks verified variants by the protocol's primary metric; a suggestion, never a decision. */
 export function rankExperimentVariants(input: {
@@ -259,6 +302,8 @@ export function rankExperimentVariants(input: {
   if (best.meetsThresholds === true) reasons.push('meets_thresholds');
   if (ranking.every(item => item.meetsThresholds === false))
     reasons.push('no_variant_meets_thresholds');
+  const chance = CHANCE_LEVEL[primaryMetric];
+  if (chance !== undefined && best.primary <= chance) reasons.push('no_better_than_chance');
   const fasterAlternatives = ranking
     .slice(1)
     .filter(
