@@ -18,3 +18,4 @@ export * from './project-archive';
 export * from './ml-runtime';
 export * from './experiment-sandbox';
 export * from './experiment-evaluation';
+export * from './experiment-plan';
