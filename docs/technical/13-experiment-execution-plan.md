@@ -132,7 +132,7 @@ Thứ tự đề xuất: (1) thu nhỏ dữ liệu có ghi rõ + giới hạn tu
 | P3 (lõi) | Xong 26/10 | `runtime/python/anvil_eval.py` + `experiment-evaluation.ts`: giao thức đánh giá (zod), split giữ nhãn, chấm lại từ dự đoán, xếp hạng gợi ý. Test: 2 test xếp hạng + 1 test sandbox (split 200→150/50, test_features không có target, oracle AUC 1, dự đoán thiếu dòng/không có bị bắt). Chưa nối vào workflow/Evidence (làm ở P4–P5) |
 | P2 (lõi) | Xong 26/10 | `experiment-plan.ts`: suy ra ma trận phương án + giao thức từ Bản hiểu V2 (bảng công nghệ, success criteria, yêu cầu) — không gọi LLM. Bảng mô hình hóa theo contract cột `entity_id`/`target`/`cutoff_time`. Test trên `DESIGN_B_2.md`: đúng 4 model (LR baseline, RF, XGBoost, LightGBM khuyến nghị), SMOTE, K-means tùy chọn, `time_holdout`, metric chính ROC-AUC, gap `no_thresholds` không chặn; blueprint thiếu thông tin sinh gap chặn. Chưa hiển thị trên UI/duyệt kế hoạch |
 | P4 (lõi + nối luồng) | Xong 26/10, chưa nghiệm thu qua Web | `experiment-builder.ts`: agent thi công chỉ trả nội dung file (Pi, không tool); Anvil chạy `prepare_data.py` → split → smoke mẫu phân tầng → agent review (thấy thống kê split) → sửa có giới hạn; thử lại khi JSON hỏng (2 lần). Agent **không được đổi target/tập thực thể/metric**: nếu blueprint mâu thuẫn với dữ liệu thì trả `question` → run dừng `needs_decision`. Reviewer không được chặn yêu cầu blueprint đã nêu (chỉ cảnh báo). Nối: `experiment-config.json` → Readiness v3 (pin plan hash, runtime lock, dataset) → Compile → action `system3.experiment-execute` → Verify `system3.experiment-verify` chấm lại độc lập |
-| P5 (Web) | Đang nghiệm thu | Form mặc định chế độ thí nghiệm (blueprint + nhiều CSV, chọn agent thi công/review, bộ mẫu Olist review-risk 8.000 đơn); thẻ kế hoạch thí nghiệm; trang kết quả: gợi ý có lý do, bảng metric có thanh, cảnh báo dữ liệu, báo cáo review, chọn phương án → ghi `selectedVariant` vào manifest bàn giao |
+| P5 (Web) | Nghiệm thu 26/10 | Form mặc định chế độ thí nghiệm (blueprint + nhiều CSV, chọn agent thi công/review, bộ mẫu Olist review-risk 8.000 đơn); thẻ kế hoạch thí nghiệm; trang kết quả: gợi ý có lý do, bảng metric có thanh, cảnh báo dữ liệu, báo cáo review, chọn phương án → ghi `selectedVariant` vào manifest bàn giao |
 
 ### Bài học từ chạy live (Olist, `gpt-6-luna` qua 9router)
 
@@ -140,6 +140,35 @@ Thứ tự đề xuất: (1) thu nhỏ dữ liệu có ghi rõ + giới hạn tu
 2. Lệch lớp nặng nhưng học được (<1% lớp thiểu số) chỉ là cảnh báo; chặn cứng khi một lớp có dưới 5 mẫu.
 3. Reviewer phải biết hợp đồng đánh giá của Anvil (code không tính metric test) và không được chặn yêu cầu blueprint; nếu không sẽ dao động giữa các bản sửa.
 4. Cấu hình model 9router ở tài liệu 12 (`contextWindow 32000`, `maxTokens 2048`) quá nhỏ cho thi công (prompt ~30k token, đầu ra cả codebase); lần chạy live dùng bản sao cấu hình với 200k/32k.
+
+
+### Lần chạy thành công đầu tiên (script, 26/10, dữ liệu Olist đầy đủ)
+
+Blueprint `review-risk-blueprint.md`, 5 bảng Olist gốc, `gpt-6-luna` thi công và review, 7 lượt gọi LLM, ~25 phút. Anvil giữ 19.735/98.673 đơn để chấm, tỷ lệ lớp dương 14,7% ở cả train/test.
+
+| Phương án | ROC-AUC | PR-AUC | F1 | Recall | Thời gian |
+| --- | --- | --- | --- | --- | --- |
+| Logistic Regression (baseline) | 0,621 | 0,233 | 0,287 | 0,445 | 22 giây |
+| Random Forest | 0,772 | 0,467 | 0,495 | 0,482 | 682 giây |
+| XGBoost (gợi ý) | 0,774 | 0,471 | 0,481 | 0,591 | 31 giây |
+| LightGBM | 0,771 | 0,470 | 0,479 | 0,588 | 28 giây |
+
+Ba mô hình cây đạt ngưỡng ROC-AUC ≥ 0,70 của blueprint; baseline không đạt. Gợi ý XGBoost; LightGBM gần bằng và nhanh hơn. Review vòng 3 cho qua dù vòng 2 nêu `order_approved_at` có thể sau thời điểm đánh giá — review bằng LLM không ổn định tuyệt đối; bản sửa định tuyến lỗi về đúng giai đoạn (`d8fe6e9`) xử lý nguyên nhân agent không sửa `prepare_data.py`.
+
+
+### Nghiệm thu qua Web (26/10)
+
+- `e2e/system3-experiment-live.test.ts` (opt-in `ANVIL_LIVE_9ROUTER=true`) đạt **1/1 trong 17 phút** trên server cô lập (`ANVIL_HOME` tạm, runtime ML cài riêng, cổng 3191/5199): form mặc định → bộ mẫu Olist review-risk → Tạo và bắt đầu phân tích → Chấp nhận Bản hiểu → thẻ *Kế hoạch thí nghiệm* (4 phương án, ROC-AUC) → Phê duyệt và chạy → *Kết quả thí nghiệm* 4 hàng → chọn Logistic Regression (khác gợi ý) → tải gói. Manifest bàn giao ghi `selectedVariant: logistic_regression`; gói chứa code, dữ liệu agent đã thấy, nhãn giữ riêng, dự đoán, đánh giá, review, lock runtime và `reproduce.sh`.
+- Kết quả trên 8.000 đơn (1.600 dòng kiểm tra): Random Forest 0,772 (gợi ý, đạt ngưỡng), XGBoost 0,755, LightGBM 0,745, Logistic Regression 0,610; chấm lại độc lập khớp (0 mismatch).
+- E2E offline: minimal-ui 2/2, samples 3/3 (gồm test mới cho chế độ thí nghiệm), projects 3/3, source-intake 1/1.
+- `bun run validate` từng bước: check bundled/skill/schema/pi-vendor-map đạt; type-check đạt; Prettier đạt; lint **theo từng package** đạt (lint toàn repo trong một tiến trình hết heap trên VPS 4 GB); test: server 442, system3 142, web 473, workflows 1175, adapters/cli/core/git/isolation/paths đạt; providers đạt khi chạy test Claude/registry bằng user không phải root (guard UID 0 có sẵn, như kế hoạch 11 ghi nhận).
+
+### Còn lại
+
+- Trả lời câu hỏi của agent ngay trong UI (hiện phải cập nhật blueprint rồi phân tích/duyệt lại).
+- Chạy lại một phần (chỉ phương án đổi) và chọn tập con phương án trước khi duyệt.
+- Trần chi phí token; hàng đợi thí nghiệm giữa nhiều tiến trình Anvil.
+- Cập nhật tài liệu 12: giới hạn model 9router cho thi công (context ≥ 200k, output ≥ 32k).
 
 
 [← Mục lục](README.md) · [Kế hoạch 11 (nền UI và luồng)](11-simplification-and-core-flow-plan.md)

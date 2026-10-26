@@ -4108,7 +4108,11 @@ function NewProjectPage(): ReactElement {
                           ? (datasets[0]?.name ?? '')
                           : `${datasets.length.toString()} bảng CSV`}
                       </strong>
-                      <small>{datasets.map(file => file.name).join(', ')}</small>
+                      <small>
+                        {datasets.length === 1
+                          ? 'Dataset CSV'
+                          : datasets.map(file => file.name).join(', ')}
+                      </small>
                     </span>
                   </div>
                 </div>

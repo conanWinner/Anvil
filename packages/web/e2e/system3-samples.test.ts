@@ -64,8 +64,8 @@ test('selects the Olist comparison sample and uploads pinned sources without cal
   await page.getByRole('button', { name: 'Dùng bộ mẫu Olist' }).focus();
   await page.keyboard.press('Enter');
   await expect(page.getByRole('status')).toContainText('Đã chọn bộ mẫu');
-  await expect(page.getByRole('link', { name: /customer-summary-blueprint\.md/u })).toBeVisible();
-  await expect(page.getByRole('link', { name: /olist-customers-sample.csv/u })).toBeVisible();
+  await expect(page.getByText('customer-summary-blueprint.md', { exact: true })).toBeVisible();
+  await expect(page.getByText('olist-customers-sample.csv', { exact: true })).toBeVisible();
   await expect(page.getByLabel('Tên dự án')).toHaveValue('Tổng hợp khách hàng Olist');
   await expect(page.getByLabel('Test Model A')).toBeChecked();
   await expect(page.getByLabel('Test Model B')).toBeChecked();
