@@ -1,6 +1,6 @@
 # Tài liệu Anvil
 
-Mục tiêu hiện tại: một bài toán, một bộ dữ liệu, nhiều LLM qua 9router; kết quả riêng được kiểm tra chung và có thể tải về chạy lại.
+Mục tiêu hiện tại: triển khai nhanh các phương án thí nghiệm do System 2 đề ra — agent viết code, chạy từng phương án trong sandbox, Anvil tự chấm, gợi ý và để người dùng chọn. Xem [kế hoạch 13](technical/13-experiment-execution-plan.md).
 
 ## Đọc để sử dụng và phát triển
 
@@ -9,11 +9,11 @@ Mục tiêu hiện tại: một bài toán, một bộ dữ liệu, nhiều LLM 
 | Khởi động Web/API                    | [README dự án](../README.md)                                                 |
 | Hiểu luồng, đầu vào và đầu ra        | [Tổng quan](1.%20Tổng%20quan%20hệ%20thống.md)                                |
 | Cấu hình model/gateway               | [9router qua Pi](technical/12-9router-setup.md)                              |
-| Cải thiện UI, biết đã làm gì/làm gì tiếp | [Kế hoạch hiện hành — 11](technical/11-simplification-and-core-flow-plan.md) |
+| Biết đã làm gì/làm gì tiếp | [Kế hoạch hiện hành — 13](technical/13-experiment-execution-plan.md); nền UI/luồng ở [11](technical/11-simplification-and-core-flow-plan.md) |
 | Tra một hoạt động cụ thể             | [6 Lifecycle Phase / 10 Lifecycle Activity](lifecycle_activity/README.md)    |
 | Sửa domain, API, UI hoặc persistence | [Mục lục kỹ thuật](technical/README.md)                                      |
 
-**11 là kế hoạch hiện hành và nơi ghi tiến độ/kiểm chứng.** Tổng quan giải thích sản phẩm; các spec mô tả thiết kế cần đạt. Chỉ code, test và kết quả chạy thật chứng minh một tính năng đã có.
+**13 là kế hoạch hiện hành và nơi ghi tiến độ/kiểm chứng; 11 giữ bằng chứng của luồng nền và chế độ so sánh LLM cũ.** Tổng quan giải thích sản phẩm; các spec mô tả thiết kế cần đạt. Chỉ code, test và kết quả chạy thật chứng minh một tính năng đã có.
 
 ## Tài liệu tham khảo
 

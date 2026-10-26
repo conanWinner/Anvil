@@ -6181,3 +6181,42 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+/* Full-width layout: content uses the whole viewport; only running text keeps a readable measure. */
+.system3-root .s3-main {
+  max-width: none;
+  padding: 24px clamp(16px, 3vw, 48px) 40px;
+}
+.system3-root .s3-nav {
+  padding: 10px clamp(16px, 3vw, 48px);
+}
+.system3-root .s3-home {
+  max-width: none;
+}
+.system3-root .s3-home .s3-grid {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr));
+}
+.system3-root .s3-create {
+  width: 100%;
+}
+.s3-create-head p,
+.s3-understanding-empty p,
+.s3-plan-summary-note {
+  max-width: 90ch;
+}
+@media (min-width: 1200px) {
+  .s3-create-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+    column-gap: 20px;
+  }
+  .s3-create-form > :not(.s3-create-section) {
+    grid-column: 1 / -1;
+  }
+  .s3-create-form > .s3-create-section {
+    height: 100%;
+  }
+  .s3-source-choice {
+    max-width: 960px;
+  }
+}
