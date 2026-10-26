@@ -7,7 +7,7 @@ Thank you for your interest in contributing to Anvil!
 1. Fork the repository
 2. Clone your fork
 3. Install dependencies: `bun install`
-4. Copy `.env.example` to `.env` and configure
+4. Configure your chosen provider; keep credentials in the process environment or `.anvil/.env` (see [environment file locations](packages/docs-web/src/content/docs/reference/configuration.md#env-file-locations))
 5. Start development: `bun run dev`
 
 ## Development Workflow

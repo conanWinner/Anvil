@@ -3,6 +3,7 @@ import {
   createSystem3Project as createSystem3ProjectRequest,
   getSystem3ProjectFlow,
   type System3OperationResponse,
+  type System3ProjectHistory,
   type System3ProjectFlowResponse,
 } from '@/lib/api';
 import type {
@@ -50,6 +51,48 @@ const emptyProject: System3Project = {
 
 let current = emptyProject;
 const listeners = new Set<() => void>();
+interface ExecutionRequestRecord {
+  idempotencyKey: string;
+  expectedVersion: number;
+}
+
+export function getExecutionRequest(
+  projectId: string,
+  compilationId: string,
+  expectedVersion: number
+): ExecutionRequestRecord {
+  if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1) {
+    throw new Error('Project version không hợp lệ. Tải lại project.');
+  }
+  // Keep the same request after success too: a repeated click replays its result.
+  const storageKey = `system3:execute:${projectId}:${compilationId}`;
+  try {
+    const existing = sessionStorage.getItem(storageKey);
+    if (existing !== null) {
+      const request: unknown = JSON.parse(existing);
+      if (
+        request === null ||
+        typeof request !== 'object' ||
+        !('idempotencyKey' in request) ||
+        typeof request.idempotencyKey !== 'string' ||
+        request.idempotencyKey.trim().length === 0 ||
+        !('expectedVersion' in request) ||
+        typeof request.expectedVersion !== 'number' ||
+        !Number.isSafeInteger(request.expectedVersion) ||
+        request.expectedVersion < 1
+      )
+        throw new Error('Invalid saved execution request');
+      return { idempotencyKey: request.idempotencyKey, expectedVersion: request.expectedVersion };
+    }
+    const request = { idempotencyKey: crypto.randomUUID(), expectedVersion };
+    sessionStorage.setItem(storageKey, JSON.stringify(request));
+    return request;
+  } catch {
+    throw new Error(
+      'Không thể đọc hoặc lưu request chống chạy trùng. Kiểm tra lưu trữ phiên và trạng thái project trước khi thử lại.'
+    );
+  }
+}
 
 function publish(next: System3Project): void {
   current = next;
@@ -110,6 +153,9 @@ function compilationSummary(
     affectedPhases,
     skippedPhases,
     reusedArtifactCount: reusedArtifacts.length,
+    ...(compilation.plan.modelComparison === undefined
+      ? {}
+      : { modelComparison: compilation.plan.modelComparison }),
   };
 }
 
@@ -147,7 +193,8 @@ function toSource(
 function toProject(
   flow: System3ProjectFlowResponse,
   intakeReports: readonly System3SourceIntakeReportView[] = [],
-  intakeGate: System3IntakeGate = emptyProject.intakeGate
+  intakeGate: System3IntakeGate = emptyProject.intakeGate,
+  operation?: System3Project['operation']
 ): System3Project {
   const latestSourceVersion = new Map<string, number>();
   for (const source of flow.sources) {
@@ -209,12 +256,17 @@ function toProject(
           workflowRunId: flow.verification.workflowRunId,
           status: flow.verification.status,
           error: flow.verification.error,
+          modelReports: flow.verification.evidenceMap?.models ?? [],
         }
       : undefined,
-    operation:
-      current.id === flow.project.id && current.execution?.id === flow.execution?.id
-        ? current.operation
-        : undefined,
+    operation: operation
+      ? {
+          id: operation.id,
+          type: operation.type,
+          status: operation.status,
+          error: operation.error,
+        }
+      : undefined,
     evidence:
       current.id === flow.project.id && current.execution?.id === flow.execution?.id
         ? current.evidence
@@ -410,7 +462,94 @@ async function loadIntakeGate(projectId: string): Promise<System3IntakeGate> {
   return (await response.json()) as System3IntakeGate;
 }
 
-async function runProjectOperation(path: string, expectedVersion: number): Promise<void> {
+async function loadProjectOperations(
+  projectId: string,
+  signal?: AbortSignal
+): Promise<System3OperationResponse[]> {
+  const response = await fetch(`/api/system3/projects/${encodeURIComponent(projectId)}/history`, {
+    signal,
+  });
+  if (!response.ok) {
+    throw new Error(
+      await errorMessage(response, `Không thể tải operation history (${response.status})`)
+    );
+  }
+  const history = (await response.json()) as System3ProjectHistory;
+  return history.operations;
+}
+
+async function loadOperationProjection(
+  operationId: string,
+  signal?: AbortSignal
+): Promise<System3OperationResponse> {
+  const response = await fetch(`/api/system3/operations/${encodeURIComponent(operationId)}`, {
+    signal,
+  });
+  if (!response.ok) {
+    throw new Error(await errorMessage(response, `Không thể tải operation (${response.status})`));
+  }
+  return (await response.json()) as System3OperationResponse;
+}
+
+function isOperationPending(operation: System3OperationResponse): boolean {
+  return ['accepted', 'running'].includes(operation.status);
+}
+
+export function latestProjectOperation(
+  operations: readonly System3OperationResponse[]
+): System3OperationResponse | undefined {
+  return operations.reduce<System3OperationResponse | undefined>(
+    (latest, operation) =>
+      latest === undefined ||
+      operation.createdAt > latest.createdAt ||
+      (operation.createdAt === latest.createdAt &&
+        (operation.projectVersion > latest.projectVersion ||
+          // Timestamps have second precision; several operations can share one.
+          (operation.projectVersion === latest.projectVersion &&
+            operation.updatedAt > latest.updatedAt)))
+        ? operation
+        : latest,
+    undefined
+  );
+}
+
+function waitForNextObservation(signal: AbortSignal, delay: number): Promise<void> {
+  return new Promise(resolve => {
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
+    const finish = (): void => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, delay);
+    signal.addEventListener('abort', finish, { once: true });
+  });
+}
+
+function waitUntilVisible(signal: AbortSignal): Promise<void> {
+  if (typeof document === 'undefined' || !document.hidden || signal.aborted)
+    return Promise.resolve();
+  return new Promise(resolve => {
+    const finish = (): void => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      signal.removeEventListener('abort', finish);
+      resolve();
+    };
+    const onVisibilityChange = (): void => {
+      if (!document.hidden) finish();
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    signal.addEventListener('abort', finish, { once: true });
+  });
+}
+
+async function startProjectOperation(
+  path: string,
+  expectedVersion: number
+): Promise<System3OperationResponse> {
   const response = await fetch(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
@@ -423,7 +562,12 @@ async function runProjectOperation(path: string, expectedVersion: number): Promi
   }
   const body = (await response.json()) as { operation: System3OperationResponse };
   publish({ ...current, operation: body.operation });
-  await watchOperation(body.operation.id);
+  return body.operation;
+}
+
+async function runProjectOperation(path: string, expectedVersion: number): Promise<void> {
+  const operation = await startProjectOperation(path, expectedVersion);
+  await watchOperation(operation.id);
 }
 
 export const system3Store = {
@@ -432,13 +576,63 @@ export const system3Store = {
     listeners.add(listener);
     return () => listeners.delete(listener);
   },
-  load: async (id: string): Promise<void> => {
-    const [flow, reports, intakeGate] = await Promise.all([
+  load: async (id: string, signal?: AbortSignal): Promise<void> => {
+    const [flow, reports, intakeGate, operations] = await Promise.all([
       getSystem3ProjectFlow(id),
       loadSourceIntakeReports(id),
       loadIntakeGate(id),
+      loadProjectOperations(id, signal),
     ]);
-    publish(toProject(flow, reports, intakeGate));
+    if (signal?.aborted) return;
+    const latest = latestProjectOperation(operations);
+    let operation = latest;
+    if (latest && (isOperationPending(latest) || latest.status === 'unknown')) {
+      try {
+        operation = await loadOperationProjection(latest.id, signal);
+      } catch (error) {
+        if (signal?.aborted) return;
+        throw error;
+      }
+    }
+    if (signal?.aborted) return;
+    publish(toProject(flow, reports, intakeGate, operation));
+  },
+  watchOperations: async (
+    projectId: string,
+    signal: AbortSignal,
+    onError: (message: string | null) => void
+  ): Promise<void> => {
+    let observedId = current.id === projectId ? current.operation?.id : undefined;
+    let observedStatus = current.id === projectId ? current.operation?.status : undefined;
+    while (!signal.aborted) {
+      await waitUntilVisible(signal);
+      if (signal.aborted) return;
+      let delay = 5000;
+      try {
+        const operations = await loadProjectOperations(projectId, signal);
+        if (signal.aborted) return;
+        const latest = latestProjectOperation(operations);
+        if (latest) {
+          if (isOperationPending(latest)) delay = 1500;
+          const operation =
+            isOperationPending(latest) || latest.status === 'unknown'
+              ? await loadOperationProjection(latest.id, signal)
+              : latest;
+          if (signal.aborted) return;
+          if (latest.id !== observedId || operation.status !== observedStatus) {
+            await system3Store.load(projectId, signal);
+            if (signal.aborted) return;
+            observedId = latest.id;
+            observedStatus = current.operation?.status;
+          }
+        }
+        onError(null);
+      } catch (error) {
+        if (signal.aborted) return;
+        onError(error instanceof Error ? error.message : 'Không thể theo dõi operation');
+      }
+      await waitForNextObservation(signal, delay);
+    }
   },
   createProject: async (name: string, description: string): Promise<string> => {
     const project = await createSystem3ProjectRequest({
@@ -547,6 +741,31 @@ export const system3Store = {
       project.version
     );
   },
+  /**
+   * OP-00/OP-01 settle asynchronously after an upload. Wait for the gate; returns false as soon as
+   * intake reports a failure that needs the user, or when the wait times out.
+   */
+  waitForIntakeGate: async (timeoutMs: number): Promise<boolean> => {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const gate = current.intakeGate;
+      if (gate.ready) return true;
+      const failed =
+        gate.changeDetection.some(item => item.status === 'failed') ||
+        gate.recoveries.some(item => item.status === 'failed');
+      if (failed || Date.now() >= deadline) return false;
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      await system3Store.load(current.id);
+    }
+  },
+  /** Starts TW-02 and returns once the server accepted it; the workspace poller observes progress. */
+  startAnalysis: async (): Promise<void> => {
+    const project = current;
+    await startProjectOperation(
+      `/api/system3/projects/${project.id}/knowledge-snapshots`,
+      project.version
+    );
+  },
   getUnderstandingView: async (): Promise<System3UnderstandingView> => {
     const response = await fetch(
       `/api/system3/projects/${encodeURIComponent(current.id)}/phases/understanding/view`
@@ -608,7 +827,14 @@ export const system3Store = {
       throw new Error(
         await errorMessage(response, `Không thể cập nhật decision (${response.status})`)
       );
-    publish(toProject((await response.json()) as System3ProjectFlowResponse));
+    publish(
+      toProject(
+        (await response.json()) as System3ProjectFlowResponse,
+        project.intakeReports,
+        project.intakeGate,
+        project.operation
+      )
+    );
   },
   runReadiness: async (): Promise<void> => {
     const project = current;
@@ -646,6 +872,36 @@ export const system3Store = {
     });
     if (!response.ok) {
       throw new Error(await errorMessage(response, `Không thể execute plan (${response.status})`));
+    }
+    const body = (await response.json()) as {
+      operation: System3OperationResponse;
+      execution: System3Project['execution'];
+    };
+    publish({ ...project, operation: body.operation, execution: body.execution });
+    await watchOperation(body.operation.id);
+    await watchAutomaticVerification(body.operation.id);
+  },
+  approveAndExecute: async (): Promise<void> => {
+    const project = current;
+    if (!project.compilationId) throw new Error('Compile preview trước khi approve');
+    const request = getExecutionRequest(project.id, project.compilationId, project.version);
+    const response = await fetch(`/api/system3/projects/${project.id}/executions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': request.idempotencyKey },
+      body: JSON.stringify({
+        compilationId: project.compilationId,
+        expectedVersion: request.expectedVersion,
+      }),
+    });
+    if (!response.ok) {
+      if (response.status === 409) {
+        throw new Error(
+          'Project hoặc plan đã thay đổi. Tải lại project để kiểm tra basis hiện tại; chỉ chạy lại sau khi review một plan mới.'
+        );
+      }
+      throw new Error(
+        await errorMessage(response, `Không thể phê duyệt và chạy (${response.status})`)
+      );
     }
     const body = (await response.json()) as {
       operation: System3OperationResponse;

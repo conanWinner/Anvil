@@ -54,7 +54,7 @@ Anvil ships with ready-to-use workflows that cover common coding tasks. You do n
 | `anvil-remotion-generate` | Generate or modify Remotion video compositions with AI |
 | `anvil-resolve-conflicts` | Detect and resolve merge conflicts in PRs |
 
-For the full list with descriptions, see the [Available Workflows table](/getting-started/overview/#available-workflows) in the Overview.
+Run `anvil workflow list` to inspect the workflows installed in your environment, including repository-local overrides.
 
 To customize any bundled workflow, copy it from `.anvil/workflows/defaults/` into your project's `.anvil/workflows/` and modify it -- same-named files override the defaults.
 

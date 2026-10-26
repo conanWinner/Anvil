@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { blueprintAnalysisV2Schema, type BlueprintAnalysis } from '../contracts';
 import { parseUnderstandingMarkdown, markComponent } from './document-index';
 import { profileDatasetCsvStream } from './dataset-profiler';
+import { modelComparisonConfigSchema, type ModelComparisonConfig } from '../model-comparison';
 import { extractBlueprintFromIndex, type BlueprintExtractionResult } from './extractors';
 import { readUnderstandingPdf, UNDERSTANDING_PDF_PARSER_VERSION } from './pdf-layout-reader';
 import { evaluateUnderstandingQuality } from './quality';
@@ -225,6 +226,7 @@ function unsupportedSourceIssue(source: UnderstandingSourceDescriptor): Understa
 function datasetUnderstanding(input: {
   extraction: BlueprintExtractionResult;
   profile: Awaited<ReturnType<typeof profileDatasetCsvStream>> | null;
+  modelComparison?: ModelComparisonConfig;
 }): DatasetUnderstanding {
   const issues: UnderstandingIssue[] = [];
   if (input.profile === null) {
@@ -237,7 +239,10 @@ function datasetUnderstanding(input: {
     };
   }
   const declaration = input.extraction.datasetDeclaration;
-  if (declaration?.targetColumn === null || declaration === null) {
+  if (
+    input.modelComparison === undefined &&
+    (declaration?.targetColumn === null || declaration === null)
+  ) {
     issues.push(
       datasetIssue({
         key: 'target-not-declared',
@@ -253,7 +258,7 @@ function datasetUnderstanding(input: {
         sourcePointers: declaration?.sourcePointers ?? [],
       })
     );
-  } else if (!input.profile.targetExists) {
+  } else if (input.modelComparison === undefined && declaration && !input.profile.targetExists) {
     issues.push(
       datasetIssue({
         key: `missing-target:${declaration.targetColumn}`,
@@ -531,6 +536,7 @@ async function parseBlueprint(input: {
 export async function understandProjectSources(input: {
   sources: readonly PinnedUnderstandingSource[];
   datasetSource?: StreamedPinnedUnderstandingSource;
+  modelComparison?: ModelComparisonConfig;
   previousAnalysis?: BlueprintAnalysis | null;
   semanticFallback?: UnderstandingSemanticFallback;
   signal?: AbortSignal;
@@ -608,7 +614,14 @@ export async function understandProjectSources(input: {
           signal: input.signal,
         })
       : null;
-  const datasetResult = datasetUnderstanding({ extraction: parsed.extraction, profile });
+  const modelComparison = input.modelComparison
+    ? modelComparisonConfigSchema.parse(input.modelComparison)
+    : undefined;
+  const datasetResult = datasetUnderstanding({
+    extraction: parsed.extraction,
+    profile,
+    ...(modelComparison ? { modelComparison } : {}),
+  });
   datasetResult.issues.push(
     ...supplementalIssues,
     ...unsupportedSupplementalIssues,

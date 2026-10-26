@@ -10633,6 +10633,15 @@ export interface components {
         /** Format: uuid */
         knowledgeSnapshotId: string;
         plan: {
+          modelComparison?: {
+            /** @enum {number} */
+            schemaVersion: 1;
+            models: string[];
+            prompt: string;
+            harness: string;
+            requirementIds: string[];
+          };
+        } & {
           [key: string]: unknown;
         };
         definitionHash: string;
@@ -10686,9 +10695,35 @@ export interface components {
         status: 'accepted' | 'running' | 'completed' | 'failed';
         validatorVersion: string;
         basisHash: string;
-        evidenceMap: {
-          [key: string]: unknown;
-        } | null;
+        evidenceMap:
+          | ({
+              models?: {
+                runId: string;
+                model: string;
+                inputHash: string;
+                promptHash: string;
+                codeHash: string | null;
+                outputHash: string | null;
+                harnessHash: string;
+                /** @enum {string} */
+                status: 'completed' | 'failed' | 'cancelled';
+                error: string | null;
+                usage: {
+                  /** @enum {string} */
+                  status: 'unknown';
+                };
+                checks:
+                  | {
+                      requirementId: string;
+                      passed: boolean;
+                      detail: string;
+                    }[]
+                  | null;
+              }[];
+            } & {
+              [key: string]: unknown;
+            })
+          | null;
         gate: {
           [key: string]: unknown;
         } | null;
@@ -11234,6 +11269,15 @@ export interface components {
       /** Format: uuid */
       knowledgeSnapshotId: string;
       plan: {
+        modelComparison?: {
+          /** @enum {number} */
+          schemaVersion: 1;
+          models: string[];
+          prompt: string;
+          harness: string;
+          requirementIds: string[];
+        };
+      } & {
         [key: string]: unknown;
       };
       definitionHash: string;
@@ -11445,9 +11489,35 @@ export interface components {
       runtimeBindings: {
         [key: string]: unknown;
       } | null;
-      evidenceMap: {
-        [key: string]: unknown;
-      } | null;
+      evidenceMap:
+        | ({
+            models?: {
+              runId: string;
+              model: string;
+              inputHash: string;
+              promptHash: string;
+              codeHash: string | null;
+              outputHash: string | null;
+              harnessHash: string;
+              /** @enum {string} */
+              status: 'completed' | 'failed' | 'cancelled';
+              error: string | null;
+              usage: {
+                /** @enum {string} */
+                status: 'unknown';
+              };
+              checks:
+                | {
+                    requirementId: string;
+                    passed: boolean;
+                    detail: string;
+                  }[]
+                | null;
+            }[];
+          } & {
+            [key: string]: unknown;
+          })
+        | null;
       gate: {
         [key: string]: unknown;
       } | null;
@@ -12200,11 +12270,17 @@ export interface components {
       compilationId: string;
       expectedVersion: number;
     };
-    ExecuteSystem3ProjectBody: {
-      /** Format: uuid */
-      approvalId: string;
-      expectedVersion: number;
-    };
+    ExecuteSystem3ProjectBody:
+      | {
+          /** Format: uuid */
+          approvalId: string;
+          expectedVersion: number;
+        }
+      | {
+          /** Format: uuid */
+          compilationId: string;
+          expectedVersion: number;
+        };
     StartSystem3VerificationBody: {
       expectedVersion: number;
     };

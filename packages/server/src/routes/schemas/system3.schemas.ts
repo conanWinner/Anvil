@@ -20,6 +20,8 @@ import {
   system3LifecycleAttemptRunStatusSchema,
   system3LifecycleAttemptScopeSchema,
   system3LifecycleAttemptStatusSchema,
+  modelComparisonConfigSchema,
+  modelComparisonModelReportSchema,
 } from '@anvil/system3';
 import { errorSchema } from './common.schemas';
 
@@ -434,7 +436,9 @@ export const system3FlowSchema = z
         id: z.string().uuid(),
         projectId: z.string().uuid(),
         knowledgeSnapshotId: z.string().uuid(),
-        plan: z.record(z.string(), z.unknown()),
+        plan: z
+          .object({ modelComparison: modelComparisonConfigSchema.optional() })
+          .catchall(z.unknown()),
         definitionHash: z.string(),
         capabilityRegistryHash: z.string(),
         createdAt: z.string().datetime(),
@@ -473,7 +477,10 @@ export const system3FlowSchema = z
         status: z.enum(['accepted', 'running', 'completed', 'failed']),
         validatorVersion: z.string(),
         basisHash: z.string().startsWith('sha256:'),
-        evidenceMap: z.record(z.string(), z.unknown()).nullable(),
+        evidenceMap: z
+          .object({ models: z.array(modelComparisonModelReportSchema).optional() })
+          .catchall(z.unknown())
+          .nullable(),
         gate: z.record(z.string(), z.unknown()).nullable(),
         error: z.string().nullable(),
         createdAt: z.string().datetime(),
@@ -553,7 +560,13 @@ export const approveSystem3ProjectBodySchema = z
   .object({ compilationId: z.string().uuid(), expectedVersion: z.number().int().positive() })
   .openapi('ApproveSystem3ProjectBody');
 export const executeSystem3ProjectBodySchema = z
-  .object({ approvalId: z.string().uuid(), expectedVersion: z.number().int().positive() })
+  .union([
+    z.strictObject({ approvalId: z.string().uuid(), expectedVersion: z.number().int().positive() }),
+    z.strictObject({
+      compilationId: z.string().uuid(),
+      expectedVersion: z.number().int().positive(),
+    }),
+  ])
   .openapi('ExecuteSystem3ProjectBody');
 export const startSystem3VerificationBodySchema = z
   .object({ expectedVersion: z.number().int().positive() })
@@ -638,7 +651,10 @@ export const system3VerificationSchema = z
     bundleSnapshotId: z.string().uuid().nullable(),
     bundleHash: z.string().startsWith('sha256:').nullable(),
     runtimeBindings: z.record(z.string(), z.unknown()).nullable(),
-    evidenceMap: z.record(z.string(), z.unknown()).nullable(),
+    evidenceMap: z
+      .object({ models: z.array(modelComparisonModelReportSchema).optional() })
+      .catchall(z.unknown())
+      .nullable(),
     gate: z.record(z.string(), z.unknown()).nullable(),
     error: z.string().nullable(),
     createdAt: z.string().datetime(),
@@ -651,7 +667,9 @@ export const system3CompilationSchema = z
     id: z.string().uuid(),
     projectId: z.string().uuid(),
     knowledgeSnapshotId: z.string().uuid(),
-    plan: z.record(z.string(), z.unknown()),
+    plan: z
+      .object({ modelComparison: modelComparisonConfigSchema.optional() })
+      .catchall(z.unknown()),
     definitionHash: z.string().startsWith('sha256:'),
     capabilityRegistryHash: z.string().startsWith('sha256:'),
     createdAt: z.string().datetime(),

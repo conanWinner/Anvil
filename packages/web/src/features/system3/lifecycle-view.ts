@@ -155,7 +155,17 @@ export function buildLifecycleView(project: System3Project): readonly LifecycleP
     },
   ];
 
-  const understandingStatus = normalizeStatus(understanding?.status);
+  const backendUnderstandingStatus = normalizeStatus(understanding?.status);
+  // The backend phase stays not_started until a snapshot is activated; a running analysis or a
+  // candidate awaiting review must not be presented as "not started" (that invites a duplicate run).
+  const analysisInProgressOrAwaitingReview =
+    (backendUnderstandingStatus === 'not_started' || backendUnderstandingStatus === 'ready') &&
+    (project.stage === 'understanding' ||
+      (project.operation?.type === 'analyze' &&
+        (project.operation.status === 'accepted' || project.operation.status === 'running')));
+  const understandingStatus: PhaseStatus = analysisInProgressOrAwaitingReview
+    ? 'active'
+    : backendUnderstandingStatus;
   const understandingActivities: readonly LifecycleActivityView[] = [
     {
       id: 'TW-02',
@@ -169,9 +179,13 @@ export function buildLifecycleView(project: System3Project): readonly LifecycleP
           ? 'Knowledge Snapshot hiện hành đã được tạo.'
           : understandingStatus === 'stale'
             ? 'Nguồn đã đổi; bản hiểu dự án cần được tạo lại.'
-            : project.intakeGate.ready
-              ? 'Đầu vào đã sẵn sàng; chờ người dùng xác nhận bắt đầu.'
-              : 'Chờ hoàn tất phase Tiếp nhận.',
+            : analysisInProgressOrAwaitingReview
+              ? project.operation?.type === 'analyze' && project.operation.status !== 'succeeded'
+                ? 'Anvil đang phân tích các nguồn đã ghim.'
+                : 'Bản hiểu đã sẵn sàng; xem, trả lời câu hỏi và chấp nhận.'
+              : project.intakeGate.ready
+                ? 'Đầu vào đã sẵn sàng; chờ người dùng xác nhận bắt đầu.'
+                : 'Chờ hoàn tất phase Tiếp nhận.',
       input: 'Input Snapshot khóa đúng Source Version',
       output: 'Knowledge Snapshot, requirements, facts và Decisions',
       technicalWorkflow: understanding?.technicalWorkflow ?? 'system3-understand-project',
@@ -288,7 +302,7 @@ export function buildLifecycleView(project: System3Project): readonly LifecycleP
       input: 'Approval Manifest + project workspace cô lập',
       output: 'Execution artifacts và kết quả build/experiment',
       technicalWorkflow: 'system3-baseline-build + system3-baseline-experiment',
-      route: project.execution ? 'technical' : 'flow',
+      route: 'flow',
       workflowSteps: buildSections.flatMap(section => section.workflowSteps),
     },
   ];
@@ -422,4 +436,86 @@ export function buildLifecycleView(project: System3Project): readonly LifecycleP
 
 export function completedLifecyclePhaseCount(phases: readonly LifecyclePhaseView[]): number {
   return phases.filter(item => item.status === 'completed').length;
+}
+
+export type SuggestedLifecycleActivityReason =
+  | 'unknown_operation'
+  | 'active_operation'
+  | 'blocker'
+  | 'pending_decision'
+  | 'missing_data'
+  | 'understanding'
+  | 'approval'
+  | 'verification_results'
+  | 'next_activity';
+
+export interface SuggestedLifecycleActivity {
+  activityId: string;
+  reason: SuggestedLifecycleActivityReason;
+}
+
+const operationActivity: Partial<Record<NonNullable<System3Project['operation']>['type'], string>> =
+  {
+    source_intake: 'OP-00',
+    change_detection: 'OP-01',
+    analyze: 'TW-02',
+    activate_understanding: 'TW-02',
+    readiness: 'TW-03',
+    compile: 'OP-04',
+    execute: 'TW-06',
+    verify: 'TW-07',
+    delivery: 'TW-09',
+  };
+
+export function selectSuggestedLifecycleActivity(
+  project: System3Project,
+  lifecycle: readonly LifecyclePhaseView[] = buildLifecycleView(project)
+): SuggestedLifecycleActivity {
+  const activities = lifecycle.flatMap(item => item.activities);
+  const activity = (id: string): LifecycleActivityView => {
+    const found = activities.find(item => item.id === id);
+    if (found === undefined) throw new Error(`Missing canonical Lifecycle Activity: ${id}`);
+    return found;
+  };
+  const nextIncomplete = (): LifecycleActivityView =>
+    activities.find(item => item.status !== 'completed') ?? activities.at(-1) ?? activity('OP-00');
+
+  if (project.operation?.status === 'unknown') {
+    return {
+      activityId: activity(operationActivity[project.operation.type] ?? nextIncomplete().id).id,
+      reason: 'unknown_operation',
+    };
+  }
+  if (project.operation && ['accepted', 'running'].includes(project.operation.status)) {
+    return {
+      activityId: operationActivity[project.operation.type] ?? nextIncomplete().id,
+      reason: 'active_operation',
+    };
+  }
+
+  if (project.freshness !== 'current') {
+    return { activityId: 'OP-01', reason: 'blocker' };
+  }
+
+  if (project.decisions.some(item => item.status === 'pending')) {
+    return { activityId: 'TW-03', reason: 'pending_decision' };
+  }
+  if (project.readinessEvaluation?.status === 'data_required') {
+    return { activityId: 'TW-03', reason: 'missing_data' };
+  }
+
+  const blocker = activities.find(item => item.status === 'blocked' || item.status === 'stale');
+  if (blocker !== undefined) return { activityId: blocker.id, reason: 'blocker' };
+
+  const understanding = activity('TW-02');
+  if (project.intakeGate.ready && understanding.status !== 'completed') {
+    return { activityId: understanding.id, reason: 'understanding' };
+  }
+  if (project.planCompiled && !project.manifestApproved) {
+    return { activityId: 'OP-05', reason: 'approval' };
+  }
+  if ((project.verification?.modelReports.length ?? 0) > 0) {
+    return { activityId: 'TW-07', reason: 'verification_results' };
+  }
+  return { activityId: nextIncomplete().id, reason: 'next_activity' };
 }

@@ -2,6 +2,8 @@
 
 Phiên bản kế hoạch: **1 — 07/09/2026**. Trạng thái: **đã lập kế hoạch; chưa triển khai các task dưới đây**.
 
+> **Backlog cũ, đã thay bằng [kế hoạch 11](11-simplification-and-core-flow-plan.md).** Giữ để đối chiếu quyết định và baseline ngày 07/09/2026; trạng thái task bên dưới không phải tiến độ hiện tại.
+
 Đọc cùng [báo cáo hiện trạng và bằng chứng](08-product-readiness-audit.md). Tài liệu này dành cho tab **Sol medium** tiếp tục công việc; không cần gọi lại Astra. Không suy ra rằng lựa chọn model trong tài liệu tự thay đổi model của tab.
 
 ## 1. Mục tiêu và phạm vi

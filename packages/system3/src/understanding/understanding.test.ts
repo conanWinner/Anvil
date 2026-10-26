@@ -67,6 +67,71 @@ function source(input: {
 }
 
 describe('TW-02 structural understanding', () => {
+  test('pinned model comparison suppresses only the target-column Decision', async () => {
+    const blueprint = [
+      '# Customer summary',
+      '## 1. PROBLEM PROFILE',
+      '**Business Goal:** Summarize customers by state.',
+      '**Technical Objective:** Emit aggregate JSON.',
+      '### Data Profile',
+      '{"expected_columns":["customer_state","missing_column"]}',
+      '## 2. REQUIREMENTS CONTRACT',
+      '| ID | Type | Priority | Source | Requirement | Acceptance Criteria |',
+      '| --- | --- | --- | --- | --- | --- |',
+      '| FR-01 | FR | HIGH | sample | Aggregate by state. | Counts match CSV. |',
+      '## 3. HIGH-LEVEL PIPELINE',
+      'Read and aggregate rows. FR-01.',
+      '## 4. SELECTED TECHNOLOGY STACK',
+      '| Technology |',
+      '| --- |',
+      '| Python |',
+      '## 5. MODULAR DESIGN PACKAGE',
+      '### DM-01 — Aggregate rows',
+      'Group rows by state. FR-01.',
+      '## 6. EXECUTION BLUEPRINT',
+      '#### File: `solution.py`',
+      'Print JSON to stdout. FR-01.',
+    ].join('\n');
+    const dataset = source({
+      id: 'dataset',
+      kind: 'dataset',
+      filename: 'customers.csv',
+      mediaType: 'text/csv',
+      body: 'customer_unique_id,order_count,customer_state\na,2,SP\n',
+    });
+    const blueprintSource = source({ filename: 'blueprint.md', body: blueprint });
+    const modelComparison = {
+      schemaVersion: 1 as const,
+      models: ['router9/model-a', 'router9/model-b'],
+      prompt: 'Summarize customers by state.',
+      harness: 'print("checks")',
+      requirementIds: ['FR-01'],
+    };
+    const baseline = await understandProjectSources({
+      sources: [blueprintSource, dataset],
+    });
+    const comparison = await understandProjectSources({
+      sources: [blueprintSource, dataset],
+      modelComparison,
+    });
+
+    expect(
+      baseline.analysis.extractionQuality.issues.some(
+        issue => issue.decisionBinding?.kind === 'dataset_target_column'
+      )
+    ).toBe(true);
+    expect(comparison.analysis.targetDefinition).toBeNull();
+    expect(comparison.analysis.dataset?.targetColumn).toBeNull();
+    expect(
+      comparison.analysis.extractionQuality.issues.some(
+        issue => issue.decisionBinding?.kind === 'dataset_target_column'
+      )
+    ).toBe(false);
+    expect(comparison.analysis.datasetUnderstanding.issues.map(issue => issue.title)).toContain(
+      'Dataset thiếu cột được System 2 mô tả'
+    );
+  });
+
   test('extracts all six canonical System 2 chapters with complete coverage', async () => {
     const bytes = new Uint8Array(
       await readFile(new URL('../../../../docs/system_2/DESIGN_B_2.md', import.meta.url))

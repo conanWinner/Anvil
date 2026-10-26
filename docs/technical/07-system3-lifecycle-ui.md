@@ -170,8 +170,11 @@ thay vì bị xóa.
   xếp chồng hero lớn, thẻ metric, phase tab, activity card và resource tab trước nội dung chính.
 - Project context phải gọn; không lặp cùng trạng thái ở nhiều card. Phần đầu màn hình ưu tiên activity
   đang chọn, lý do bị chặn và một hành động tiếp theo rõ ràng.
-- Desktop dùng lifecycle rail dọc và activity workspace. Màn hình nhỏ chuyển rail thành dải cuộn
-  ngang; không bắt người dùng cuộn qua toàn bộ 10 activity trước khi thấy nội dung đang chọn.
+- Workspace ưu tiên activity cần xử lý hoặc kết quả Verify hiện hành. Rail nằm trong disclosure
+  **Chi tiết vòng đời**, mặc định thu gọn; mở ra vẫn đúng 6 phase/10 activity và là trục điều hướng
+  duy nhất. Desktop dùng rail dọc, mobile cuộn ngang; workspace được đặt trước rail trong thứ tự đọc.
+- Polling không đổi lựa chọn activity chủ động hoặc đóng resource đang xem. Blocker, operation đang
+  chạy/unknown và basis stale được ưu tiên khi chọn mặc định; Verify xong mở kết quả, không tự mở OP-08.
 - Project chưa đạt Intake Gate phải dẫn người dùng về trang Nguồn đầu vào.
 - Flow luôn cho phép mở activity OP-00 và OP-01 để xem chi tiết.
 - Sau OP-01, TW-02 chỉ bắt đầu khi người dùng chủ động bấm tiếp tục.
@@ -207,7 +210,9 @@ thay vì bị xóa.
 
 ## 10. Điều hướng cấp project
 
-Điều hướng System 3 dùng các khu vực theo mục đích của người dùng:
+Điểm vào `/` mở danh sách dự án; `/console` vẫn giữ cho công cụ runtime cũ. Đường sử dụng chính là
+**Workspace dự án** với một trạng thái, một hành động tiếp theo và kết quả model. Project Lifecycle
+vẫn đúng 6 phase/10 activity trong phần chi tiết. Các khu vực sau là lối phụ trong **Chi tiết khác**:
 
 1. **Tổng quan** — trạng thái hiện tại và bước nên làm tiếp.
 2. **Vòng đời dự án** — 6 phase, 10 activity và resource xem tại chỗ.
@@ -216,7 +221,29 @@ thay vì bị xóa.
 5. **Quyết định & Phê duyệt** — Decision, Execution Plan và Approval Manifest.
 6. **Bàn giao** — yêu cầu bàn giao, manifest và package.
 
-Technical Console là lớp riêng cho Workflow Run, node, event, log và raw I/O; không thay thế các khu
-vực sản phẩm trên.
+Các URL cũ vẫn hoạt động để giữ bookmark và liên kết hiện có. Technical Console được đặt trong
+**Chi tiết khác** và đổi nhãn thành **Chi tiết kỹ thuật**. Nó phục vụ Workflow Run, node, event, log
+và raw I/O; không phải nơi bắt đầu hoặc tiếp tục Project Lifecycle.
+
+## 11. Tạo project và thao tác nâng cao
+
+Tạo project dùng một form duy nhất gồm tên, blueprint Markdown bắt buộc và dataset CSV tùy chọn.
+Nhãn chính là **Mô tả bài toán (.md)**. Chọn 2–4 LLM qua 9router là nội dung chính cho project mới,
+dùng tên từ Pi catalog; nhập ref thủ công nằm trong cấu hình nâng cao. Bộ mẫu chạy code cung cấp cả
+prompt, requirement IDs và harness đã kiểm tra, nêu đúng phạm vi bài tập. Tệp riêng vẫn cần cấu hình
+bộ kiểm tra hợp lệ; không tự đặt tiêu chí hoặc âm thầm chuyển sang baseline khi thiếu cấu hình.
+Ràng buộc ít dùng nằm trong disclosure; không có bước xác nhận riêng để lặp cùng thông tin.
+Sau khi tạo và tiếp nhận nguồn, mở workspace Lifecycle. Nếu tiếp nhận lỗi sau khi project được tạo,
+UI phải giữ project có thể truy cập được để người dùng sửa nguồn hoặc thử lại; không che lỗi sau
+thành công một phần.
+
+Chọn mẫu/tạo project không tự gọi LLM. **Bắt đầu phân tích**, chấp nhận Bản hiểu, phê duyệt kế hoạch
+và yêu cầu bàn giao vẫn là hành động chủ động. Kết quả hiện một hàng mỗi model với trạng thái,
+checks và nút xem code/output inline; completed không đồng nghĩa kiểm tra đạt. Usage thiếu ghi chưa
+xác định. Attempt record thiếu không được trình bày thành chưa từng thực thi khi đã có execution.
+
+Lịch sử lượt chạy, tùy chọn chạy lại và thao tác dọn lượt đã kết thúc nằm trong disclosure **Lịch sử
+và chạy lại**. Hành động tiếp tục lượt đang chờ vẫn hiển thị cạnh trạng thái. Không xóa attempt,
+worktree hay artifact khi chỉ thu gọn giao diện.
 
 [← Tài liệu kỹ thuật](README.md) · [OP-00 Source Intake](../lifecycle_activity/00-source-intake.md)

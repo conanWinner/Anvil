@@ -1,4 +1,12 @@
+import type { System3ProjectFlowResponse } from '@/lib/api';
 import type { paths } from '../../lib/api.generated';
+
+export type System3ModelComparisonConfig = NonNullable<
+  NonNullable<System3ProjectFlowResponse['compilation']>['plan']['modelComparison']
+>;
+export type System3ModelComparisonModelReport = NonNullable<
+  NonNullable<NonNullable<System3ProjectFlowResponse['verification']>['evidenceMap']>['models']
+>[number];
 
 export type PhaseStatus =
   | 'completed'
@@ -197,6 +205,7 @@ export interface System3Verification {
   workflowRunId: string;
   status: 'accepted' | 'running' | 'completed' | 'failed';
   error: string | null;
+  modelReports: readonly System3ModelComparisonModelReport[];
 }
 
 export interface System3Delivery {
@@ -328,6 +337,7 @@ export interface System3Project {
     affectedPhases: readonly string[];
     skippedPhases: readonly string[];
     reusedArtifactCount: number;
+    modelComparison?: System3ModelComparisonConfig;
   };
   deliveryReady: boolean;
   deliveryAvailable: boolean;

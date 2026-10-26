@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { buildLifecycleView } from './lifecycle-view';
+import { buildLifecycleView, selectSuggestedLifecycleActivity } from './lifecycle-view';
 import type { System3Project } from './types';
 
 function projectFixture(overrides: Partial<System3Project> = {}): System3Project {
@@ -183,5 +183,197 @@ describe('buildLifecycleView', () => {
       route: 'sources',
       statusDetail: 'Cần liên kết và kiểm tra Dataset thật trước công việc phụ thuộc dữ liệu.',
     });
+  });
+
+  test('selects pending decisions and missing data ahead of the next incomplete activity', () => {
+    const decision = projectFixture({
+      intakeGate: {
+        ready: true,
+        blueprintReady: true,
+        activeSourceCount: 1,
+        changeDetection: [],
+        recoveries: [],
+        blockingReasons: [],
+      },
+      decisions: [
+        {
+          id: 'decision-1',
+          title: 'Target',
+          question: 'Choose target',
+          why: '',
+          recommendation: '',
+          options: ['a', 'b'],
+          binding: null,
+          affectedPhases: [],
+          status: 'pending',
+          answer: null,
+        },
+      ],
+    });
+    expect(selectSuggestedLifecycleActivity(decision)).toEqual({
+      activityId: 'TW-03',
+      reason: 'pending_decision',
+    });
+    expect(
+      selectSuggestedLifecycleActivity(
+        projectFixture({
+          readinessEvaluation: {
+            status: 'data_required',
+            blockerReasons: ['Dataset required'],
+            nextAction: 'link_dataset',
+            checks: [
+              { id: 'dataset_profile', label: 'Dataset', status: 'failed', message: 'Required' },
+            ],
+          },
+        })
+      )
+    ).toEqual({ activityId: 'TW-03', reason: 'missing_data' });
+  });
+
+  test('unknown and active operations take precedence without changing their state', () => {
+    const unknown = projectFixture({
+      operation: { id: 'op-1', type: 'execute', status: 'unknown', error: null },
+      execution: { id: 'execution-1', workflowRunId: 'run-1', status: 'running', error: null },
+    });
+    expect(selectSuggestedLifecycleActivity(unknown)).toEqual({
+      activityId: 'TW-06',
+      reason: 'unknown_operation',
+    });
+    expect(unknown.operation?.status).toBe('unknown');
+    expect(
+      selectSuggestedLifecycleActivity(
+        projectFixture({
+          operation: { id: 'op-unknown-analyze', type: 'analyze', status: 'unknown', error: null },
+        })
+      )
+    ).toEqual({ activityId: 'TW-02', reason: 'unknown_operation' });
+    expect(
+      selectSuggestedLifecycleActivity(
+        projectFixture({
+          operation: { id: 'op-2', type: 'verify', status: 'running', error: null },
+        })
+      )
+    ).toEqual({ activityId: 'TW-07', reason: 'active_operation' });
+  });
+
+  test('selects stale blockers, approval, and current comparison results deterministically', () => {
+    const staleProject = projectFixture({
+      phases: projectFixture().phases.map(item =>
+        item.id === 'understanding' ? { ...item, status: 'stale' as const } : item
+      ),
+      intakeGate: {
+        ready: true,
+        blueprintReady: true,
+        activeSourceCount: 1,
+        changeDetection: [],
+        recoveries: [],
+        blockingReasons: [],
+      },
+    });
+    expect(selectSuggestedLifecycleActivity(staleProject)).toEqual({
+      activityId: 'TW-02',
+      reason: 'blocker',
+    });
+    expect(
+      selectSuggestedLifecycleActivity(
+        projectFixture({
+          planCompiled: true,
+        })
+      )
+    ).toEqual({ activityId: 'OP-05', reason: 'approval' });
+    const verifiedComparison = projectFixture({
+      phases: projectFixture().phases.map(item =>
+        item.id === 'understanding' ? { ...item, status: 'completed' as const } : item
+      ),
+      verification: {
+        id: 'verification-1',
+        workflowRunId: 'run-1',
+        status: 'completed',
+        error: null,
+        modelReports: [
+          {
+            runId: 'run-1',
+            model: 'router9/model-a',
+            inputHash: 'input',
+            promptHash: 'prompt',
+            codeHash: null,
+            outputHash: null,
+            harnessHash: 'harness',
+            status: 'completed',
+            error: null,
+            usage: { status: 'unknown' },
+            checks: [],
+          },
+        ],
+      },
+      deliveryReady: true,
+    });
+    expect(selectSuggestedLifecycleActivity(verifiedComparison)).toEqual({
+      activityId: 'TW-07',
+      reason: 'verification_results',
+    });
+    expect(
+      buildLifecycleView(verifiedComparison)
+        .flatMap(item => item.activities)
+        .find(item => item.id === 'TW-06')?.route
+    ).toBe('flow');
+  });
+
+  test('selects failed readiness as a blocker without presenting it as complete', () => {
+    const failed = projectFixture({
+      readinessEvaluation: {
+        status: 'blocked',
+        blockerReasons: ['Runtime chưa sẵn sàng'],
+        nextAction: 'configure_runtime',
+        checks: [{ id: 'runtime', label: 'Runtime', status: 'failed', message: 'Unavailable' }],
+      },
+    });
+    expect(selectSuggestedLifecycleActivity(failed)).toEqual({
+      activityId: 'TW-03',
+      reason: 'blocker',
+    });
+    expect(
+      buildLifecycleView(failed)
+        .flatMap(item => item.activities)
+        .find(item => item.id === 'TW-03')?.status
+    ).toBe('blocked');
+  });
+
+  test('routes stale project inputs to change detection instead of current results', () => {
+    const stale = projectFixture({
+      freshness: 'partially_stale',
+      verification: {
+        id: 'verification-1',
+        workflowRunId: 'run-1',
+        status: 'completed',
+        error: null,
+        modelReports: [
+          {
+            runId: 'run-1',
+            model: 'router9/model-a',
+            inputHash: 'input',
+            promptHash: 'prompt',
+            codeHash: null,
+            outputHash: null,
+            harnessHash: 'harness',
+            status: 'completed',
+            error: null,
+            usage: { status: 'unknown' },
+            checks: [],
+          },
+        ],
+      },
+    });
+    expect(selectSuggestedLifecycleActivity(stale)).toEqual({
+      activityId: 'OP-01',
+      reason: 'blocker',
+    });
+  });
+
+  test('does not present a candidate awaiting review as not started', () => {
+    const project = projectFixture({ stage: 'understanding' });
+    const understanding = buildLifecycleView(project).find(phase => phase.id === 'understanding');
+    expect(understanding?.activities[0]?.status).toBe('active');
+    expect(understanding?.activities[0]?.statusDetail).toContain('chấp nhận');
   });
 });

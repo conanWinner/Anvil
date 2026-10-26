@@ -27,6 +27,7 @@ export type System3ProjectResponse = components['schemas']['System3Project'];
 export type System3ProjectFlowResponse = components['schemas']['System3ProjectFlow'];
 export type CreateSystem3ProjectBody = components['schemas']['CreateSystem3ProjectBody'];
 export type System3OperationResponse = components['schemas']['System3Operation'];
+export type System3ProjectHistory = components['schemas']['System3ProjectHistory'];
 
 export type System3LifecycleAttemptActivity =
   | 'OP-00'
@@ -114,6 +115,15 @@ async function fetchJSON<T>(url: string, options?: RequestInit): Promise<T> {
     });
   }
   return res.json() as Promise<T>;
+}
+
+export type PiModelInfo = components['schemas']['PiModelInfo'];
+
+export async function listPiModels(signal?: AbortSignal): Promise<PiModelInfo[]> {
+  const response = await fetchJSON<{ models: PiModelInfo[] }>('/api/providers/pi/models', {
+    signal,
+  });
+  return response.models;
 }
 
 export async function listSystem3Projects(): Promise<System3ProjectResponse[]> {

@@ -1,5 +1,6 @@
 import { z } from '@hono/zod-openapi';
 import { system3LifecycleActivityIdSchema, system3ResourceTypeSchema } from './activity-resources';
+import { modelComparisonConfigSchema } from './model-comparison';
 import {
   codeDesignItemSchema,
   datasetUnderstandingSchema,
@@ -314,7 +315,7 @@ export const system3ReadinessEvaluationSchema = z.object({
 export type System3ReadinessEvaluation = z.infer<typeof system3ReadinessEvaluationSchema>;
 
 /** Immutable input contract accepted by OP-04. It exists only for a passed evaluation. */
-export const system3ReadinessContractBodySchema = z.object({
+const system3BaselineReadinessContractBodySchema = z.object({
   schemaVersion: z.literal(2),
   status: z.literal('passed'),
   knowledgeSnapshotId: z.string().uuid(),
@@ -327,6 +328,22 @@ export const system3ReadinessContractBodySchema = z.object({
   decisions: z.array(z.object({ id: z.string().min(1), answer: z.string().min(1) })),
   checks: z.array(system3ReadinessCheckSchema),
 });
+const system3ComparisonReadinessContractBodySchema = z.object({
+  schemaVersion: z.literal(3),
+  status: z.literal('passed'),
+  knowledgeSnapshotId: z.string().uuid(),
+  projectVersion: z.number().int().positive(),
+  requirementIds: z.array(z.string().min(1)).min(1),
+  datasetSourceVersionId: z.string().min(1),
+  runtime: z.object({ cpuOnly: z.boolean(), ramGb: z.number().int().positive() }),
+  decisions: z.array(z.object({ id: z.string().min(1), answer: z.string().min(1) })),
+  checks: z.array(system3ReadinessCheckSchema),
+  modelComparison: modelComparisonConfigSchema,
+});
+export const system3ReadinessContractBodySchema = z.union([
+  system3BaselineReadinessContractBodySchema,
+  system3ComparisonReadinessContractBodySchema,
+]);
 export type System3ReadinessContractBody = z.infer<typeof system3ReadinessContractBodySchema>;
 
 export const system3PhaseStatusSchema = z.enum([
@@ -416,6 +433,7 @@ export const system3ExecutionPlanSchema = z.object({
     sourceIds: z.array(z.string().uuid()).min(1),
     sourceHashes: z.array(z.string().startsWith('sha256:')).min(1),
   }),
+  modelComparison: modelComparisonConfigSchema.optional(),
   knowledgeSnapshotId: z.string().uuid(),
   /**
    * Readiness is an immutable domain contract, not an implicit side effect of

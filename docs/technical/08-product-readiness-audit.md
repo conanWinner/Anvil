@@ -1,5 +1,7 @@
 # Anvil — Báo cáo khả năng vận hành thực tế
 
+> **Audit lịch sử:** kết luận bên dưới chỉ áp dụng cho checkout ngày 07/09/2026. Hiện trạng và bằng chứng mới hơn nằm ở [kế hoạch 11](11-simplification-and-core-flow-plan.md).
+
 Ngày kiểm tra: **07/09/2026**. Phạm vi sâu: System 3; phạm vi nền tảng Anvil: cấu trúc, tích hợp và bộ test monorepo. Đây là **bằng chứng của checkout được kiểm tra**, không phải chứng nhận production hay kết luận rằng mọi adapter/provider đã được chạy thật.
 
 ## 1. Kết luận

@@ -273,7 +273,8 @@ test('OP-00 is immutable, idempotent, report-visible, and gates Understanding', 
   await expect(page.getByRole('button', { name: 'Xem chi tiết thay đổi' })).toBeFocused();
 
   await page.goto(`/console/projects/${project.id}/flow`);
-  await expect(page.getByRole('heading', { name: 'Vòng đời dự án' })).toBeVisible();
+  // The 6-phase / 10-activity rail lives in a collapsed disclosure on the workspace.
+  await page.getByText('Chi tiết vòng đời · 6 giai đoạn, 10 hoạt động', { exact: true }).click();
   await page.getByRole('button', { name: /OP-01.*Phát hiện thay đổi/u }).click();
   await expect(page.getByRole('heading', { name: 'Phát hiện thay đổi' })).toBeVisible();
   await expect(page.getByRole('button', { name: /Báo cáo ảnh hưởng hiện tại/u })).toHaveCount(1);

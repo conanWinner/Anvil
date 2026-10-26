@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import type { Page } from '@playwright/test';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
@@ -9,6 +10,84 @@ const execFileAsync = promisify(execFile);
 const blueprintPath = fileURLToPath(
   new URL('../../../docs/system_2/DESIGN_B_2.md', import.meta.url)
 );
+const liveComparisonBlueprint = `# Synthetic CSV row count
+
+## 1. PROBLEM PROFILE
+
+**Business Goal:** Count every data row in the supplied CSV.
+
+**Technical Objective:** Return one JSON object with the integer field rows.
+
+### Data Profile
+
+target: target
+
+\`\`\`json
+{"target_definition":"The target column is an existing synthetic label; count all rows regardless of its value."}
+\`\`\`
+
+### Constraints
+
+- CPU-only, RAM 1GB, Python standard library only.
+
+## 2. REQUIREMENTS CONTRACT
+
+| ID | Type | Priority | Source | Requirement | Acceptance Criteria |
+| --- | --- | --- | --- | --- | --- |
+| FR-01 | FR | HIGH | synthetic fixture | Count all data rows in the input CSV. | The JSON field rows equals the number of CSV data rows, excluding the header. |
+
+## 3. HIGH-LEVEL PIPELINE
+
+Read CSV and count its data rows. FR-01.
+
+## 4. SELECTED TECHNOLOGY STACK
+
+Python standard library csv and json. FR-01.
+
+## 5. MODULAR DESIGN PACKAGE
+
+### DM-01 — Row count
+
+Read every CSV row and return the count. FR-01.
+
+## 6. EXECUTION BLUEPRINT
+
+#### File: \`solution.py\`
+
+Read /work/input.csv and emit one JSON object with the rows count. FR-01.
+`;
+const liveComparisonHarness =
+  'import csv, json\n' +
+  'rows = list(csv.DictReader(open("/work/input.csv", newline="")))\n' +
+  'out = json.load(open("/work/candidate-output.json"))\n' +
+  'print(json.dumps({"checks": [{"requirementId": "FR-01", "passed": out.get("rows") == len(rows), "detail": "Row count matches"}]}))\n';
+
+async function enableLegacyProjectMode(page: Page): Promise<void> {
+  const advanced = page.getByText('Cấu hình bộ kiểm tra và nâng cao', { exact: true });
+  if (!(await advanced.evaluate(element => element.parentElement?.hasAttribute('open') ?? false)))
+    await advanced.click();
+  await page.getByLabel('Tạo dự án tham chiếu cũ (không so sánh nhiều LLM)').check();
+}
+
+async function openSecondaryRoute(page: Page, name: string): Promise<void> {
+  // Each project route remounts the navigation, so the secondary menu can start closed.
+  const menu = page.getByText('Chi tiết khác', { exact: true });
+  if (!(await menu.evaluate(element => element.parentElement?.hasAttribute('open') ?? false)))
+    await menu.click();
+  await page.getByRole('link', { name, exact: true }).click();
+}
+
+async function expandLifecycleDetails(page: Page): Promise<void> {
+  const summary = page.getByText('Chi tiết vòng đời · 6 giai đoạn, 10 hoạt động', { exact: true });
+  if (!(await summary.evaluate(element => element.parentElement?.hasAttribute('open') ?? false)))
+    await summary.click();
+}
+
+async function openComparisonConfig(page: Page): Promise<void> {
+  const summary = page.getByText('Cấu hình bộ kiểm tra và nâng cao', { exact: true });
+  if (!(await summary.evaluate(element => element.parentElement?.hasAttribute('open') ?? false)))
+    await summary.click();
+}
 
 test('creates a real Customer Churn project and exposes the understanding workflow', async ({
   page,
@@ -22,15 +101,12 @@ test('creates a real Customer Churn project and exposes the understanding workfl
   await page.keyboard.press('Tab');
   await expect(page.getByRole('link', { name: 'Skip to main content' })).toBeFocused();
 
-  await page.getByRole('link', { name: 'Tạo project' }).click();
-  await expect(page.getByRole('heading', { name: 'Thông tin dự án' })).toBeVisible();
-  await page.getByLabel('Tên project').fill(projectName);
-  await page.getByRole('button', { name: 'Tiếp tục' }).click();
-  await expect(page.getByRole('heading', { name: 'Chọn workflow khởi đầu' })).toBeVisible();
-
-  await page.getByRole('button', { name: 'Tiếp tục' }).click();
+  await page.getByRole('link', { name: 'Tạo dự án' }).click();
+  await expect(page.getByRole('heading', { name: 'Tạo dự án', level: 1 })).toBeVisible();
+  await enableLegacyProjectMode(page);
+  await page.getByLabel('Tên dự án').fill(projectName);
   const blueprint = await readFile(blueprintPath, 'utf8');
-  await page.getByLabel('Blueprint Markdown *').setInputFiles({
+  await page.getByLabel('Blueprint Markdown').setInputFiles({
     name: 'DESIGN_B_2.md',
     mimeType: 'text/markdown',
     buffer: Buffer.from(blueprint),
@@ -40,20 +116,14 @@ test('creates a real Customer Churn project and exposes the understanding workfl
     mimeType: 'text/csv',
     buffer: Buffer.from('customer_id,target\n1,yes\n2,no\n3,yes\n4,yes\n'),
   });
-  await expect(page.getByText('DESIGN_B_2.md', { exact: true })).toBeVisible();
-  await expect(page.getByText('customers.csv', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('Blueprint Markdown')).not.toHaveValue('');
+  await expect(page.getByLabel('Dataset CSV')).not.toHaveValue('');
 
-  for (const heading of ['Ràng buộc', 'Sẵn sàng phân tích đầu vào', 'Tạo Project Flow']) {
-    await page.getByRole('button', { name: 'Tiếp tục' }).click();
-    await expect(page.getByRole('heading', { name: heading })).toBeVisible();
-  }
-
-  await page.getByRole('button', { name: 'Tạo và kiểm tra nguồn' }).click();
+  await page.getByRole('button', { name: 'Tạo và bắt đầu phân tích', exact: true }).click();
   await expect(page.getByRole('heading', { name: projectName })).toBeVisible({
     timeout: 30_000,
   });
-  await expect(page.getByRole('heading', { name: 'Tiếp nhận nguồn đầu vào' })).toBeVisible();
-  await page.getByRole('button', { name: 'Tiếp tục Hiểu dự án' }).click();
+  await expandLifecycleDetails(page);
   await expect(
     page.getByRole('navigation', { name: '6 giai đoạn và 10 hoạt động vòng đời dự án' })
   ).toBeVisible({ timeout: 30_000 });
@@ -76,6 +146,8 @@ test('creates a real Customer Churn project and exposes the understanding workfl
     'OP-08',
     'TW-09',
   ]);
+  await page.getByText('Lịch sử và kỹ thuật', { exact: true }).click();
+  await page.getByText('Lịch sử và chạy lại', { exact: true }).click();
   const rerunAllButton = page.getByRole('button', { name: 'Chạy lại toàn bộ' });
   await rerunAllButton.click();
   const attemptDialog = page.getByRole('dialog', { name: 'Xem trước trước khi chạy lại' });
@@ -107,7 +179,9 @@ test('creates a real Customer Churn project and exposes the understanding workfl
   });
   expect(reducedAnimationSeconds).toBeLessThanOrEqual(0.001);
   await phaseNavigation.getByRole('button', { name: /TW-02.*Hiểu dự án/ }).click();
-  await expect(page.getByText('Trạng thái Bản hiểu dự án', { exact: true })).toBeVisible();
+  await expect(page.getByText('Trạng thái Bản hiểu dự án', { exact: true })).toBeVisible({
+    timeout: 45_000,
+  });
   const understandingPanel = page.locator('.s3-understanding-panel');
   await expect(
     understandingPanel.getByRole('heading', { name: /Cần xác nhận \(\d+\)/ })
@@ -210,6 +284,8 @@ test('creates a real Customer Churn project and exposes the understanding workfl
       response.json()
     )) as {
       project: { version: number };
+      readiness: { id: string } | null;
+      compilation: { id: string } | null;
       decisions: { id: string; options: string[]; status: string }[];
     };
     let understanding = (await fetch(`/api/system3/projects/${id}/phases/understanding/view`).then(
@@ -313,20 +389,17 @@ test('creates a real Customer Churn project and exposes the understanding workfl
     ) {
       throw new Error('Activating a target decision mutated the immutable Knowledge Snapshot');
     }
-    flow = (await fetch(`/api/system3/projects/${id}/flow`).then(response =>
-      response.json()
-    )) as typeof flow;
-    const readiness = await fetch(`/api/system3/projects/${id}/readiness-contracts`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Idempotency-Key': `e2e-readiness-${crypto.randomUUID()}`,
-      },
-      body: JSON.stringify({ expectedVersion: flow.project.version }),
-    });
-    if (!readiness.ok) throw new Error(await readiness.text());
-    const body = (await readiness.json()) as { operation: { id: string } };
-    await waitOperation(body.operation.id);
+    const readinessDeadline = Date.now() + 30_000;
+    for (;;) {
+      const response = await fetch(`/api/system3/projects/${id}/flow`);
+      if (!response.ok) throw new Error(await response.text());
+      flow = (await response.json()) as typeof flow;
+      if (flow.readiness !== null && flow.compilation !== null) break;
+      if (Date.now() >= readinessDeadline) {
+        throw new Error('Activation did not automatically complete Readiness and Compile');
+      }
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
     const readinessContractResponse = await fetch(
       `/api/system3/projects/${id}/readiness-contracts/latest`
     );
@@ -357,30 +430,101 @@ test('creates a real Customer Churn project and exposes the understanding workfl
     }
   }, projectId);
   await page.reload();
-  const compileWorkspaceLink = page.getByRole('link', { name: 'Chuẩn bị Execution Plan' });
-  await expect(compileWorkspaceLink).toBeVisible({
-    timeout: 30_000,
-  });
-  await compileWorkspaceLink.click();
+  await openSecondaryRoute(page, 'Quyết định & Phê duyệt');
   await expect(
     page.getByRole('heading', { name: 'Đóng các lựa chọn trước khi thực thi' })
   ).toBeVisible();
-  const compileButton = page.getByRole('button', { name: 'Chuẩn bị Execution Plan' });
-  await compileButton.click();
-  await expect(page.getByRole('heading', { name: 'Review kế hoạch trước khi build' })).toBeVisible({
+  await page.getByRole('button', { name: 'Xem và phê duyệt kế hoạch' }).click();
+  await expect(page.getByRole('heading', { name: 'Xem kế hoạch trước khi chạy' })).toBeVisible({
     timeout: 30_000,
   });
   await expect(page.getByRole('button', { name: 'Đóng' })).toBeFocused();
   await expect(page.getByText('Không tái sử dụng artifact', { exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Approve manifest' }).click();
-  await page.getByRole('link', { name: 'Vòng đời dự án', exact: true }).click();
-  const executeButton = page.getByRole('button', { name: 'Chạy baseline MVP' }).first();
-  await expect(executeButton).toBeVisible({ timeout: 30_000 });
-  await executeButton.click();
+  const executionPath = `/api/system3/projects/${projectId}/executions`;
+  const isExecutionRequest = (request: import('@playwright/test').Request): boolean =>
+    request.method() === 'POST' && new URL(request.url()).pathname === executionPath;
+  const executionRequestPromise = page.waitForRequest(isExecutionRequest);
+  const executionResponsePromise = page.waitForResponse(response =>
+    isExecutionRequest(response.request())
+  );
+  await page.getByRole('button', { name: 'Phê duyệt và chạy' }).click();
+  const [executionRequest, executionResponse] = await Promise.all([
+    executionRequestPromise,
+    executionResponsePromise,
+  ]);
+  expect(executionResponse.status()).toBe(202);
+  const executionRequestBody = executionRequest.postDataJSON() as {
+    compilationId: string;
+    expectedVersion: number;
+  };
+  const executionIdempotencyKey = executionRequest.headers()['idempotency-key'];
+  expect(executionIdempotencyKey).toBeTruthy();
+  expect(executionRequestBody.compilationId).toBeTruthy();
+  expect(Number.isSafeInteger(executionRequestBody.expectedVersion)).toBe(true);
+  const initialExecutionResponse = (await executionResponse.json()) as {
+    operation: { id: string };
+    execution: { id: string };
+  };
   const deliveryWorkspaceLink = page.getByRole('link', { name: 'Mở khu vực bàn giao' });
   await expect(deliveryWorkspaceLink).toBeVisible({
     timeout: 60_000,
   });
+  await expect
+    .poll(
+      async () => {
+        const response = await page.request.get(`/api/system3/projects/${projectId}/flow`);
+        if (!response.ok()) return null;
+        const flow = (await response.json()) as {
+          verification: { status: string } | null;
+        };
+        return flow.verification?.status ?? null;
+      },
+      { timeout: 30_000 }
+    )
+    .toBe('completed');
+  const historyBeforeReplayResponse = await page.request.get(
+    `/api/system3/projects/${projectId}/history`
+  );
+  expect(historyBeforeReplayResponse.ok()).toBe(true);
+  const historyBeforeReplay = (await historyBeforeReplayResponse.json()) as {
+    approvals: unknown[];
+    executions: unknown[];
+  };
+  const replayResponse = await page.request.post(`${new URL(page.url()).origin}${executionPath}`, {
+    headers: {
+      'Content-Type': 'application/json',
+      'Idempotency-Key': executionIdempotencyKey,
+    },
+    data: executionRequestBody,
+  });
+  expect(replayResponse.status()).toBe(202);
+  const replayBody = (await replayResponse.json()) as {
+    operation: { id: string };
+    execution: { id: string };
+  };
+  expect(replayBody.operation.id).toBe(initialExecutionResponse.operation.id);
+  expect(replayBody.execution.id).toBe(initialExecutionResponse.execution.id);
+  const mismatchedReplayResponse = await page.request.post(
+    `${new URL(page.url()).origin}${executionPath}`,
+    {
+      headers: {
+        'Content-Type': 'application/json',
+        'Idempotency-Key': executionIdempotencyKey,
+      },
+      data: { ...executionRequestBody, compilationId: crypto.randomUUID() },
+    }
+  );
+  expect(mismatchedReplayResponse.status()).toBe(409);
+  const historyAfterReplayResponse = await page.request.get(
+    `/api/system3/projects/${projectId}/history`
+  );
+  expect(historyAfterReplayResponse.ok()).toBe(true);
+  const historyAfterReplay = (await historyAfterReplayResponse.json()) as {
+    approvals: unknown[];
+    executions: unknown[];
+  };
+  expect(historyAfterReplay.approvals).toHaveLength(historyBeforeReplay.approvals.length);
+  expect(historyAfterReplay.executions).toHaveLength(historyBeforeReplay.executions.length);
   await deliveryWorkspaceLink.click();
   await expect(page.getByRole('heading', { name: 'Kiểm tra và tạo gói bàn giao' })).toBeVisible();
   await page.getByRole('button', { name: 'Xác nhận và tạo gói bàn giao' }).click();
@@ -442,19 +586,19 @@ test('creates a real Customer Churn project and exposes the understanding workfl
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toBe('generated_project.tar.gz');
 
-  await page.getByRole('link', { name: 'Tổng quan', exact: true }).click();
+  await openSecondaryRoute(page, 'Tổng quan');
   await expect(page.getByText('Việc nên làm tiếp theo', { exact: true })).toBeVisible();
-  await page.getByRole('link', { name: 'Quyết định & Phê duyệt', exact: true }).click();
+  await openSecondaryRoute(page, 'Quyết định & Phê duyệt');
   await expect(
     page.getByRole('heading', { name: 'Đóng các lựa chọn trước khi thực thi' })
   ).toBeVisible();
-  await page.getByRole('link', { name: 'Kết quả & Bằng chứng', exact: true }).click();
+  await openSecondaryRoute(page, 'Kết quả & Bằng chứng');
   await expect(page.getByRole('heading', { name: 'Đối soát toàn bộ project' })).toBeVisible();
-  await page.getByRole('link', { name: 'Bàn giao', exact: true }).click();
+  await openSecondaryRoute(page, 'Bàn giao');
   await expect(page.getByRole('heading', { name: 'Kiểm tra và tạo gói bàn giao' })).toBeVisible();
 
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.getByRole('link', { name: 'Tổng quan', exact: true }).click();
+  await openSecondaryRoute(page, 'Tổng quan');
   await expect(page.getByText('Việc nên làm tiếp theo', { exact: true })).toBeVisible();
   const mainHasHorizontalOverflow = await page.locator('main#main-content').evaluate(element => {
     return element.scrollWidth > element.clientWidth + 1;
@@ -462,7 +606,8 @@ test('creates a real Customer Churn project and exposes the understanding workfl
   expect(mainHasHorizontalOverflow).toBe(false);
   await page.setViewportSize({ width: 1280, height: 720 });
 
-  await page.getByRole('link', { name: 'Vòng đời dự án', exact: true }).click();
+  await page.getByRole('link', { name: 'Workspace dự án', exact: true }).click();
+  await expandLifecycleDetails(page);
   const lifecycleUrl = page.url();
   await phaseNavigation.getByRole('button', { name: /OP-00.*Tiếp nhận nguồn đầu vào/ }).click();
   const sourceResourceButton = page.getByRole('button', { name: /DESIGN_B_2\.md/ }).first();
@@ -484,6 +629,7 @@ test('creates a real Customer Churn project and exposes the understanding workfl
     type Flow = {
       project: { version: number };
       decisions: { id: string; options: string[]; status: string }[];
+      readiness: unknown | null;
       compilation: { id: string } | null;
       approval: { id: string } | null;
       verification: { id: string; status: string } | null;
@@ -599,75 +745,14 @@ test('creates a real Customer Churn project and exposes the understanding workfl
       }
     );
     if (!activationResponse.ok) throw new Error(await activationResponse.text());
-    flow = await loadFlow();
-    const readinessKey = `e2e-readiness-${crypto.randomUUID()}`;
-    const readinessExpectedVersion = flow.project.version;
-    const readinessRequest = {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Idempotency-Key': readinessKey,
-      },
-      body: JSON.stringify({ expectedVersion: readinessExpectedVersion }),
-    };
-    const [readinessResponse, concurrentReadinessResponse] = await Promise.all([
-      fetch(`/api/system3/projects/${id}/readiness-contracts`, readinessRequest),
-      fetch(`/api/system3/projects/${id}/readiness-contracts`, readinessRequest),
-    ]);
-    if (!readinessResponse.ok) throw new Error(await readinessResponse.text());
-    if (!concurrentReadinessResponse.ok) {
-      throw new Error(await concurrentReadinessResponse.text());
-    }
-    const readinessOperation = (await readinessResponse.json()) as { operation: { id: string } };
-    const concurrentReadiness = (await concurrentReadinessResponse.json()) as {
-      operation: { id: string };
-    };
-    if (concurrentReadiness.operation.id !== readinessOperation.operation.id) {
-      throw new Error('Concurrent readiness requests created more than one operation');
-    }
-    await waitOperation(readinessOperation.operation.id);
-    flow = await loadFlow();
-    const duplicateReadinessResponse = await fetch(
-      `/api/system3/projects/${id}/readiness-contracts`,
-      readinessRequest
-    );
-    if (!duplicateReadinessResponse.ok) throw new Error(await duplicateReadinessResponse.text());
-    const duplicateReadiness = (await duplicateReadinessResponse.json()) as {
-      operation: { id: string };
-    };
-    if (duplicateReadiness.operation.id !== readinessOperation.operation.id) {
-      throw new Error('Readiness retry after project version advance was not idempotent');
-    }
-    const compilationKey = `e2e-compile-${crypto.randomUUID()}`;
-    const compilationExpectedVersion = flow.project.version;
-    const compilationRequest = {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Idempotency-Key': compilationKey,
-      },
-      body: JSON.stringify({ expectedVersion: compilationExpectedVersion }),
-    };
-    const compilationResponse = await fetch(
-      `/api/system3/projects/${id}/compilations`,
-      compilationRequest
-    );
-    if (!compilationResponse.ok) throw new Error(await compilationResponse.text());
-    const compilationOperation = (await compilationResponse.json()) as {
-      operation: { id: string };
-    };
-    await waitOperation(compilationOperation.operation.id);
-    const duplicateCompilationResponse = await fetch(
-      `/api/system3/projects/${id}/compilations`,
-      compilationRequest
-    );
-    if (!duplicateCompilationResponse.ok)
-      throw new Error(await duplicateCompilationResponse.text());
-    const duplicateCompilation = (await duplicateCompilationResponse.json()) as {
-      operation: { id: string };
-    };
-    if (duplicateCompilation.operation.id !== compilationOperation.operation.id) {
-      throw new Error('Compilation retry after project version advance was not idempotent');
+    const automaticCompileDeadline = Date.now() + 30_000;
+    for (;;) {
+      flow = await loadFlow();
+      if (flow.readiness !== null && flow.compilation !== null) break;
+      if (Date.now() >= automaticCompileDeadline) {
+        throw new Error('Activation did not automatically complete Readiness and Compile');
+      }
+      await new Promise(resolve => setTimeout(resolve, 100));
     }
     const latestCompilationResponse = await fetch(
       `/api/system3/projects/${id}/compilations/latest`
@@ -823,6 +908,8 @@ test('creates a real Customer Churn project and exposes the understanding workfl
     type Flow = {
       project: { version: number };
       decisions: { id: string; options: string[]; status: string }[];
+      readiness: { id: string } | null;
+      compilation: { id: string } | null;
       approval: { id: string } | null;
       verification: { id: string; status: string } | null;
     };
@@ -964,28 +1051,15 @@ test('creates a real Customer Churn project and exposes the understanding workfl
       }
     );
     if (!activation.ok) throw new Error(await activation.text());
-    flow = await loadFlow();
-    const readiness = await fetch(`/api/system3/projects/${id}/readiness-contracts`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Idempotency-Key': `e2e-readiness-b-${crypto.randomUUID()}`,
-      },
-      body: JSON.stringify({ expectedVersion: flow.project.version }),
-    });
-    if (!readiness.ok) throw new Error(await readiness.text());
-    await waitOperation(((await readiness.json()) as { operation: { id: string } }).operation.id);
-    flow = await loadFlow();
-    const compile = await fetch(`/api/system3/projects/${id}/compilations`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Idempotency-Key': `e2e-compile-b-${crypto.randomUUID()}`,
-      },
-      body: JSON.stringify({ expectedVersion: flow.project.version }),
-    });
-    if (!compile.ok) throw new Error(await compile.text());
-    await waitOperation(((await compile.json()) as { operation: { id: string } }).operation.id);
+    const automaticCompileDeadline = Date.now() + 30_000;
+    for (;;) {
+      flow = await loadFlow();
+      if (flow.readiness !== null && flow.compilation !== null) break;
+      if (Date.now() >= automaticCompileDeadline) {
+        throw new Error('Dataset activation did not automatically complete Readiness and Compile');
+      }
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
     const compilationResponse = await fetch(`/api/system3/projects/${id}/compilations/latest`);
     if (!compilationResponse.ok) throw new Error(await compilationResponse.text());
     const compilation = (await compilationResponse.json()) as {
@@ -1154,22 +1228,17 @@ test('shows data_required as a business blocker with a Dataset next action', asy
   test.setTimeout(90_000);
   const projectName = `Readiness without dataset ${Date.now().toString()}`;
   await page.goto('/console/projects/new');
-  await page.getByLabel('Tên project').fill(projectName);
-  await page.getByRole('button', { name: 'Tiếp tục' }).click();
-  await page.getByRole('button', { name: 'Tiếp tục' }).click();
+  await expect(page.getByRole('heading', { name: 'Tạo dự án', level: 1 })).toBeVisible();
+  await enableLegacyProjectMode(page);
+  await page.getByLabel('Tên dự án').fill(projectName);
   const blueprint = await readFile(blueprintPath, 'utf8');
-  await page.getByLabel('Blueprint Markdown *').setInputFiles({
+  await page.getByLabel('Blueprint Markdown').setInputFiles({
     name: 'DESIGN_B_2.md',
     mimeType: 'text/markdown',
     buffer: Buffer.from(blueprint),
   });
-  for (const heading of ['Ràng buộc', 'Sẵn sàng phân tích đầu vào', 'Tạo Project Flow']) {
-    await page.getByRole('button', { name: 'Tiếp tục' }).click();
-    await expect(page.getByRole('heading', { name: heading })).toBeVisible();
-  }
-  await page.getByRole('button', { name: 'Tạo và kiểm tra nguồn' }).click();
+  await page.getByRole('button', { name: 'Tạo và bắt đầu phân tích', exact: true }).click();
   await expect(page.getByRole('heading', { name: projectName })).toBeVisible({ timeout: 30_000 });
-  await page.getByRole('button', { name: 'Tiếp tục Hiểu dự án' }).click();
   // The button starts TW-02 asynchronously. Wait for its candidate before
   // requesting a second analysis with an expected project version.
   await expect(page.getByRole('button', { name: 'Xác nhận quyết định' }).first()).toBeVisible({
@@ -1196,7 +1265,12 @@ test('shows data_required as a business blocker with a Dataset next action', asy
     };
     let flow = (await fetch(`/api/system3/projects/${id}/flow`).then(response =>
       response.json()
-    )) as { project: { version: number } };
+    )) as {
+      project: { version: number };
+      readinessEvaluation: { status: string } | null;
+      readiness: { id: string } | null;
+      compilation: { id: string } | null;
+    };
     const analysis = await fetch(`/api/system3/projects/${id}/knowledge-snapshots`, {
       method: 'POST',
       headers: {
@@ -1244,30 +1318,27 @@ test('shows data_required as a business blocker with a Dataset next action', asy
       }
     );
     if (!activation.ok) throw new Error(await activation.text());
-    flow = (await fetch(`/api/system3/projects/${id}/flow`).then(response =>
-      response.json()
-    )) as typeof flow;
-    const readiness = await fetch(`/api/system3/projects/${id}/readiness-contracts`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Idempotency-Key': `e2e-missing-data-readiness-${crypto.randomUUID()}`,
-      },
-      body: JSON.stringify({ expectedVersion: flow.project.version }),
-    });
-    if (!readiness.ok) throw new Error(await readiness.text());
-    const result = await waitOperation(
-      ((await readiness.json()) as { operation: { id: string } }).operation.id
-    );
-    if ((result.evaluation as { status?: string } | undefined)?.status !== 'data_required') {
-      throw new Error('Readiness without Dataset did not return data_required');
+    const readinessDeadline = Date.now() + 30_000;
+    for (;;) {
+      const flowResponse = await fetch(`/api/system3/projects/${id}/flow`);
+      if (!flowResponse.ok) throw new Error(await flowResponse.text());
+      flow = (await flowResponse.json()) as typeof flow;
+      if (flow.readinessEvaluation?.status === 'data_required') break;
+      if (Date.now() >= readinessDeadline) {
+        throw new Error('Activation did not automatically evaluate missing Dataset readiness');
+      }
+      await new Promise(resolve => setTimeout(resolve, 100));
     }
-    if (result.readinessContractId !== null) {
+    if (flow.readiness !== null) {
       throw new Error('Readiness created a contract even though Dataset is missing');
+    }
+    if (flow.compilation !== null) {
+      throw new Error('Readiness compiled a plan even though Dataset is missing');
     }
   }, projectId);
 
   await page.goto(`/console/projects/${projectId}/flow`);
+  await expandLifecycleDetails(page);
   await page
     .getByRole('navigation', { name: '6 giai đoạn và 10 hoạt động vòng đời dự án' })
     .getByRole('button', { name: /TW-03.*Kiểm tra mức độ sẵn sàng/ })
@@ -1304,4 +1375,409 @@ test('shows data_required as a business blocker with a Dataset next action', asy
       fullPage: true,
     });
   }
+});
+
+test('completes the UI-driven core lifecycle @core', async ({ page }) => {
+  test.setTimeout(90_000);
+  const projectName = `Core lifecycle ${Date.now().toString()}`;
+  await page.goto('/console/projects/new');
+  await expect(page.getByRole('heading', { name: 'Tạo dự án', level: 1 })).toBeVisible();
+  await enableLegacyProjectMode(page);
+  await page.getByLabel('Tên dự án').fill(projectName);
+  const blueprint = await readFile(blueprintPath, 'utf8');
+  await page.getByLabel('Blueprint Markdown').setInputFiles({
+    name: 'DESIGN_B_2.md',
+    mimeType: 'text/markdown',
+    buffer: Buffer.from(blueprint),
+  });
+  await page.getByLabel('Dataset CSV').setInputFiles({
+    name: 'core-sample.csv',
+    mimeType: 'text/csv',
+    buffer: Buffer.from('id,target\n1,yes\n2,no\n3,yes\n4,no\n'),
+  });
+  await page.getByRole('button', { name: 'Tạo và bắt đầu phân tích', exact: true }).click();
+  await expect(page.getByRole('heading', { name: projectName })).toBeVisible({ timeout: 20_000 });
+  await expandLifecycleDetails(page);
+  const understandingPanel = page.locator('.s3-understanding-panel');
+  await expect(understandingPanel.getByLabel('Cột mục tiêu')).toBeVisible({ timeout: 30_000 });
+  const pendingDecisionButton = understandingPanel.getByRole('button', {
+    name: 'Xác nhận quyết định',
+  });
+  for (let decisionIndex = 0; decisionIndex < 10; decisionIndex += 1) {
+    const pendingCount = await pendingDecisionButton.count();
+    if (pendingCount === 0) break;
+    const targetColumn = understandingPanel.getByLabel('Cột mục tiêu');
+    if (await targetColumn.isVisible().catch(() => false))
+      await targetColumn.selectOption('target');
+    const decisionRequest = page.waitForResponse(response => {
+      const request = response.request();
+      return (
+        request.method() === 'POST' &&
+        /\/decisions\/[^/]+\/respond$/.test(new URL(request.url()).pathname)
+      );
+    });
+    await pendingDecisionButton.first().click();
+    expect((await decisionRequest).ok()).toBe(true);
+    await expect(pendingDecisionButton).toHaveCount(pendingCount - 1, { timeout: 10_000 });
+  }
+  await expect(pendingDecisionButton).toHaveCount(0, { timeout: 10_000 });
+  const activateButton = understandingPanel.getByRole('button', {
+    name: 'Chấp nhận Bản hiểu',
+  });
+  await expect(activateButton).toBeEnabled({ timeout: 2_000 });
+  await activateButton.click();
+  await expandLifecycleDetails(page);
+  await expect(
+    page.getByRole('navigation', { name: '6 giai đoạn và 10 hoạt động vòng đời dự án' })
+  ).toBeVisible({ timeout: 30_000 });
+
+  // Backend chains Readiness and Compile; the workspace then shows the plan inline with one
+  // approve-and-run action instead of a separate review dialog.
+  const planSummary = page.locator('section[aria-labelledby="plan-summary-title"]');
+  await expect(planSummary).toBeVisible({ timeout: 45_000 });
+  await expect(planSummary).toContainText('nguồn đã ghim phiên bản');
+  await page.getByRole('button', { name: 'Phê duyệt và chạy', exact: true }).click();
+  await expect(page.getByRole('link', { name: 'Mở khu vực bàn giao' })).toBeVisible({
+    timeout: 45_000,
+  });
+  const projectId = new URL(page.url()).pathname.split('/').at(-2);
+  expect(projectId).toBeTruthy();
+  await expect
+    .poll(
+      async () => {
+        const response = await page.request.get(`/api/system3/projects/${projectId}/flow`);
+        if (!response.ok()) return null;
+        const flow = (await response.json()) as { verification: { status: string } | null };
+        return flow.verification?.status ?? null;
+      },
+      { timeout: 20_000 }
+    )
+    .toBe('completed');
+
+  await page.getByRole('link', { name: 'Mở khu vực bàn giao' }).click();
+  await expect(page.getByRole('heading', { name: 'Kiểm tra và tạo gói bàn giao' })).toBeVisible();
+  await page.getByRole('button', { name: 'Xác nhận và tạo gói bàn giao' }).click();
+  const downloadLink = page.getByRole('link', { name: 'Tải gói bàn giao' });
+  await expect(downloadLink).toBeVisible({ timeout: 30_000 });
+  if (process.env.CAPTURE_SYSTEM3_UI === 'true') {
+    await page.screenshot({ path: '/tmp/anvil-core-flow-desktop.png', fullPage: true });
+  }
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(downloadLink).toBeVisible();
+  const compactLayout = await page.evaluate(() => ({
+    viewportWidth: window.innerWidth,
+    documentWidth: document.documentElement.scrollWidth,
+  }));
+  expect(compactLayout.documentWidth).toBeLessThanOrEqual(compactLayout.viewportWidth);
+  if (process.env.CAPTURE_SYSTEM3_UI === 'true') {
+    await page.screenshot({ path: '/tmp/anvil-core-flow-compact.png', fullPage: true });
+  }
+  const downloadPromise = page.waitForEvent('download');
+  await downloadLink.click();
+  expect((await downloadPromise).suggestedFilename()).toBe('generated_project.tar.gz');
+
+  const historyResponse = await page.request.get(`/api/system3/projects/${projectId}/history`);
+  expect(historyResponse.ok()).toBe(true);
+  const history = (await historyResponse.json()) as {
+    approvals: unknown[];
+    executions: unknown[];
+    verifications: unknown[];
+    deliveries: unknown[];
+  };
+  expect(history.approvals).toHaveLength(1);
+  expect(history.executions).toHaveLength(1);
+  expect(history.verifications).toHaveLength(1);
+  expect(history.deliveries).toHaveLength(1);
+});
+
+test('runs live pinned model comparison through Delivery @comparison', async ({ page }) => {
+  test.skip(
+    process.env.ANVIL_LIVE_9ROUTER !== 'true',
+    'Live 9router comparison requires explicit opt-in and configured credentials.'
+  );
+  test.setTimeout(180_000);
+  const projectName = `Live model comparison ${Date.now().toString()}`;
+  await page.goto('/console/projects/new');
+  await expect(page.getByRole('heading', { name: 'Tạo dự án', level: 1 })).toBeVisible();
+  await page.getByLabel('Tên dự án').fill(projectName);
+  await page.getByLabel('Blueprint Markdown').setInputFiles({
+    name: 'model-comparison-fixture.md',
+    mimeType: 'text/markdown',
+    buffer: Buffer.from(liveComparisonBlueprint),
+  });
+  await page.getByLabel('Dataset CSV').setInputFiles({
+    name: 'four-rows.csv',
+    mimeType: 'text/csv',
+    buffer: Buffer.from('id,target\n1,yes\n2,no\n3,yes\n4,no\n'),
+  });
+  await openComparisonConfig(page);
+  const modelRefs = page.getByLabel('Mã model thủ công (2–4, mỗi dòng một model)');
+  await modelRefs.fill('router9/cx/gpt-6-luna\nrouter9/cx/gpt-5.6-luna');
+  await page
+    .getByLabel('Prompt chung')
+    .fill(
+      'Write a Python standard-library solution that reads /work/input.csv and prints one JSON object with rows equal to the number of CSV data rows, excluding the header.'
+    );
+  await page.getByLabel('Requirement IDs (phân cách bằng dấu phẩy hoặc xuống dòng)').fill('FR-01');
+  await page.getByLabel('Harness Python (.py, tối đa 64 KiB)').setInputFiles({
+    name: 'fr01-harness.py',
+    mimeType: 'text/x-python',
+    buffer: Buffer.from(liveComparisonHarness),
+  });
+  await page.getByRole('button', { name: 'Tạo và bắt đầu phân tích', exact: true }).click();
+  await expect(page.getByRole('heading', { name: projectName })).toBeVisible({ timeout: 30_000 });
+
+  const understandingPanel = page.locator('.s3-understanding-panel');
+  const pendingDecisionButton = understandingPanel.getByRole('button', {
+    name: 'Xác nhận quyết định',
+  });
+  const activateButton = understandingPanel.getByRole('button', {
+    name: 'Chấp nhận Bản hiểu',
+  });
+  await expect
+    .poll(
+      async () => {
+        if ((await pendingDecisionButton.count()) > 0) return 'decision_required';
+        return (await activateButton.isEnabled()) ? 'ready' : 'analyzing';
+      },
+      { timeout: 45_000 }
+    )
+    .not.toBe('analyzing');
+  for (let decisionIndex = 0; decisionIndex < 10; decisionIndex += 1) {
+    const pendingCount = await pendingDecisionButton.count();
+    if (pendingCount === 0) break;
+    const targetColumn = understandingPanel.getByLabel('Cột mục tiêu');
+    if (await targetColumn.isVisible().catch(() => false))
+      await targetColumn.selectOption('target');
+    const decisionResponse = page.waitForResponse(response => {
+      const request = response.request();
+      return (
+        request.method() === 'POST' &&
+        /\/decisions\/[^/]+\/respond$/.test(new URL(request.url()).pathname)
+      );
+    });
+    await pendingDecisionButton.first().click();
+    expect((await decisionResponse).ok()).toBe(true);
+    await expect(pendingDecisionButton).toHaveCount(pendingCount - 1, { timeout: 15_000 });
+  }
+  await expect(pendingDecisionButton).toHaveCount(0, { timeout: 10_000 });
+  await expect(activateButton).toBeEnabled({ timeout: 5_000 });
+  await activateButton.click();
+
+  const phaseNavigation = page.getByRole('navigation', {
+    name: '6 giai đoạn và 10 hoạt động vòng đời dự án',
+  });
+  await expandLifecycleDetails(page);
+  await expect(phaseNavigation).toBeVisible({ timeout: 30_000 });
+  await openSecondaryRoute(page, 'Quyết định & Phê duyệt');
+  await expect(
+    page.getByRole('heading', { name: 'Đóng các lựa chọn trước khi thực thi' })
+  ).toBeVisible({ timeout: 20_000 });
+  const reviewPlanButton = page.getByRole('button', {
+    name: /Xem và phê duyệt kế hoạch|Chuẩn bị Execution Plan/,
+  });
+  await expect(reviewPlanButton).toBeEnabled({ timeout: 30_000 });
+  await reviewPlanButton.click();
+  await expect(page.getByRole('heading', { name: 'Xem kế hoạch trước khi chạy' })).toBeVisible({
+    timeout: 20_000,
+  });
+  const comparisonPlan = page.locator('section[aria-labelledby="model-comparison-plan-title"]');
+  await expect(comparisonPlan).toBeVisible();
+  await expect(comparisonPlan).toContainText('router9/cx/gpt-6-luna');
+  await expect(comparisonPlan).toContainText('router9/cx/gpt-5.6-luna');
+  await expect(comparisonPlan).toContainText('FR-01');
+  await expect(comparisonPlan).toContainText('cùng input đã pin');
+  await page.getByRole('button', { name: 'Phê duyệt và chạy' }).click();
+
+  await expect(page.getByRole('link', { name: 'Mở khu vực bàn giao' })).toBeVisible({
+    timeout: 120_000,
+  });
+  const projectId = new URL(page.url()).pathname.split('/').at(-2);
+  expect(projectId).toBeTruthy();
+  await expect
+    .poll(
+      async () => {
+        const response = await page.request.get(`/api/system3/projects/${projectId}/flow`);
+        if (!response.ok()) return null;
+        const flow = (await response.json()) as {
+          verification: {
+            status: string;
+            evidenceMap: {
+              models?: {
+                model: string;
+                status: string;
+                runId: string;
+                inputHash: string;
+                codeHash: string | null;
+                outputHash: string | null;
+                usage: { status: string };
+                checks: { requirementId: string; passed: boolean; detail: string }[] | null;
+              }[];
+            } | null;
+          } | null;
+        };
+        const models = flow.verification?.evidenceMap?.models;
+        return flow.verification?.status === 'completed' && models?.length === 2 ? models : null;
+      },
+      { timeout: 45_000 }
+    )
+    .toMatchObject([
+      { model: 'router9/cx/gpt-6-luna', status: 'completed' },
+      { model: 'router9/cx/gpt-5.6-luna', status: 'completed' },
+    ]);
+  const completedFlowResponse = await page.request.get(`/api/system3/projects/${projectId}/flow`);
+  expect(completedFlowResponse.ok()).toBe(true);
+  const completedFlow = (await completedFlowResponse.json()) as {
+    verification: {
+      status: string;
+      evidenceMap: {
+        status: string;
+        executionStatus: string;
+        models: {
+          model: string;
+          status: string;
+          runId: string;
+          inputHash: string;
+          codeHash: string | null;
+          outputHash: string | null;
+          usage: { status: string };
+          checks: { requirementId: string; passed: boolean; detail: string }[] | null;
+        }[];
+      } | null;
+    } | null;
+  };
+  const modelEvidence = completedFlow.verification?.evidenceMap;
+  expect(completedFlow.verification?.status).toBe('completed');
+  expect(modelEvidence?.status).toBe('passed');
+  expect(modelEvidence?.executionStatus).toBe('passed');
+  expect(modelEvidence?.models).toHaveLength(2);
+  expect(modelEvidence?.models?.map(model => model.status)).toEqual(['completed', 'completed']);
+  expect(modelEvidence?.models?.[0]?.inputHash).toBe(modelEvidence?.models?.[1]?.inputHash);
+  expect(modelEvidence?.models?.[0]?.runId).not.toBe(modelEvidence?.models?.[1]?.runId);
+  for (const model of modelEvidence?.models ?? []) {
+    expect(model.codeHash).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(model.outputHash).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(model.usage.status).toBe('unknown');
+    expect(model.checks).toContainEqual({
+      requirementId: 'FR-01',
+      passed: true,
+      detail: 'Row count matches',
+    });
+  }
+
+  await phaseNavigation.getByRole('button', { name: /TW-07.*Xác minh kết quả độc lập/ }).click();
+  const modelResults = page.locator('section[aria-labelledby="model-comparison-results-title"]');
+  await expect(modelResults).toBeVisible({ timeout: 30_000 });
+  const modelRows = modelResults.locator('tbody > tr');
+  await expect(modelRows).toHaveCount(2);
+  await expect(modelResults).toContainText('Chi phí: chưa xác định.');
+  for (const model of ['router9/cx/gpt-6-luna', 'router9/cx/gpt-5.6-luna']) {
+    const row = modelRows.filter({ hasText: model.replace(/^router9\//u, '') });
+    await expect(row).toHaveCount(1);
+    await expect(row.locator('th[scope="row"]')).toHaveText(model.replace(/^router9\//u, ''));
+    await expect(row).toContainText('Hoàn tất');
+    const checkResults = row.locator('td').nth(2);
+    const checkSummary = checkResults.locator('summary');
+    await expect(checkSummary).toHaveText('1/1 đạt');
+    await checkSummary.click();
+    await expect(checkResults).toContainText('FR-01');
+    await expect(checkResults).toContainText('Row count matches');
+    await expect(row.getByRole('button', { name: `Xem code ${model}` })).toBeEnabled();
+    await expect(row.getByRole('button', { name: `Xem output ${model}` })).toBeEnabled();
+  }
+  const screenshotStem = `/tmp/anvil-live-comparison-${projectId}`;
+  await page.screenshot({ path: `${screenshotStem}-tw07-desktop.png`, fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  const compactVerification = await page.evaluate(() => ({
+    viewportWidth: window.innerWidth,
+    documentWidth: document.documentElement.scrollWidth,
+  }));
+  expect(compactVerification.documentWidth).toBeLessThanOrEqual(compactVerification.viewportWidth);
+  await page.screenshot({ path: `${screenshotStem}-tw07-390px.png`, fullPage: true });
+  await page.setViewportSize({ width: 1280, height: 720 });
+
+  const historyResponse = await page.request.get(`/api/system3/projects/${projectId}/history`);
+  expect(historyResponse.ok()).toBe(true);
+  const history = (await historyResponse.json()) as {
+    approvals: unknown[];
+    executions: unknown[];
+    verifications: unknown[];
+  };
+  expect(history.approvals).toHaveLength(1);
+  expect(history.executions).toHaveLength(1);
+  expect(history.verifications).toHaveLength(1);
+
+  await phaseNavigation.getByRole('button', { name: /OP-08.*Yêu cầu bàn giao/ }).click();
+  await page.getByRole('link', { name: 'Mở khu vực bàn giao' }).click();
+  await expect(page.getByRole('heading', { name: 'Kiểm tra và tạo gói bàn giao' })).toBeVisible();
+  await page.getByRole('button', { name: 'Xác nhận và tạo gói bàn giao' }).click();
+  const downloadLink = page.getByRole('link', { name: 'Tải gói bàn giao' });
+  await expect(downloadLink).toBeVisible({ timeout: 45_000 });
+  await page.screenshot({ path: `${screenshotStem}-delivery-desktop.png`, fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  const compactDelivery = await page.evaluate(() => ({
+    viewportWidth: window.innerWidth,
+    documentWidth: document.documentElement.scrollWidth,
+  }));
+  expect(compactDelivery.documentWidth).toBeLessThanOrEqual(compactDelivery.viewportWidth);
+  await page.screenshot({ path: `${screenshotStem}-delivery-390px.png`, fullPage: true });
+
+  const downloadPromise = page.waitForEvent('download');
+  await downloadLink.click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toBe('generated_project.tar.gz');
+  await download.saveAs(`${screenshotStem}-generated_project.tar.gz`);
+});
+
+test('previews verified model code and output inline @comparison-preview', async ({ page }) => {
+  const projectId = process.env.ANVIL_COMPARISON_PROJECT_ID;
+  test.skip(!projectId, 'Requires an existing verified comparison fixture.');
+  await page.goto(`/console/projects/${projectId}/flow`);
+  await expandLifecycleDetails(page);
+  const navigation = page.getByRole('navigation', {
+    name: '6 giai đoạn và 10 hoạt động vòng đời dự án',
+  });
+  await navigation.getByRole('button', { name: /TW-07.*Xác minh kết quả độc lập/ }).click();
+  const modelRows = page.locator('.s3-comparison-results tbody > tr');
+  const firstModelCode = modelRows
+    .filter({ hasText: 'cx/gpt-6-luna' })
+    .getByRole('button', { name: 'Xem code router9/cx/gpt-6-luna' });
+  await firstModelCode.click();
+  const viewer = page.getByRole('dialog');
+  await expect(viewer.locator('pre')).toHaveCount(1);
+  await expect(viewer.locator('pre').first()).toBeVisible();
+  expect((await viewer.locator('pre').first().boundingBox())?.height ?? 0).toBeGreaterThan(50);
+  await expect(viewer).toContainText('models/0/solution.py');
+  await expect(viewer).not.toContainText('models/1/solution.py');
+  const originalUrl = page.url();
+  await viewer.locator('pre').first().scrollIntoViewIfNeeded();
+  expect(
+    await viewer
+      .locator('pre')
+      .first()
+      .evaluate(element => element.parentElement?.getBoundingClientRect().height ?? 0)
+  ).toBeGreaterThan(50);
+  await page.screenshot({ path: '/tmp/anvil-comparison-inline-desktop.png' });
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  await viewer.locator('pre').first().scrollIntoViewIfNeeded();
+  await page.screenshot({ path: '/tmp/anvil-comparison-inline-390px.png' });
+  await page.keyboard.press('Escape');
+  await expect(viewer).toBeHidden();
+  await expect(firstModelCode).toBeFocused();
+  const secondModelOutput = modelRows
+    .filter({ hasText: 'cx/gpt-5.6-luna' })
+    .getByRole('button', { name: 'Xem output router9/cx/gpt-5.6-luna' });
+  await secondModelOutput.click();
+  const outputViewer = page.getByRole('dialog');
+  await expect(
+    outputViewer.getByRole('heading', { name: 'Model output · router9/cx/gpt-5.6-luna' })
+  ).toBeVisible();
+  await expect(
+    outputViewer.getByRole('heading', { name: 'Model output · router9/cx/gpt-6-luna' })
+  ).toHaveCount(0);
+  await expect(outputViewer.locator('table tbody tr')).toContainText('rows');
+  await page.keyboard.press('Escape');
+  await expect(secondModelOutput).toBeFocused();
+  expect(page.url()).toBe(originalUrl);
 });

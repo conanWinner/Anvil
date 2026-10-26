@@ -7,11 +7,9 @@ import {
   Clock3,
   FileCheck2,
   FileInput,
-  FolderKanban,
   GitCompareArrows,
   GitBranch,
   LayoutDashboard,
-  Layers3,
   LockKeyhole,
   Moon,
   PackageCheck,
@@ -29,20 +27,26 @@ import { createElement, useEffect, useRef, useState, type ReactElement } from 'r
 import { Link, NavLink, Navigate, Route, Routes, useNavigate, useParams } from 'react-router';
 import {
   listSystem3Projects,
+  listPiModels,
+  type PiModelInfo,
   type System3LifecycleAttemptActivity,
   type System3ProjectResponse,
 } from '@/lib/api';
 import {
   buildLifecycleView,
   completedLifecyclePhaseCount,
+  selectSuggestedLifecycleActivity,
   type LifecycleActivityView,
   type LifecyclePhaseView,
 } from './lifecycle-view';
 import { presentDecisionQuestion } from './decision-presentation';
 import { System3SourceIntakeRequestError, system3Store, useSystem3Project } from './store';
-import { InlineResourceViewer, ResourceList } from './ResourceViewer';
+import { InlineResourceViewer, ResourceList, type ModelResourceView } from './ResourceViewer';
 import { UnderstandingWorkspace } from './UnderstandingWorkspace';
 import { LifecycleAttemptBar } from './LifecycleAttemptBar';
+import { buildJourney } from './journey';
+import { JourneySteps } from './JourneySteps';
+import { presentProjectCard } from './project-card';
 import type {
   PhaseStatus,
   System3ActivityResourceView,
@@ -54,14 +58,9 @@ import type {
 } from './types';
 import './system3.css';
 
-const NAV_ITEMS = [
-  { to: 'overview', label: 'Tổng quan', icon: LayoutDashboard },
-  { to: 'flow', label: 'Vòng đời dự án', icon: LayoutDashboard },
-  { to: 'sources', label: 'Nguồn đầu vào', icon: FolderKanban },
-  { to: 'evidence', label: 'Kết quả & Bằng chứng', icon: Layers3 },
-  { to: 'decisions', label: 'Quyết định & Phê duyệt', icon: CircleHelp },
-  { to: 'delivery', label: 'Bàn giao', icon: PackageCheck },
-] as const;
+const NAV_ITEMS = [{ to: 'flow', label: 'Workspace dự án', icon: LayoutDashboard }] as const;
+const OLIST_BLUEPRINT_URL = '/samples/olist/customer-summary-blueprint.md';
+const OLIST_DATASET_URL = '/samples/olist/olist-customers-sample.csv';
 
 function Shell({ children }: { children: ReactElement }): ReactElement {
   const [dark, setDark] = useState(() => {
@@ -82,9 +81,6 @@ function Shell({ children }: { children: ReactElement }): ReactElement {
           <span>Anvil Projects</span>
         </Link>
         <div className="s3-top-actions">
-          <span>Customer Churn Reference</span>
-          <span>•</span>
-          <span>Project control plane</span>
           <button
             type="button"
             className="s3-theme-button"
@@ -110,13 +106,12 @@ function Shell({ children }: { children: ReactElement }): ReactElement {
 
 function ProjectNav(): ReactElement {
   const project = useSystem3Project();
-  const pending = project.decisions.filter(decision => decision.status === 'pending').length;
-  const approvalAttention =
-    pending === 0 && project.readiness !== undefined && !project.manifestApproved ? 1 : 0;
-  const decisionAttention = pending + approvalAttention;
   return (
     <nav className="s3-nav" aria-label="Điều hướng Anvil Project">
-      <div className="s3-project-name">{project.name}</div>
+      <Link to="/console/projects" className="s3-project-back">
+        Dự án
+      </Link>
+      <span aria-hidden="true">/</span>
       {NAV_ITEMS.map(item => {
         return (
           <NavLink
@@ -127,21 +122,26 @@ function ProjectNav(): ReactElement {
             <span className="flex items-center gap-2">
               {createElement(item.icon, { size: 16 })} {item.label}
             </span>
-            {item.to === 'decisions' && decisionAttention > 0 ? (
-              <span className="s3-nav-badge">{decisionAttention}</span>
-            ) : null}
           </NavLink>
         );
       })}
-      <NavLink
-        className={({ isActive }) => `s3-nav-technical ${isActive ? 's3-active' : ''}`}
-        to={`/console/projects/${project.id}/technical`}
-      >
-        <span className="flex items-center gap-2">
-          <PanelLeftClose size={16} /> Technical Console
-        </span>
-        <ChevronRight size={15} />
-      </NavLink>
+      <details className="s3-nav-secondary">
+        <summary>Chi tiết khác</summary>
+        <div>
+          {[
+            ['overview', 'Tổng quan'],
+            ['sources', 'Nguồn đầu vào'],
+            ['evidence', 'Kết quả & Bằng chứng'],
+            ['decisions', 'Quyết định & Phê duyệt'],
+            ['delivery', 'Bàn giao'],
+            ['technical', 'Chi tiết kỹ thuật'],
+          ].map(([route, label]) => (
+            <NavLink key={route} to={`/console/projects/${project.id}/${route}`}>
+              {label}
+            </NavLink>
+          ))}
+        </div>
+      </details>
     </nav>
   );
 }
@@ -150,25 +150,34 @@ function Workspace({ children }: { children: ReactElement }): ReactElement {
   const { projectId } = useParams();
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [operationLoadError, setOperationLoadError] = useState<string | null>(null);
   useEffect(() => {
     if (projectId === undefined) {
       setLoading(false);
       setLoadError('Project ID không hợp lệ');
       return;
     }
+    const controller = new AbortController();
     let active = true;
     setLoading(true);
     setLoadError(null);
-    void system3Store
-      .load(projectId)
-      .catch(error => {
-        if (active) setLoadError(error instanceof Error ? error.message : 'Không thể tải project');
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
+    setOperationLoadError(null);
+    void system3Store.load(projectId, controller.signal).then(
+      () => {
+        if (active && !controller.signal.aborted) {
+          setLoading(false);
+          void system3Store.watchOperations(projectId, controller.signal, setOperationLoadError);
+        }
+      },
+      error => {
+        if (!active || controller.signal.aborted) return;
+        setLoadError(error instanceof Error ? error.message : 'Không thể tải project');
+        setLoading(false);
+      }
+    );
     return (): void => {
       active = false;
+      controller.abort();
     };
   }, [projectId]);
   return (
@@ -191,6 +200,11 @@ function Workspace({ children }: { children: ReactElement }): ReactElement {
           <>
             <ProjectNav />
             <main className="s3-main" id="main-content">
+              {operationLoadError !== null ? (
+                <p className="s3-note" role="status" aria-live="polite">
+                  Không thể cập nhật trạng thái operation: {operationLoadError}
+                </p>
+              ) : null}
               {children}
             </main>
           </>
@@ -213,11 +227,6 @@ function ProjectHeader({
   const [abandoning, setAbandoning] = useState(false);
   const [headerError, setHeaderError] = useState<string | null>(null);
   const pending = project.decisions.filter(decision => decision.status === 'pending').length;
-  const lifecycle = buildLifecycleView(project);
-  const completed = completedLifecyclePhaseCount(lifecycle);
-  const activeSourceCount = new Set(
-    project.sources.filter(source => source.status === 'ready').map(source => source.sourceId)
-  ).size;
   const primary = (): { label: string; action: () => void; disabled?: boolean } => {
     if (project.operation?.status === 'unknown')
       return {
@@ -369,11 +378,8 @@ function ProjectHeader({
     <header className="s3-workspace-header s3-workspace-header-compact">
       <div className="s3-header-main">
         <div>
-          <p className="s3-kicker">Customer Churn Reference</p>
           <h1>{project.name}</h1>
-          <p>
-            {project.description} · {project.workflowVersion}
-          </p>
+          {project.description ? <p>{project.description}</p> : null}
         </div>
         {showPrimaryAction ? (
           <button
@@ -385,20 +391,6 @@ function ProjectHeader({
             {action.label}
           </button>
         ) : null}
-      </div>
-      <div className="s3-compact-context" aria-label="Tóm tắt trạng thái project">
-        <span>
-          <strong>{completed.toString()}/6</strong> phase hoàn tất
-        </span>
-        <span>
-          <strong>{activeSourceCount.toString()}</strong> nguồn đang dùng
-        </span>
-        <span className={pending > 0 ? 'needs-attention' : ''}>
-          <strong>{pending.toString()}</strong> quyết định cần xử lý
-        </span>
-        <span className={project.freshness === 'current' ? '' : 'needs-attention'}>
-          {project.freshness === 'current' ? 'Dữ liệu hiện hành' : 'Cần phân tích lại'}
-        </span>
       </div>
       {headerError !== null ? (
         <p className="s3-note" role="alert" aria-live="assertive">
@@ -544,37 +536,13 @@ function OverviewPage(): ReactElement {
 function FlowPage(): ReactElement {
   const project = useSystem3Project();
   const lifecycle = buildLifecycleView(project);
-  const nextPhase = lifecycle.find(item => item.status !== 'completed') ?? lifecycle.at(-1);
-  const suggestedActivityId =
-    nextPhase?.activities.find(activity => activity.status !== 'completed')?.id ??
-    nextPhase?.activities[0]?.id ??
-    'OP-00';
+  const suggestedActivityId = selectSuggestedLifecycleActivity(project, lifecycle).activityId;
   const selectionWasExplicit = useRef(false);
   const [selectedActivityId, setSelectedActivityId] = useState<string>(suggestedActivityId);
   const selected =
     lifecycle.find(phase =>
       phase.activities.some(activity => activity.id === selectedActivityId)
     ) ?? lifecycle[0];
-  const selectedActivity = selected?.activities.find(
-    activity => activity.id === selectedActivityId
-  );
-  const pendingDecisionCount = project.decisions.filter(
-    decision => decision.status === 'pending'
-  ).length;
-  const selectedActivityOwnsPrimaryAction =
-    (selectedActivity !== undefined && selectedActivity.route !== 'flow') ||
-    (!project.intakeGate.ready && selectedActivityId === 'OP-00') ||
-    (project.intakeGate.ready &&
-      project.freshness === 'current' &&
-      pendingDecisionCount > 0 &&
-      selectedActivityId === 'TW-03') ||
-    (project.intakeGate.ready &&
-      project.freshness === 'current' &&
-      pendingDecisionCount === 0 &&
-      project.readiness !== undefined &&
-      !project.planCompiled &&
-      selectedActivityId === 'OP-04') ||
-    (project.planCompiled && !project.manifestApproved && selectedActivityId === 'OP-05');
   const runAttemptActivity = async (activityId: System3LifecycleAttemptActivity): Promise<void> => {
     if (activityId === 'TW-03') return system3Store.runReadiness();
     if (activityId === 'OP-04') return system3Store.compile();
@@ -587,44 +555,41 @@ function FlowPage(): ReactElement {
   useEffect(() => {
     if (!selectionWasExplicit.current) setSelectedActivityId(suggestedActivityId);
   }, [project.id, suggestedActivityId]);
-  if (selected === undefined) {
+  if (selected === undefined)
     return (
       <Workspace>
         <div aria-hidden="true" />
       </Workspace>
     );
-  }
   return (
     <Workspace>
       <>
-        <ProjectHeader showPrimaryAction={!selectedActivityOwnsPrimaryAction} />
-        <section className="s3-lifecycle-workspace" aria-labelledby="project-lifecycle-title">
-          <header className="s3-lifecycle-toolbar">
-            <div>
-              <p className="s3-kicker">Project Lifecycle</p>
-              <h2 id="project-lifecycle-title">Vòng đời dự án</h2>
-              <p>Chọn một hoạt động. Mọi đầu vào, kết quả và việc cần làm nằm cùng một chỗ.</p>
-            </div>
-            <div className="s3-lifecycle-legend" aria-label="Chú thích loại hoạt động">
-              <span>
-                <LockKeyhole size={14} /> OP · thao tác backend
-              </span>
-              <span>
-                <Workflow size={14} /> TW · quy trình kỹ thuật
-              </span>
-            </div>
-          </header>
-          <LifecycleAttemptBar
+        <ProjectHeader showPrimaryAction={false} />
+        <JourneySteps steps={buildJourney(lifecycle)} />
+        <section className="s3-minimal-workspace" aria-label="Workspace dự án">
+          {selectionWasExplicit.current && selectedActivityId !== suggestedActivityId ? (
+            <button
+              type="button"
+              className="s3-text-button"
+              onClick={() => {
+                selectionWasExplicit.current = false;
+                setSelectedActivityId(suggestedActivityId);
+              }}
+            >
+              Trở lại bước hiện tại
+            </button>
+          ) : null}
+          <LifecyclePhaseDetail
+            onResourceOpen={() => {
+              selectionWasExplicit.current = true;
+            }}
+            phase={selected}
             projectId={project.id}
             projectVersion={project.version}
             selectedActivityId={selectedActivityId}
-            onSelectActivity={activityId => {
-              selectionWasExplicit.current = true;
-              setSelectedActivityId(activityId);
-            }}
-            onRunActivity={runAttemptActivity}
           />
-          <div className="s3-lifecycle-layout">
+          <details className="s3-secondary-details s3-lifecycle-disclosure">
+            <summary>Chi tiết vòng đời · 6 giai đoạn, 10 hoạt động</summary>
             <nav
               className="s3-lifecycle-rail"
               aria-label="6 giai đoạn và 10 hoạt động vòng đời dự án"
@@ -666,13 +631,21 @@ function FlowPage(): ReactElement {
                 </section>
               ))}
             </nav>
-            <LifecyclePhaseDetail
-              phase={selected}
+          </details>
+          <details className="s3-secondary-details">
+            <summary>Lịch sử và kỹ thuật</summary>
+            <LifecycleAttemptBar
               projectId={project.id}
               projectVersion={project.version}
+              hasExecution={project.execution !== undefined}
               selectedActivityId={selectedActivityId}
+              onSelectActivity={activityId => {
+                selectionWasExplicit.current = true;
+                setSelectedActivityId(activityId);
+              }}
+              onRunActivity={runAttemptActivity}
             />
-          </div>
+          </details>
         </section>
       </>
     </Workspace>
@@ -681,6 +654,7 @@ function FlowPage(): ReactElement {
 
 function PlanReviewDialog({ onClose }: { onClose: () => void }): ReactElement {
   const project = useSystem3Project();
+  const navigate = useNavigate();
   const dialogRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const previouslyFocusedRef = useRef<HTMLElement | null>(null);
@@ -728,8 +702,8 @@ function PlanReviewDialog({ onClose }: { onClose: () => void }): ReactElement {
         <header className="s3-dialog-head">
           <div>
             <p className="s3-kicker">Approval manifest</p>
-            <h2 id="plan-review-title">Review kế hoạch trước khi build</h2>
-            <p>Approval sẽ pin chính xác workflow, nguồn, runtime profile và plan hash dưới đây.</p>
+            <h2 id="plan-review-title">Xem kế hoạch trước khi chạy</h2>
+            <p>Kiểm tra bài toán, dữ liệu, các model và quyền thực thi trước khi phê duyệt.</p>
           </div>
           <button
             ref={closeButtonRef}
@@ -743,7 +717,12 @@ function PlanReviewDialog({ onClose }: { onClose: () => void }): ReactElement {
         </header>
         <div className="s3-dialog-body">
           <div className="s3-review-grid">
-            <ReviewItem label="Product workflow" value={project.workflowVersion} />
+            <ReviewItem
+              label="Product workflow"
+              value={
+                project.compilation?.modelComparison ? 'So sánh nhiều LLM' : project.workflowVersion
+              }
+            />
             <ReviewItem
               label="Input snapshot"
               value={`${(project.compilation?.inputSourceCount ?? 0).toString()} source đã pin`}
@@ -757,9 +736,11 @@ function PlanReviewDialog({ onClose }: { onClose: () => void }): ReactElement {
             <ReviewItem
               label="Rerun scope"
               value={
-                project.compilation?.rerunMode === 'scoped'
-                  ? `Scoped ${project.compilation.executionMode} · ${project.compilation.affectedPhases.join(' · ')}`
-                  : 'Full baseline flow'
+                project.compilation?.modelComparison
+                  ? 'Full model comparison'
+                  : project.compilation?.rerunMode === 'scoped'
+                    ? `Scoped ${project.compilation.executionMode} · ${project.compilation.affectedPhases.join(' · ')}`
+                    : 'Full baseline flow'
               }
             />
             <ReviewItem
@@ -771,27 +752,76 @@ function PlanReviewDialog({ onClose }: { onClose: () => void }): ReactElement {
               }
             />
           </div>
+          {project.compilation?.modelComparison ? (
+            <section className="s3-section" aria-labelledby="model-comparison-plan-title">
+              <h3 id="model-comparison-plan-title">So sánh nhiều LLM</h3>
+              <p>
+                Các model dùng cùng input đã pin và cùng harness Python; Anvil chạy chúng riêng
+                trong môi trường cô lập.
+              </p>
+              <dl className="s3-activity-brief">
+                <div>
+                  <dt>Model đã chọn</dt>
+                  <dd>{project.compilation.modelComparison.models.join(' · ')}</dd>
+                </div>
+                <div>
+                  <dt>Requirement IDs</dt>
+                  <dd>{project.compilation.modelComparison.requirementIds.join(' · ')}</dd>
+                </div>
+              </dl>
+              <details>
+                <summary>Prompt được pin</summary>
+                <pre>{project.compilation.modelComparison.prompt}</pre>
+              </details>
+              <ul className="s3-check-list">
+                <li>
+                  <Check size={15} /> Không có network trong sandbox.
+                </li>
+                <li>
+                  <Check size={15} /> Mỗi solution/harness: output 64 KiB, 256 MiB RAM, 1 CPU, tối
+                  đa 16 process, timeout 30 giây.
+                </li>
+                <li>
+                  <Check size={15} /> Sinh code có deadline 60 giây cho mỗi model.
+                </li>
+              </ul>
+              <p>Chi phí chưa được xác định; chưa có hard USD cap.</p>
+            </section>
+          ) : null}
           <section className="s3-section">
             <h3>Phạm vi được phép thực thi</h3>
-            <ul className="s3-check-list">
-              {project.compilation?.executionMode === 'full' ? (
+            {project.compilation?.modelComparison ? (
+              <ul className="s3-check-list">
                 <li>
-                  <Check size={15} /> Sinh project Python trong vùng artifact cô lập của run
+                  <Check size={15} /> Chạy các model đã chọn trên cùng input đã pin và đối chiếu
+                  checks của requirement.
                 </li>
-              ) : (
                 <li>
-                  <Check size={15} /> Kiểm hash và materialize đúng artifact đã approve
+                  <Check size={15} /> Mỗi model chạy tách biệt; Anvil không tự chọn model thắng hay
+                  deploy kết quả.
                 </li>
-              )}
-              {project.compilation?.executionMode !== 'delivery' ? (
+              </ul>
+            ) : (
+              <ul className="s3-check-list">
+                {project.compilation?.executionMode === 'full' ? (
+                  <li>
+                    <Check size={15} /> Sinh project Python trong vùng artifact cô lập của run
+                  </li>
+                ) : (
+                  <li>
+                    <Check size={15} /> Kiểm hash và materialize đúng artifact đã approve
+                  </li>
+                )}
+                {project.compilation?.executionMode !== 'delivery' ? (
+                  <li>
+                    <Check size={15} /> Chạy test, data pipeline và baseline experiment
+                  </li>
+                ) : null}
                 <li>
-                  <Check size={15} /> Chạy test, data pipeline và baseline experiment
+                  <Check size={15} /> Đóng gói artifact; không deploy hoặc push tự động
                 </li>
-              ) : null}
-              <li>
-                <Check size={15} /> Đóng gói artifact; không deploy hoặc push tự động
-              </li>
-            </ul>
+              </ul>
+            )}
             {(project.compilation?.skippedPhases.length ?? 0) > 0 ? (
               <p className="s3-note">
                 Phase được bỏ qua có chủ đích: {project.compilation?.skippedPhases.join(' · ')}.
@@ -800,8 +830,9 @@ function PlanReviewDialog({ onClose }: { onClose: () => void }): ReactElement {
             ) : null}
           </section>
           <div className="s3-note">
-            Explainability và 13 product requirements vẫn cần evidence thật. Approval này không biến
-            scope gap thành verified.
+            {project.compilation?.modelComparison
+              ? 'Kết quả comparison chỉ báo cáo checks của harness và không quyết định thay người review.'
+              : 'Explainability và 13 product requirements vẫn cần evidence thật. Approval này không biến scope gap thành verified.'}
           </div>
           {submitError !== null ? (
             <p className="s3-note" role="alert" aria-live="assertive">
@@ -815,7 +846,7 @@ function PlanReviewDialog({ onClose }: { onClose: () => void }): ReactElement {
           </button>
           <button
             type="button"
-            className="s3-button"
+            className="s3-button s3-button-secondary"
             disabled={submitting || project.compilation === undefined}
             onClick={() => {
               setSubmitting(true);
@@ -833,12 +864,116 @@ function PlanReviewDialog({ onClose }: { onClose: () => void }): ReactElement {
                 });
             }}
           >
+            Chỉ phê duyệt
+          </button>
+          <button
+            type="button"
+            className="s3-button"
+            disabled={submitting || project.compilation === undefined}
+            onClick={() => {
+              setSubmitting(true);
+              setSubmitError(null);
+              void system3Store
+                .approveAndExecute()
+                .then(() => {
+                  onClose();
+                  navigate(`/console/projects/${project.id}/flow`);
+                })
+                .catch(error => {
+                  setSubmitError(
+                    error instanceof Error ? error.message : 'Không thể phê duyệt và chạy'
+                  );
+                })
+                .finally(() => {
+                  setSubmitting(false);
+                });
+            }}
+          >
             <ShieldCheck size={15} className="mr-1 inline" />
-            {submitting ? 'Đang approve…' : 'Approve manifest'}
+            {submitting ? 'Đang phê duyệt và chạy…' : 'Phê duyệt và chạy'}
           </button>
         </footer>
       </section>
     </div>
+  );
+}
+
+function checksTone(checks: readonly { passed: boolean }[]): 'good' | 'warn' | 'bad' {
+  const passed = checks.filter(check => check.passed).length;
+  if (checks.length > 0 && passed === checks.length) return 'good';
+  return passed === 0 ? 'bad' : 'warn';
+}
+
+function comparisonSummary(
+  reports: readonly { checks?: readonly { passed: boolean }[] | null }[]
+): string {
+  const allPassed = reports.filter(
+    report => report.checks && checksTone(report.checks) === 'good'
+  ).length;
+  return `${allPassed.toString()}/${reports.length.toString()} model đạt toàn bộ tiêu chí kiểm tra`;
+}
+
+function PlanSummary({ onOpenDetails }: { onOpenDetails: () => void }): ReactElement {
+  const project = useSystem3Project();
+  const comparison = project.compilation?.modelComparison;
+  return (
+    <section className="s3-plan-summary" aria-labelledby="plan-summary-title">
+      <header>
+        <h3 id="plan-summary-title">Kế hoạch sẽ chạy</h3>
+        <button type="button" className="s3-text-button" onClick={onOpenDetails}>
+          Xem chi tiết kế hoạch
+        </button>
+      </header>
+      <dl className="s3-plan-summary-grid">
+        <div>
+          <dt>{comparison ? 'Các LLM' : 'Quy trình'}</dt>
+          <dd>
+            {comparison ? (
+              <span className="s3-pill-row">
+                {comparison.models.map(model => (
+                  <span key={model} className="s3-pill">
+                    {model.replace(/^router9\//u, '')}
+                  </span>
+                ))}
+              </span>
+            ) : (
+              project.workflowVersion
+            )}
+          </dd>
+        </div>
+        <div>
+          <dt>Dữ liệu</dt>
+          <dd>{(project.compilation?.inputSourceCount ?? 0).toString()} nguồn đã ghim phiên bản</dd>
+        </div>
+        {comparison ? (
+          <div>
+            <dt>Tiêu chí kiểm tra</dt>
+            <dd>
+              <span className="s3-pill-row">
+                {comparison.requirementIds.map(id => (
+                  <span key={id} className="s3-pill subtle">
+                    {id}
+                  </span>
+                ))}
+              </span>
+            </dd>
+          </div>
+        ) : null}
+        <div>
+          <dt>Giới hạn</dt>
+          <dd>
+            {comparison
+              ? 'Sandbox không mạng · 256 MiB · 30 giây/bước · chi phí chưa xác định'
+              : (project.compilation?.runtime ?? 'Chưa xác định')}
+          </dd>
+        </div>
+      </dl>
+      <p className="s3-plan-summary-note">
+        {comparison
+          ? 'Mỗi model chạy riêng trên cùng dữ liệu và cùng bộ kiểm tra. Anvil không tự chọn model thắng và không tự bàn giao.'
+          : 'Anvil chỉ chạy đúng kế hoạch được duyệt và không tự bàn giao.'}
+      </p>
+    </section>
   );
 }
 
@@ -931,12 +1066,58 @@ function ActivityResourceSection({
   );
 }
 
+function ActivityResources({
+  inputs,
+  outputs,
+  evidence,
+  activityId,
+  onOpen,
+}: {
+  inputs: readonly System3ResourceDescriptor[];
+  outputs: readonly System3ResourceDescriptor[];
+  evidence: readonly System3ResourceDescriptor[];
+  activityId: string;
+  onOpen: (resource: System3ResourceDescriptor, opener: HTMLElement) => void;
+}): ReactElement {
+  return (
+    <div className="s3-activity-resource-grid">
+      <ActivityResourceSection
+        title="Đầu vào đã dùng"
+        description="Đúng phiên bản Anvil đã cố định cho bước này."
+        resources={inputs}
+        empty="Chưa có đầu vào được lưu."
+        onOpen={onOpen}
+      />
+      <ActivityResourceSection
+        title="Kết quả đã tạo"
+        description={
+          activityId === 'OP-01'
+            ? 'Chỉ hiển thị báo cáo của lần kiểm tra gần nhất.'
+            : 'Báo cáo và kết quả mở xem trực tiếp tại đây.'
+        }
+        resources={outputs}
+        empty="Bước này chưa tạo kết quả."
+        onOpen={onOpen}
+      />
+      <ActivityResourceSection
+        title="Bằng chứng"
+        description="Thông tin dùng để xác minh yêu cầu hoặc kết luận."
+        resources={evidence}
+        empty="Bước này chưa có bằng chứng riêng."
+        onOpen={onOpen}
+      />
+    </div>
+  );
+}
+
 function LifecyclePhaseDetail({
   phase,
   projectId,
   projectVersion,
   selectedActivityId,
+  onResourceOpen,
 }: {
+  onResourceOpen: () => void;
   phase: LifecyclePhaseView;
   projectId: string;
   projectVersion: number;
@@ -946,18 +1127,25 @@ function LifecyclePhaseDetail({
   const [activityView, setActivityView] = useState<System3ActivityResourceView | null>(null);
   const [activityViewError, setActivityViewError] = useState<string | null>(null);
   const [activityViewLoading, setActivityViewLoading] = useState(false);
+  const [startingUnderstanding, setStartingUnderstanding] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [performing, setPerforming] = useState(false);
+  const [modelView, setModelView] = useState<ModelResourceView | undefined>();
+  const [understandingError, setUnderstandingError] = useState<string | null>(null);
   const [selectedResource, setSelectedResource] = useState<System3ResourceDescriptor | null>(null);
   const [resourceOpener, setResourceOpener] = useState<HTMLElement | null>(null);
   const selectedActivity =
     phase.activities.find(activity => activity.id === selectedActivityId) ?? phase.activities[0];
   const selectedActivityIdForRequest = selectedActivity?.id ?? '';
   useEffect(() => {
+    setActivityView(null);
+    setSelectedResource(null);
+  }, [projectId, selectedActivityIdForRequest]);
+  useEffect(() => {
     if (selectedActivityIdForRequest === '') return undefined;
     const controller = new AbortController();
     setActivityViewLoading(true);
     setActivityViewError(null);
-    setActivityView(null);
-    setSelectedResource(null);
     void fetch(
       `/api/system3/projects/${encodeURIComponent(projectId)}/activities/${encodeURIComponent(selectedActivityIdForRequest)}`,
       { signal: controller.signal }
@@ -978,11 +1166,19 @@ function LifecyclePhaseDetail({
     return (): void => {
       controller.abort();
     };
-  }, [projectId, selectedActivityIdForRequest]);
+  }, [
+    projectId,
+    selectedActivityIdForRequest,
+    projectVersion,
+    project.operation?.id,
+    project.operation?.status,
+  ]);
   if (selectedActivity === undefined) return <div aria-hidden="true" />;
   const route = `/console/projects/${projectId}/${selectedActivity.route}`;
   const technicalPhase = activityAsTechnicalPhase(phase, selectedActivity);
   const openResource = (resource: System3ResourceDescriptor, opener: HTMLElement): void => {
+    onResourceOpen();
+    setModelView(undefined);
     setResourceOpener(opener);
     setSelectedResource(resource);
   };
@@ -993,6 +1189,144 @@ function LifecyclePhaseDetail({
     ) ?? [];
   const evidence = activityView?.evidence ?? [];
   const technicalResources = activityView?.technicalResources ?? [];
+  const understandingPending =
+    project.operation?.status === 'accepted' ||
+    project.operation?.status === 'running' ||
+    project.operation?.status === 'unknown';
+  const startUnderstanding = (): void => {
+    setStartingUnderstanding(true);
+    setUnderstandingError(null);
+    void system3Store
+      .analyze()
+      .catch(error => {
+        setUnderstandingError(
+          error instanceof Error
+            ? `${error.message} Hãy kiểm tra trạng thái operation rồi thử lại.`
+            : 'Không thể bắt đầu Hiểu dự án. Hãy kiểm tra trạng thái operation rồi thử lại.'
+        );
+      })
+      .finally(() => {
+        setStartingUnderstanding(false);
+      });
+  };
+  const comparisonReports = project.verification?.modelReports ?? [];
+  const comparisonArtifact = [...inputs, ...outputs].find(
+    resource => resource.resourceType === 'execution_artifact'
+  );
+  const hasComparisonResults =
+    (selectedActivity.id === 'TW-06' || selectedActivity.id === 'TW-07') &&
+    comparisonReports.length > 0;
+  // Results lead once they exist; an activity with nothing produced yet keeps its inputs one click away.
+  const resourcesCollapsed =
+    hasComparisonResults ||
+    (activityView !== null && outputs.length === 0 && evidence.length === 0);
+  const runAction = (action: () => Promise<void>): void => {
+    setPerforming(true);
+    setUnderstandingError(null);
+    void action()
+      .catch(error => {
+        setUnderstandingError(
+          error instanceof Error ? error.message : 'Không thể tiếp tục. Hãy thử lại.'
+        );
+      })
+      .finally(() => {
+        setPerforming(false);
+      });
+  };
+  const primaryAction = (): ReactElement | null => {
+    if (project.operation?.status === 'unknown')
+      return (
+        <Link className="s3-button no-underline" to={`/console/projects/${projectId}/technical`}>
+          Xem cách phục hồi
+        </Link>
+      );
+    if (understandingPending || performing) return <span role="status">Đang xử lý…</span>;
+    if (selectedActivity.id === 'TW-02')
+      return project.understandingRunId || selectedActivity.status === 'active' ? null : (
+        <button
+          type="button"
+          className="s3-button"
+          disabled={!project.intakeGate.ready || startingUnderstanding}
+          onClick={startUnderstanding}
+        >
+          {startingUnderstanding ? 'Đang bắt đầu…' : 'Bắt đầu phân tích'}
+        </button>
+      );
+    if (selectedActivity.id === 'OP-05' && project.planCompiled && !project.manifestApproved)
+      return (
+        <button
+          type="button"
+          className="s3-button"
+          disabled={project.compilation === undefined}
+          onClick={() => {
+            runAction(system3Store.approveAndExecute);
+          }}
+        >
+          <ShieldCheck size={15} aria-hidden="true" /> Phê duyệt và chạy
+        </button>
+      );
+    if (selectedActivity.id === 'OP-04' && project.readiness)
+      return (
+        <button
+          type="button"
+          className="s3-button"
+          onClick={() => {
+            runAction(async () => {
+              await system3Store.compile();
+              setReviewOpen(true);
+            });
+          }}
+        >
+          Chuẩn bị kế hoạch
+        </button>
+      );
+    if (selectedActivity.id === 'TW-06' && project.manifestApproved && !project.execution)
+      return (
+        <button
+          type="button"
+          className="s3-button"
+          onClick={() => {
+            runAction(system3Store.execute);
+          }}
+        >
+          Chạy các model
+        </button>
+      );
+    if (hasComparisonResults && project.freshness === 'current') {
+      if (project.deliveryAvailable)
+        return (
+          <a className="s3-button" href={`/api/system3/projects/${projectId}/delivery/package`}>
+            <PackageCheck size={15} aria-hidden="true" /> Tải gói chạy lại
+          </a>
+        );
+      if (project.deliveryReady)
+        return (
+          <button
+            type="button"
+            className="s3-button"
+            onClick={() => {
+              runAction(async () => {
+                await system3Store.deliver();
+                if (system3Store.getSnapshot().deliveryAvailable)
+                  window.location.assign(`/api/system3/projects/${projectId}/delivery/package`);
+              });
+            }}
+          >
+            <PackageCheck size={15} aria-hidden="true" /> Tạo và tải gói kết quả
+          </button>
+        );
+      return (
+        <span className="s3-note">
+          Chưa đủ điều kiện bàn giao. Xem kết quả kiểm tra của từng model.
+        </span>
+      );
+    }
+    return (
+      <Link className="s3-button no-underline" to={route}>
+        {activityActionLabel(selectedActivity)}
+      </Link>
+    );
+  };
   return (
     <>
       <article className="s3-activity-workspace" aria-labelledby="selected-activity-title">
@@ -1005,25 +1339,33 @@ function LifecyclePhaseDetail({
               {activityIcon(selectedActivity.id)}
             </span>
             <div>
-              <p className="s3-activity-code">
-                {selectedActivity.id} ·{' '}
-                {selectedActivity.executionKind === 'operation'
-                  ? 'Thao tác backend'
-                  : 'Quy trình kỹ thuật'}
+              <h2 id="selected-activity-title">
+                {hasComparisonResults
+                  ? project.freshness === 'current'
+                    ? 'Kết quả so sánh'
+                    : 'Kết quả so sánh cũ'
+                  : selectedActivity.label}
+              </h2>
+              <p>
+                {hasComparisonResults
+                  ? 'Cùng bài toán và dữ liệu; mỗi model có code, output và kết quả kiểm tra riêng.'
+                  : selectedActivity.description}
               </p>
-              <h2 id="selected-activity-title">{selectedActivity.label}</h2>
-              <p>{selectedActivity.description}</p>
             </div>
           </div>
           <div className="s3-activity-workspace-actions">
             <span className={`s3-status-badge ${selectedActivity.status}`}>
               {phaseStatusLabel(selectedActivity.status)}
             </span>
-            <Link className="s3-button no-underline" to={route}>
-              {activityActionLabel(selectedActivity)} <ArrowRight size={15} />
-            </Link>
+            {primaryAction()}
           </div>
         </header>
+
+        {understandingError !== null ? (
+          <p className="s3-note" role="alert">
+            {understandingError}
+          </p>
+        ) : null}
 
         <section className={`s3-next-action ${selectedActivity.status}`} aria-live="polite">
           <div>
@@ -1035,6 +1377,116 @@ function LifecyclePhaseDetail({
           </small>
         </section>
 
+        {selectedActivity.id === 'OP-05' && project.planCompiled && !project.manifestApproved ? (
+          <PlanSummary
+            onOpenDetails={() => {
+              setReviewOpen(true);
+            }}
+          />
+        ) : null}
+
+        {hasComparisonResults ? (
+          <section
+            className="s3-comparison-results"
+            aria-labelledby="model-comparison-results-title"
+          >
+            <h3 id="model-comparison-results-title">Kết quả từng model</h3>
+            {project.freshness !== 'current' ? (
+              <p className="s3-note" role="status">
+                Nguồn hoặc cấu hình đã thay đổi. Đây là kết quả của lần chạy trước; cần đánh giá và
+                phê duyệt lại trước khi chạy với đầu vào mới.
+              </p>
+            ) : null}
+            <p className="s3-comparison-summary">
+              <strong>{comparisonSummary(comparisonReports)}</strong>
+              <span>
+                Chi phí chưa xác định · chạy hoàn tất không đồng nghĩa mọi kiểm tra đều đạt.
+              </span>
+            </p>
+            <div className="s3-comparison-table-wrap">
+              <table className="s3-comparison-table">
+                <caption className="s3-visually-hidden">
+                  Kết quả so sánh model trên cùng dữ liệu
+                </caption>
+                <thead>
+                  <tr>
+                    <th scope="col">Model</th>
+                    <th scope="col">Trạng thái</th>
+                    <th scope="col">Kiểm tra</th>
+                    <th scope="col">Code</th>
+                    <th scope="col">Output</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {comparisonReports.map(report => (
+                    <tr key={report.runId}>
+                      <th scope="row">{report.model.replace(/^router9\//u, '')}</th>
+                      <td>
+                        <span
+                          className={`s3-result-pill ${report.status === 'completed' ? 'neutral' : 'bad'}`}
+                        >
+                          {report.status === 'completed'
+                            ? project.freshness === 'current'
+                              ? 'Hoàn tất'
+                              : 'Hoàn tất ở lần trước'
+                            : report.status === 'failed'
+                              ? 'Thất bại'
+                              : 'Đã hủy'}
+                        </span>
+                        {report.error ? <p role="status">{report.error}</p> : null}
+                      </td>
+                      <td>
+                        {report.checks ? (
+                          <details>
+                            <summary>
+                              <span className={`s3-result-pill ${checksTone(report.checks)}`}>
+                                {report.checks.filter(check => check.passed).length}/
+                                {report.checks.length} đạt
+                              </span>
+                            </summary>
+                            <ul className="s3-check-list">
+                              {report.checks.map(check => (
+                                <li key={check.requirementId}>
+                                  {check.passed ? <Check size={14} /> : <X size={14} />}
+                                  <span>
+                                    {check.requirementId}:{' '}
+                                    {check.detail || (check.passed ? 'Đạt' : 'Chưa đạt')}
+                                  </span>
+                                </li>
+                              ))}
+                            </ul>
+                          </details>
+                        ) : (
+                          'Chưa có kết quả'
+                        )}
+                      </td>
+                      {(['code', 'output'] as const).map(content => (
+                        <td key={content}>
+                          <button
+                            type="button"
+                            className="s3-button s3-button-secondary"
+                            aria-label={`Xem ${content} ${report.model}`}
+                            disabled={!comparisonArtifact || report.status !== 'completed'}
+                            onClick={event => {
+                              if (!comparisonArtifact) return;
+                              onResourceOpen();
+                              setModelView({ model: report.model, content });
+                              setResourceOpener(event.currentTarget);
+                              setSelectedResource(comparisonArtifact);
+                            }}
+                          >
+                            {content === 'code' ? 'Xem code' : 'Xem output'}
+                          </button>
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        ) : null}
+
         {selectedActivity.legacy ? (
           <div className="s3-legacy-inline">
             <Clock3 size={16} />
@@ -1042,24 +1494,27 @@ function LifecyclePhaseDetail({
           </div>
         ) : null}
 
-        <dl className="s3-activity-brief">
-          <div>
-            <dt>Đầu vào chính</dt>
-            <dd>{selectedActivity.input}</dd>
-          </div>
-          <div>
-            <dt>Kết quả chính</dt>
-            <dd>{selectedActivity.output}</dd>
-          </div>
-          <div>
-            <dt>Cách Anvil thực hiện</dt>
-            <dd>
-              {selectedActivity.executionKind === 'operation'
-                ? 'Backend xử lý theo quy tắc; không tạo Workflow Run mặc định.'
-                : `Anvil Workflow Runtime · ${selectedActivity.technicalWorkflow ?? 'workflow đã đăng ký'}`}
-            </dd>
-          </div>
-        </dl>
+        <details className="s3-secondary-details">
+          <summary>Thông tin hoạt động</summary>
+          <dl className="s3-activity-brief">
+            <div>
+              <dt>Đầu vào chính</dt>
+              <dd>{selectedActivity.input}</dd>
+            </div>
+            <div>
+              <dt>Kết quả chính</dt>
+              <dd>{selectedActivity.output}</dd>
+            </div>
+            <div>
+              <dt>Cách Anvil thực hiện</dt>
+              <dd>
+                {selectedActivity.executionKind === 'operation'
+                  ? 'Backend xử lý theo quy tắc; không tạo Workflow Run mặc định.'
+                  : `Anvil Workflow Runtime · ${selectedActivity.technicalWorkflow ?? 'workflow đã đăng ký'}`}
+              </dd>
+            </div>
+          </dl>
+        </details>
 
         {activityViewLoading ? (
           <p className="s3-resource-loading" role="status" aria-live="polite">
@@ -1072,7 +1527,9 @@ function LifecyclePhaseDetail({
           </p>
         )}
 
-        {selectedActivity.id === 'TW-02' ? (
+        {selectedActivity.id === 'TW-02' ||
+        (selectedActivity.id === 'TW-03' &&
+          project.decisions.some(decision => decision.status === 'pending')) ? (
           <UnderstandingWorkspace projectId={projectId} projectVersion={projectVersion} />
         ) : null}
 
@@ -1092,33 +1549,30 @@ function LifecyclePhaseDetail({
           </section>
         ) : null}
 
-        <div className="s3-activity-resource-grid">
-          <ActivityResourceSection
-            title="Đầu vào đã dùng"
-            description="Đúng phiên bản Anvil đã cố định cho bước này."
-            resources={inputs}
-            empty="Chưa có đầu vào được lưu."
+        {resourcesCollapsed ? (
+          <details className="s3-secondary-details">
+            <summary>
+              {hasComparisonResults
+                ? 'Đầu vào, kết quả và bằng chứng của bước này'
+                : `Đầu vào của bước này (${inputs.length.toString()})`}
+            </summary>
+            <ActivityResources
+              inputs={inputs}
+              outputs={outputs}
+              evidence={evidence}
+              activityId={selectedActivity.id}
+              onOpen={openResource}
+            />
+          </details>
+        ) : (
+          <ActivityResources
+            inputs={inputs}
+            outputs={outputs}
+            evidence={evidence}
+            activityId={selectedActivity.id}
             onOpen={openResource}
           />
-          <ActivityResourceSection
-            title="Kết quả đã tạo"
-            description={
-              selectedActivity.id === 'OP-01'
-                ? 'Chỉ hiển thị báo cáo của lần kiểm tra gần nhất.'
-                : 'Báo cáo và kết quả mở xem trực tiếp tại đây.'
-            }
-            resources={outputs}
-            empty="Bước này chưa tạo kết quả."
-            onOpen={openResource}
-          />
-          <ActivityResourceSection
-            title="Bằng chứng"
-            description="Thông tin dùng để xác minh yêu cầu hoặc kết luận."
-            resources={evidence}
-            empty="Bước này chưa có bằng chứng riêng."
-            onOpen={openResource}
-          />
-        </div>
+        )}
 
         {activityView !== null ? (
           <details className="s3-secondary-details">
@@ -1192,15 +1646,19 @@ function LifecyclePhaseDetail({
             <PhaseDetail phase={technicalPhase} projectId={projectId} />
           </details>
         ) : null}
-
-        <p className="s3-inspector-footnote">
-          ID, hash, JSON và log chỉ xuất hiện khi bạn chủ động mở thông tin kỹ thuật.
-        </p>
       </article>
+      {reviewOpen ? (
+        <PlanReviewDialog
+          onClose={() => {
+            setReviewOpen(false);
+          }}
+        />
+      ) : null}
       {selectedResource === null ? null : (
         <InlineResourceViewer
           projectId={projectId}
           resource={selectedResource}
+          modelView={modelView}
           opener={resourceOpener}
           onClose={() => {
             setSelectedResource(null);
@@ -2991,14 +3449,17 @@ function TechnicalPage(): ReactElement {
               </span>
               <ChevronRight size={17} />
             </a>
-            <a href="/console/builder">
-              <PanelLeftClose size={18} />
-              <span>
-                <strong>Workflow Studio</strong>
-                <small>Experimental editor; không thuộc Customer Churn MVP.</small>
-              </span>
-              <ChevronRight size={17} />
-            </a>
+            <details>
+              <summary>Công cụ nâng cao</summary>
+              <a href="/console/builder">
+                <PanelLeftClose size={18} />
+                <span>
+                  <strong>Workflow Studio</strong>
+                  <small>Trình chỉnh sửa thử nghiệm.</small>
+                </span>
+                <ChevronRight size={17} />
+              </a>
+            </details>
           </div>
         </section>
         <div className="s3-note mt-4">
@@ -3010,239 +3471,595 @@ function TechnicalPage(): ReactElement {
   );
 }
 
+function FilePicker({
+  label,
+  hint,
+  accept,
+  file,
+  required = false,
+  disabled,
+  ariaLabel,
+  onChange,
+}: {
+  label: ReactElement | string;
+  hint: string;
+  accept: string;
+  file: File | null;
+  required?: boolean;
+  disabled: boolean;
+  ariaLabel?: string;
+  onChange: (file: File | null) => void;
+}): ReactElement {
+  return (
+    <label className={`s3-file-picker ${file ? 'selected' : ''}`}>
+      <span className="s3-file-picker-label">{label}</span>
+      <span className="s3-file-picker-box">
+        {file ? (
+          <FileCheck2 size={18} aria-hidden="true" />
+        ) : (
+          <Upload size={18} aria-hidden="true" />
+        )}
+        <span>
+          <strong>{file ? file.name : 'Chọn tệp'}</strong>
+          <small>
+            {file ? `${Math.max(1, Math.round(file.size / 1024)).toString()} KB` : hint}
+          </small>
+        </span>
+      </span>
+      <input
+        className="s3-file-picker-input"
+        required={required}
+        type="file"
+        aria-label={ariaLabel}
+        accept={accept}
+        disabled={disabled}
+        onChange={event => {
+          onChange(event.target.files?.[0] ?? null);
+        }}
+      />
+    </label>
+  );
+}
+
 function NewProjectPage(): ReactElement {
-  const [step, setStep] = useState(1);
-  const [projectName, setProjectName] = useState('Customer Churn MVP');
-  const [description, setDescription] = useState('Dự đoán churn từ dữ liệu giao dịch e-commerce.');
+  const [projectName, setProjectName] = useState('');
   const [blueprintFile, setBlueprintFile] = useState<File | null>(null);
   const [datasetFile, setDatasetFile] = useState<File | null>(null);
+  const [sampleSelected, setSampleSelected] = useState(false);
+  const [loadingSample, setLoadingSample] = useState(false);
+  const [modelComparisonEnabled, setModelComparisonEnabled] = useState(true);
+  const [modelRefs, setModelRefs] = useState('');
+  const [catalog, setCatalog] = useState<PiModelInfo[]>([]);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogRequest, setCatalogRequest] = useState(0);
+  const [comparisonPrompt, setComparisonPrompt] = useState('');
+  const [requirementIds, setRequirementIds] = useState('');
+  const [harnessFile, setHarnessFile] = useState<File | null>(null);
+  const comparisonDetails = useRef<HTMLDetailsElement>(null);
+  const [comparisonUploaded, setComparisonUploaded] = useState(false);
+  const [createdProjectId, setCreatedProjectId] = useState<string | null>(null);
+  const [blueprintUploaded, setBlueprintUploaded] = useState(false);
+  const [datasetUploaded, setDatasetUploaded] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const navigate = useNavigate();
-  const copy: Record<number, ReactElement> = {
-    1: (
-      <>
-        <h1>Thông tin dự án</h1>
-        <p>Tạo một project Customer Churn có lifecycle, evidence và approval rõ ràng.</p>
-        <div className="s3-form-grid">
-          <label>
-            <span>Tên project</span>
-            <input
-              value={projectName}
-              onChange={event => {
-                setProjectName(event.target.value);
-              }}
-            />
-          </label>
-          <label>
-            <span>Mô tả ngắn</span>
-            <textarea
-              rows={3}
-              value={description}
-              onChange={event => {
-                setDescription(event.target.value);
-              }}
-            />
-          </label>
-        </div>
-      </>
-    ),
-    2: (
-      <>
-        <h1>Chọn workflow khởi đầu</h1>
-        <p>MVP chỉ bật workflow đã được kiểm chứng; không tạo workflow tự do.</p>
-        <div className="s3-option">
-          <strong>Customer Churn Reference</strong>
-          <span>DESIGN_B_2.md + Olist-like sample dataset · CPU only · 8 GB RAM</span>
-        </div>
-      </>
-    ),
-    3: (
-      <>
-        <h1>Nguồn dữ liệu</h1>
-        <p>Tải source thật. Blueprint Markdown là bắt buộc; CSV dataset là tùy chọn ở MVP này.</p>
-        <div className="s3-source-picker">
-          <div>
-            <FileCheck2 size={20} />
-            <span>
-              <strong>{blueprintFile?.name ?? 'Chưa chọn blueprint'}</strong>
-              <small>
-                Blueprint Markdown bắt buộc; được hash và lưu immutable sau khi tạo project.
-              </small>
-            </span>
-            <span className={blueprintFile === null ? 's3-chip warn' : 's3-chip good'}>
-              {blueprintFile === null ? 'Cần chọn' : 'Đã chọn'}
-            </span>
-          </div>
-          <div>
-            <FolderKanban size={20} />
-            <span>
-              <strong>{datasetFile?.name ?? 'Chưa chọn dataset'}</strong>
-              <small>Dataset CSV là tùy chọn cho slice Hiểu dự án.</small>
-            </span>
-            <span className={datasetFile === null ? 's3-chip' : 's3-chip good'}>
-              {datasetFile === null ? 'Tùy chọn' : 'Đã chọn'}
-            </span>
-          </div>
-        </div>
-        <div className="s3-form-grid mt-4">
-          <label>
-            <span>Blueprint Markdown *</span>
-            <input
-              type="file"
-              accept=".md,.json,.pdf,text/markdown,application/json,application/pdf"
-              onChange={event => {
-                setBlueprintFile(event.target.files?.[0] ?? null);
-              }}
-            />
-          </label>
-          <label>
-            <span>Dataset CSV</span>
-            <input
-              type="file"
-              accept=".csv,text/csv"
-              onChange={event => {
-                setDatasetFile(event.target.files?.[0] ?? null);
-              }}
-            />
-          </label>
-        </div>
-      </>
-    ),
-    4: (
-      <>
-        <h1>Ràng buộc</h1>
-        <p>Runtime profile được pin vào input snapshot trước compilation.</p>
-        <div className="s3-constraint-grid">
-          <label>
-            <span>Compute</span>
-            <strong>CPU only</strong>
-          </label>
-          <label>
-            <span>Memory budget</span>
-            <strong>8 GB RAM</strong>
-          </label>
-          <label>
-            <span>Project mode</span>
-            <strong>POC</strong>
-          </label>
-          <label>
-            <span>Approval policy</span>
-            <strong>Approve before build</strong>
-          </label>
-        </div>
-      </>
-    ),
-    5: (
-      <>
-        <h1>Sẵn sàng phân tích đầu vào</h1>
-        <p>
-          Khi tạo project, Anvil sẽ lưu source bất biến rồi chạy “Hiểu dự án” để trích xuất các
-          requirement, ràng buộc và manual-review item từ chính blueprint bạn đã tải lên.
-        </p>
-        <ol className="s3-analysis-list">
-          {[
-            'Pin source version và content hash',
-            'Đọc và trích xuất blueprint',
-            'Profile dataset CSV nếu có',
-            'Tạo knowledge snapshot cùng source pointer',
-            'Tạo decision từ manual-review item',
-          ].map(item => (
-            <li key={item}>
-              <Check size={15} /> {item}
-            </li>
-          ))}
-        </ol>
-      </>
-    ),
-    6: (
-      <>
-        <h1>Tạo Project Flow</h1>
-        <p>
-          Project sẽ mở tại màn hình Nguồn để bạn xem báo cáo tiếp nhận và kết quả OP-01. Anvil chỉ
-          bắt đầu “Hiểu dự án” sau khi bạn chủ động xác nhận.
-        </p>
-      </>
-    ),
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setCatalogLoading(true);
+    setCatalogError(null);
+    void listPiModels(AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)]))
+      .then(models => {
+        const available = models.filter(model => model.ref.startsWith('router9/'));
+        setCatalog(available);
+        if (available.length === 0)
+          setCatalogError(
+            'Chưa tải được model 9router đã cấu hình. Thử tải lại hoặc nhập mã model trong phần nâng cao.'
+          );
+      })
+      .catch(error => {
+        if (!controller.signal.aborted)
+          setCatalogError(
+            error instanceof Error ? error.message : 'Không tải được danh sách model.'
+          );
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setCatalogLoading(false);
+      });
+    return (): void => {
+      controller.abort();
+    };
+  }, [catalogRequest]);
+  const selectedModels = modelRefs
+    .split(/[\r\n,]+/u)
+    .map(model => model.trim())
+    .filter(Boolean);
+  const showConfigurationError = (message: string): void => {
+    if (comparisonDetails.current) comparisonDetails.current.open = true;
+    setSubmitError(message);
   };
-  const last = step === 6;
+  const locked = submitting || createdProjectId !== null;
+
+  async function selectOlistSample(): Promise<void> {
+    setLoadingSample(true);
+    setSubmitError(null);
+    try {
+      const [blueprint, dataset, comparison] = await Promise.all(
+        [
+          OLIST_BLUEPRINT_URL,
+          OLIST_DATASET_URL,
+          '/samples/olist/customer-summary-comparison.json',
+        ].map(async url => {
+          const response = await fetch(url, { signal: AbortSignal.timeout(15_000) });
+          if (!response.ok) throw new Error('Không tải được bộ mẫu Olist. Hãy thử lại.');
+          const file = await response.blob();
+          if (file.size === 0 || file.size > 1024 * 1024 || file.type.includes('text/html')) {
+            throw new Error('Tệp mẫu Olist không hợp lệ. Hãy tải lại trang và thử lại.');
+          }
+          return file;
+        })
+      );
+      if (!blueprint || !dataset || !comparison) throw new Error('Bộ mẫu Olist thiếu tệp đầu vào.');
+      const config: unknown = JSON.parse(await comparison.text());
+      if (
+        typeof config !== 'object' ||
+        config === null ||
+        !('prompt' in config) ||
+        typeof config.prompt !== 'string' ||
+        !config.prompt.trim() ||
+        !('harness' in config) ||
+        typeof config.harness !== 'string' ||
+        !config.harness.trim() ||
+        !('requirementIds' in config) ||
+        !Array.isArray(config.requirementIds) ||
+        !config.requirementIds.length ||
+        !config.requirementIds.every((id: unknown) => typeof id === 'string' && id.trim())
+      )
+        throw new Error('Cấu hình bộ mẫu Olist không hợp lệ.');
+      setComparisonPrompt(config.prompt);
+      setHarnessFile(
+        new File([config.harness], 'customer-summary-harness.py', { type: 'text/x-python' })
+      );
+      setRequirementIds(config.requirementIds.join('\n'));
+      setModelComparisonEnabled(true);
+      if (!selectedModels.length)
+        setModelRefs(
+          catalog
+            .slice(0, 2)
+            .map(model => model.ref)
+            .join('\n')
+        );
+      setBlueprintFile(
+        new File([blueprint], 'customer-summary-blueprint.md', { type: 'text/markdown' })
+      );
+      setDatasetFile(new File([dataset], 'olist-customers-sample.csv', { type: 'text/csv' }));
+      setProjectName(current => current || 'Tổng hợp khách hàng Olist');
+      setSampleSelected(true);
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : 'Không tải được bộ mẫu Olist.');
+    } finally {
+      setLoadingSample(false);
+    }
+  }
+
+  function clearSample(): void {
+    setSampleSelected(false);
+    setBlueprintFile(null);
+    setDatasetFile(null);
+    setComparisonPrompt('');
+    setRequirementIds('');
+    setHarnessFile(null);
+  }
+
+  function submit(startAnalysis: boolean): void {
+    if (
+      loadingSample ||
+      blueprintFile === null ||
+      (createdProjectId === null && projectName.trim().length === 0)
+    )
+      return;
+    const models = selectedModels;
+    const requirements = requirementIds
+      .split(/[\r\n,]+/u)
+      .map(id => id.trim())
+      .filter(Boolean);
+    if (modelComparisonEnabled) {
+      if (
+        models.length < 2 ||
+        models.length > 4 ||
+        models.some(model => !/^router9\/[^\s/][^\s]*$/u.test(model)) ||
+        new Set(models).size !== models.length
+      ) {
+        showConfigurationError('Chọn 2–4 model khác nhau hoặc kiểm tra mã model bên dưới.');
+        return;
+      }
+      if (
+        comparisonPrompt.trim().length === 0 ||
+        new TextEncoder().encode(comparisonPrompt).byteLength > 32 * 1024
+      ) {
+        showConfigurationError('Prompt bắt buộc và tối đa 32 KiB.');
+        return;
+      }
+      if (!harnessFile?.name.toLowerCase().endsWith('.py')) {
+        showConfigurationError('Chọn harness Python (.py) để so sánh.');
+        return;
+      }
+      if (harnessFile.size > 64 * 1024) {
+        showConfigurationError('Harness tối đa 64 KiB.');
+        return;
+      }
+      if (
+        requirements.length === 0 ||
+        requirements.length > 64 ||
+        new Set(requirements).size !== requirements.length
+      ) {
+        showConfigurationError('Nhập 1–64 requirement ID không trùng nhau.');
+        return;
+      }
+    }
+    setSubmitting(true);
+    setSubmitError(null);
+    void (async (): Promise<void> => {
+      const id = createdProjectId ?? (await system3Store.createProject(projectName.trim(), ''));
+      if (createdProjectId === null) setCreatedProjectId(id);
+      if (!blueprintUploaded) {
+        await system3Store.uploadSource('blueprint', blueprintFile);
+        setBlueprintUploaded(true);
+      }
+      if (datasetFile !== null && !datasetUploaded) {
+        await system3Store.uploadSource('dataset', datasetFile);
+        setDatasetUploaded(true);
+      }
+      if (modelComparisonEnabled && !comparisonUploaded) {
+        if (harnessFile === null) throw new Error('Chọn harness Python (.py) để so sánh.');
+        const harness = await harnessFile.text();
+        const config = {
+          schemaVersion: 1,
+          models,
+          prompt: comparisonPrompt,
+          harness,
+          requirementIds: requirements,
+        };
+        const file = new File(
+          [JSON.stringify({ modelComparison: config })],
+          'model-comparison.json',
+          {
+            type: 'application/json',
+          }
+        );
+        await system3Store.uploadSource('constraints', file);
+        setComparisonUploaded(true);
+      }
+      // Starting analysis is the explicit action of this button. When intake needs the user
+      // (failed or unresolved OP-00/OP-01), the workspace opens on that blocker instead.
+      if (startAnalysis && (await system3Store.waitForIntakeGate(30_000)))
+        await system3Store.startAnalysis();
+      navigate(`/console/projects/${id}/flow`);
+    })()
+      .catch(error => {
+        setSubmitError(error instanceof Error ? error.message : 'Không thể tạo project');
+      })
+      .finally(() => {
+        setSubmitting(false);
+      });
+  }
+
+  const canSubmit =
+    !submitting &&
+    !loadingSample &&
+    blueprintFile !== null &&
+    (createdProjectId !== null || projectName.trim().length > 0);
+
   return (
     <Shell>
       <main className="s3-main" id="main-content">
-        <section className="s3-wizard">
-          <Link to="/console/projects" className="text-sm text-blue-700 no-underline">
-            ← Quay lại projects
+        <section className="s3-create">
+          <Link to="/console/projects" className="s3-back-link">
+            ← Dự án
           </Link>
-          <div className="s3-step-labels" aria-label={`Bước ${step.toString()} / 6`}>
-            {['Thông tin', 'Workflow', 'Sources', 'Constraints', 'Analyze', 'Review'].map(
-              (label, index) => (
-                <div key={label} className={index + 1 <= step ? 'active' : ''}>
-                  <span>{index + 1 < step ? '✓' : (index + 1).toString()}</span>
-                  <small>{label}</small>
-                </div>
-              )
-            )}
-          </div>
-          <div className="s3-card s3-wizard-panel">
-            {copy[step]}
-            <div className="s3-wizard-actions">
+          <header className="s3-create-head">
+            <h1>Tạo dự án</h1>
+            <p>
+              Đưa một bài toán và dữ liệu, chọn các LLM; Anvil chạy từng model riêng và chấm bằng
+              cùng bộ kiểm tra.
+            </p>
+          </header>
+          <form
+            className="s3-create-form"
+            aria-busy={submitting}
+            onSubmit={event => {
+              event.preventDefault();
+              submit(true);
+            }}
+          >
+            <div
+              className="s3-source-choice"
+              role="group"
+              aria-label="Nguồn bài toán"
+              aria-busy={loadingSample}
+            >
               <button
                 type="button"
-                className="s3-button s3-button-secondary"
+                className={`s3-choice-card ${sampleSelected ? 'selected' : ''}`}
+                aria-pressed={sampleSelected}
+                aria-label="Dùng bộ mẫu Olist"
+                disabled={submitting || loadingSample || createdProjectId !== null}
                 onClick={() => {
-                  setStep(Math.max(1, step - 1));
+                  if (!sampleSelected) void selectOlistSample();
                 }}
-                disabled={step === 1}
               >
-                Quay lại
+                <span className="s3-choice-icon" aria-hidden="true">
+                  <Sparkles size={18} />
+                </span>
+                <span>
+                  <strong>{loadingSample ? 'Đang tải bộ mẫu…' : 'Bộ mẫu Olist'}</strong>
+                  <small>1.000 khách hàng theo bang · có sẵn bài toán, CSV và bộ kiểm tra</small>
+                </span>
+                {sampleSelected ? (
+                  <CheckCircle2 size={18} className="s3-choice-check" aria-hidden="true" />
+                ) : null}
               </button>
-              {last ? (
-                <button
-                  type="button"
-                  className="s3-button"
-                  disabled={submitting || blueprintFile === null}
-                  onClick={() => {
-                    const selectedBlueprint = blueprintFile;
-                    if (selectedBlueprint === null) return;
-                    setSubmitting(true);
-                    setSubmitError(null);
-                    void (async (): Promise<void> => {
-                      const id = await system3Store.createProject(projectName, description);
-                      await system3Store.uploadSource('blueprint', selectedBlueprint);
-                      if (datasetFile !== null)
-                        await system3Store.uploadSource('dataset', datasetFile);
-                      navigate(`/console/projects/${id}/sources`);
-                    })()
-                      .catch(error => {
-                        setSubmitError(
-                          error instanceof Error ? error.message : 'Không thể tạo project'
-                        );
-                      })
-                      .finally(() => {
-                        setSubmitting(false);
-                      });
+              <button
+                type="button"
+                className={`s3-choice-card ${sampleSelected ? '' : 'selected'}`}
+                aria-pressed={!sampleSelected}
+                aria-label="Dùng tệp của tôi"
+                disabled={submitting || loadingSample || createdProjectId !== null}
+                onClick={() => {
+                  if (sampleSelected) clearSample();
+                }}
+              >
+                <span className="s3-choice-icon" aria-hidden="true">
+                  <Upload size={18} />
+                </span>
+                <span>
+                  <strong>Tệp của tôi</strong>
+                  <small>Mô tả bài toán .md, CSV và bộ kiểm tra Python</small>
+                </span>
+                {sampleSelected ? null : (
+                  <CheckCircle2 size={18} className="s3-choice-check" aria-hidden="true" />
+                )}
+              </button>
+            </div>
+            {sampleSelected ? (
+              <p className="s3-sample-status" role="status">
+                Đã chọn bộ mẫu.{' '}
+                <a className="s3-sample-link" href="/samples/olist/README.md" download>
+                  Nguồn và cách tạo mẫu
+                </a>
+              </p>
+            ) : null}
+
+            <section className="s3-create-section" aria-labelledby="create-input-title">
+              <h2 id="create-input-title">
+                <span className="s3-step-index" aria-hidden="true">
+                  1
+                </span>{' '}
+                Bài toán và dữ liệu
+              </h2>
+              <label className="s3-field">
+                <span>Tên dự án</span>
+                <input
+                  required
+                  maxLength={120}
+                  placeholder="Ví dụ: Tổng hợp khách hàng theo bang"
+                  disabled={locked}
+                  value={projectName}
+                  onChange={event => {
+                    setProjectName(event.target.value);
                   }}
-                >
-                  {submitting ? 'Đang tạo project…' : 'Tạo và kiểm tra nguồn'}
-                </button>
+                />
+              </label>
+              {sampleSelected ? (
+                <div className="s3-sample-files">
+                  <a
+                    className="s3-sample-file"
+                    href={OLIST_BLUEPRINT_URL}
+                    download="customer-summary-blueprint.md"
+                  >
+                    <FileCheck2 size={16} aria-hidden="true" />
+                    <span>
+                      <strong>customer-summary-blueprint.md</strong>
+                      <small>Mô tả bài toán</small>
+                    </span>
+                  </a>
+                  <a className="s3-sample-file" href={OLIST_DATASET_URL} download>
+                    <FileCheck2 size={16} aria-hidden="true" />
+                    <span>
+                      <strong>olist-customers-sample.csv · 1.000 khách hàng</strong>
+                      <small>Dataset CSV</small>
+                    </span>
+                  </a>
+                </div>
               ) : (
+                <div className="s3-file-grid">
+                  <FilePicker
+                    label="Mô tả bài toán (.md)"
+                    hint="Blueprint Markdown"
+                    ariaLabel="Blueprint Markdown"
+                    accept=".md,text/markdown"
+                    required
+                    file={blueprintFile}
+                    disabled={submitting || loadingSample || createdProjectId !== null}
+                    onChange={setBlueprintFile}
+                  />
+                  <FilePicker
+                    label={
+                      <>
+                        Dataset CSV <small>(tùy chọn)</small>
+                      </>
+                    }
+                    hint="Có thể bổ sung sau khi phân tích"
+                    accept=".csv,text/csv"
+                    file={datasetFile}
+                    disabled={submitting || loadingSample || createdProjectId !== null}
+                    onChange={setDatasetFile}
+                  />
+                </div>
+              )}
+            </section>
+
+            <section className="s3-create-section" aria-labelledby="create-model-title">
+              <fieldset className="s3-model-picker" disabled={locked}>
+                <legend id="create-model-title">
+                  <span className="s3-step-index" aria-hidden="true">
+                    2
+                  </span>{' '}
+                  Chọn các LLM{' '}
+                  <small>
+                    {selectedModels.length.toString()}/4 đã chọn · cần 2–4 model qua 9router
+                  </small>
+                </legend>
+                {catalogLoading ? <p role="status">Đang tải danh sách model…</p> : null}
+                {catalogError ? <p role="status">{catalogError}</p> : null}
+                <div className="s3-model-options">
+                  {catalog.map(model => (
+                    <label className="s3-model-option" key={model.ref}>
+                      <input
+                        type="checkbox"
+                        checked={selectedModels.includes(model.ref)}
+                        disabled={!selectedModels.includes(model.ref) && selectedModels.length >= 4}
+                        onChange={event => {
+                          setModelRefs(
+                            (event.target.checked
+                              ? [...selectedModels, model.ref]
+                              : selectedModels.filter(ref => ref !== model.ref)
+                            ).join('\n')
+                          );
+                        }}
+                      />
+                      <span>{model.name}</span>
+                    </label>
+                  ))}
+                </div>
                 <button
                   type="button"
-                  className="s3-button"
+                  className="s3-text-button"
+                  disabled={catalogLoading}
                   onClick={() => {
-                    setStep(step + 1);
+                    setCatalogRequest(value => value + 1);
                   }}
                 >
-                  Tiếp tục
+                  Tải lại danh sách model
                 </button>
-              )}
-              {submitError !== null ? (
-                <p className="s3-note" role="alert" aria-live="assertive">
-                  {submitError}
+              </fieldset>
+            </section>
+
+            <details ref={comparisonDetails} className="s3-create-constraints">
+              <summary>Cấu hình bộ kiểm tra và nâng cao</summary>
+              {!sampleSelected ? (
+                <p className="s3-note">
+                  Bài toán riêng cần prompt chung, requirement IDs và bộ kiểm tra Python.
                 </p>
               ) : null}
-            </div>
-          </div>
+              <label className="s3-checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={!modelComparisonEnabled}
+                  disabled={locked}
+                  onChange={event => {
+                    setModelComparisonEnabled(!event.target.checked);
+                  }}
+                />
+                <span>Tạo dự án tham chiếu cũ (không so sánh nhiều LLM)</span>
+              </label>
+              {modelComparisonEnabled ? (
+                <div className="s3-form-grid">
+                  <label>
+                    <span>Mã model thủ công (2–4, mỗi dòng một model)</span>
+                    <textarea
+                      rows={3}
+                      disabled={locked}
+                      value={modelRefs}
+                      onChange={event => {
+                        setModelRefs(event.target.value);
+                      }}
+                    />
+                  </label>
+                  <label>
+                    <span>Prompt chung</span>
+                    <textarea
+                      rows={4}
+                      maxLength={32768}
+                      disabled={locked}
+                      value={comparisonPrompt}
+                      onChange={event => {
+                        setComparisonPrompt(event.target.value);
+                      }}
+                    />
+                  </label>
+                  <label>
+                    <span>Requirement IDs (phân cách bằng dấu phẩy hoặc xuống dòng)</span>
+                    <textarea
+                      rows={3}
+                      disabled={locked}
+                      value={requirementIds}
+                      onChange={event => {
+                        setRequirementIds(event.target.value);
+                      }}
+                    />
+                  </label>
+                  <label>
+                    <span>Harness Python (.py, tối đa 64 KiB)</span>
+                    <input
+                      type="file"
+                      accept=".py,text/x-python"
+                      disabled={locked}
+                      onChange={event => {
+                        setHarnessFile(event.target.files?.[0] ?? null);
+                      }}
+                    />
+                  </label>
+                  <p>
+                    Provider/model chưa được gọi khi tạo dự án. Mọi model nhận cùng input và
+                    harness.
+                  </p>
+                </div>
+              ) : null}
+            </details>
+
+            {submitError !== null ? (
+              <div className="s3-note" role="alert" aria-live="assertive">
+                {createdProjectId !== null ? (
+                  <>
+                    <p>Project đã được tạo nhưng chưa hoàn tất. {submitError}</p>
+                    <Link to={`/console/projects/${createdProjectId}/flow`}>
+                      Mở project để kiểm tra và tiếp tục
+                    </Link>
+                  </>
+                ) : (
+                  <p>{submitError}</p>
+                )}
+              </div>
+            ) : null}
+            <footer className="s3-create-actions">
+              <p>Phân tích chỉ đọc tài liệu. Các LLM chỉ chạy sau khi bạn phê duyệt kế hoạch.</p>
+              <div>
+                <button
+                  className="s3-text-button"
+                  type="button"
+                  disabled={!canSubmit}
+                  onClick={() => {
+                    submit(false);
+                  }}
+                >
+                  Chỉ tạo dự án
+                </button>
+                <button className="s3-button s3-button-lg" type="submit" disabled={!canSubmit}>
+                  {submitting ? (
+                    'Đang tạo và kiểm tra nguồn…'
+                  ) : createdProjectId !== null ? (
+                    'Thử tiếp tục'
+                  ) : (
+                    <>
+                      Tạo và bắt đầu phân tích <ArrowRight size={16} aria-hidden="true" />
+                    </>
+                  )}
+                </button>
+              </div>
+            </footer>
+          </form>
         </section>
       </main>
     </Shell>
@@ -3268,19 +4085,34 @@ function HomePage(): ReactElement {
     <Shell>
       <main className="s3-main" id="main-content">
         <section className="s3-home">
-          <p className="s3-kicker">Project control plane</p>
           <div className="s3-title-row">
             <div>
               <h1 className="s3-title">Dự án của bạn</h1>
               <p className="s3-subtitle">
-                Biết dự án đang ở đâu, cần quyết định gì và evidence nào đang có.
+                Một bài toán, một bộ dữ liệu, nhiều LLM — chấm bằng cùng một bộ kiểm tra.
               </p>
             </div>
-            <Link className="s3-button no-underline" to="/console/projects/new">
-              <Sparkles size={15} className="mr-1 inline" />
-              Tạo project
+            <Link className="s3-button s3-button-lg no-underline" to="/console/projects/new">
+              <Sparkles size={16} aria-hidden="true" />
+              Tạo dự án
             </Link>
           </div>
+          <ol className="s3-how-it-works" aria-label="Cách Anvil hoạt động">
+            {[
+              ['Tạo dự án', 'Bài toán, CSV và các LLM'],
+              ['Phân tích', 'Xác nhận Bản hiểu'],
+              ['Phê duyệt và chạy', 'Mỗi LLM chạy riêng, cô lập'],
+              ['Xem kết quả', 'So sánh và tải gói chạy lại'],
+            ].map(([title, detail], index) => (
+              <li key={title}>
+                <span aria-hidden="true">{(index + 1).toString()}</span>
+                <div>
+                  <strong>{title}</strong>
+                  <small>{detail}</small>
+                </div>
+              </li>
+            ))}
+          </ol>
           {loading ? <p className="s3-note">Đang tải project…</p> : null}
           {loadError !== null ? (
             <p className="s3-note" role="alert" aria-live="assertive">
@@ -3288,59 +4120,40 @@ function HomePage(): ReactElement {
             </p>
           ) : null}
           {!loading && loadError === null && projects.length === 0 ? (
-            <section className="s3-card">
-              <h2>Chưa có Anvil Project</h2>
-              <p>Tạo project đầu tiên, tải blueprint lên và chạy “Hiểu dự án”.</p>
+            <section className="s3-card s3-home-empty">
+              <Sparkles size={22} aria-hidden="true" />
+              <h2>Chưa có dự án nào</h2>
+              <p>Bắt đầu nhanh với bộ mẫu Olist: có sẵn bài toán, dữ liệu và bộ kiểm tra.</p>
+              <Link className="s3-button no-underline" to="/console/projects/new">
+                Bắt đầu ngay
+              </Link>
             </section>
           ) : null}
           <div className="s3-grid">
-            {projects.map(project => (
-              <Link
-                key={project.id}
-                to={`/console/projects/${project.id}/flow`}
-                className="s3-card s3-project-card"
-              >
-                <div className="flex items-center justify-between gap-4">
-                  <h2>{project.name}</h2>
-                  <ChevronRight size={18} className="text-blue-600" />
-                </div>
-                <p>{project.description || 'Chưa có mô tả.'}</p>
-                <div className="s3-meta">
-                  <span className="s3-chip">{project.stage}</span>
-                  <span className={project.attention === 'none' ? 's3-chip' : 's3-chip warn'}>
-                    {project.attention}
-                  </span>
-                  <span className="s3-chip">v{project.version.toString()}</span>
-                </div>
-              </Link>
-            ))}
+            {projects.map(project => {
+              const status = presentProjectCard(project);
+              return (
+                <Link
+                  key={project.id}
+                  to={`/console/projects/${project.id}/flow`}
+                  className="s3-card s3-project-card"
+                >
+                  <div className="s3-project-card-head">
+                    <h2>{project.name}</h2>
+                    <ChevronRight size={18} aria-hidden="true" />
+                  </div>
+                  {project.description ? <p>{project.description}</p> : null}
+                  <div className="s3-project-card-status">
+                    <span className={`s3-status-dot ${status.tone}`}>{status.label}</span>
+                    <small>{status.hint}</small>
+                  </div>
+                  <small className="s3-project-card-time">
+                    Cập nhật {new Date(project.updatedAt).toLocaleString('vi-VN')}
+                  </small>
+                </Link>
+              );
+            })}
           </div>
-          <section className="s3-card s3-journey">
-            <div className="s3-card-head">
-              <div>
-                <h2>Project Lifecycle của System 3</h2>
-                <p className="m-1 text-sm text-slate-500">
-                  Sáu giai đoạn lớn, bên trong là mười hoạt động có đầu vào và kết quả rõ ràng.
-                </p>
-              </div>
-            </div>
-            <div className="s3-journey-grid">
-              {[
-                ['01', 'Tiếp nhận', 'Nguồn được kiểm tra và lưu thành phiên bản bất biến.'],
-                ['02', 'Hiểu dự án', 'Tạo bản hiểu có thể truy ngược về đúng nguồn.'],
-                ['03', 'Sẵn sàng', 'Đóng Decision, chuẩn bị và phê duyệt kế hoạch.'],
-                ['04', 'Xây dựng', 'Thực thi Project Workflow Version đã được duyệt.'],
-                ['05', 'Xác minh', 'Kiểm tra kết quả độc lập bằng Evidence.'],
-                ['06', 'Bàn giao', 'Tạo package bất biến sau yêu cầu rõ ràng.'],
-              ].map(([number, title, detail]) => (
-                <div key={number}>
-                  <span>{number}</span>
-                  <strong>{title}</strong>
-                  <small>{detail}</small>
-                </div>
-              ))}
-            </div>
-          </section>
         </section>
       </main>
     </Shell>

@@ -1,9 +1,11 @@
+import { createHash } from 'node:crypto';
 import { expect, test } from 'bun:test';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { analyzeBlueprintMarkdown } from './blueprint';
 import { System3CapabilityRegistry } from './capabilities';
+import type { BlueprintAnalysis } from './contracts';
 
 function context(): {
   runId: string;
@@ -66,6 +68,141 @@ test('input snapshot verifier keeps explicit pinned sources instead of resolving
   expect(verified.structuredOutput).toEqual({ verified: true, sources: pinnedSources });
 });
 
+test('Understanding skips only the target-column Decision for a matching pinned comparison config', async () => {
+  const blueprint = new TextEncoder().encode(`# Customer summary
+
+## 1. PROBLEM PROFILE
+
+**Business Goal:** Summarize customers by state.
+**Technical Objective:** Emit aggregate JSON.
+
+### Data Profile
+
+{"expected_columns":["customer_state","missing_column"]}
+
+### Constraints
+
+- CPU-only, RAM 1GB.
+
+## 2. REQUIREMENTS CONTRACT
+
+| ID | Type | Priority | Source | Requirement | Acceptance Criteria |
+| --- | --- | --- | --- | --- | --- |
+| FR-01 | FR | HIGH | sample | Aggregate by state. | Counts match source rows. |
+
+## 3. HIGH-LEVEL PIPELINE
+
+Read and aggregate rows. FR-01.
+
+## 4. SELECTED TECHNOLOGY STACK
+
+Python csv and json. FR-01.
+
+## 5. MODULAR DESIGN PACKAGE
+
+### DM-01 — State summary
+
+Aggregate rows by state. FR-01.
+
+## 6. EXECUTION BLUEPRINT
+
+#### File: solution.py
+
+Print JSON to stdout. FR-01.
+`);
+  const dataset = new TextEncoder().encode(
+    'customer_unique_id,order_count,customer_state\na,2,SP\n'
+  );
+  const modelComparison = {
+    schemaVersion: 1 as const,
+    models: ['router9/model-a', 'router9/model-b'],
+    prompt: 'Summarize customers by state.',
+    harness: 'print("checks")',
+    requirementIds: ['FR-01'],
+  };
+  const comparison = new TextEncoder().encode(JSON.stringify({ modelComparison }));
+  const hash = (bytes: Uint8Array): string =>
+    `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+  const sources = [
+    {
+      id: 'blueprint',
+      kind: 'blueprint' as const,
+      filename: 'blueprint.md',
+      mediaType: 'text/markdown',
+      bytes: blueprint,
+    },
+    {
+      id: 'dataset',
+      kind: 'dataset' as const,
+      filename: 'dataset.csv',
+      mediaType: 'text/csv',
+      bytes: dataset,
+    },
+    {
+      id: 'comparison',
+      kind: 'constraints' as const,
+      filename: 'model-comparison.json',
+      mediaType: 'application/json',
+      bytes: comparison,
+    },
+  ];
+  const registry = new System3CapabilityRegistry({
+    listSourceRefs: async () => [],
+    readLatestSource: async () => null,
+    readSourceVersion: async (_projectId, sourceVersionId) => {
+      const source = sources.find(item => item.id === sourceVersionId);
+      return source ? { ...source, contentHash: hash(source.bytes) } : null;
+    },
+    readArtifact: async () => new Uint8Array(),
+  });
+  const result = await registry.execute(
+    'system3.understanding-analyzer',
+    {
+      projectId: 'project-1',
+      inputSnapshotId: 'input-1',
+      modelComparison,
+      sources: sources.map(source => ({
+        id: source.id,
+        kind: source.kind,
+        filename: source.filename,
+        mediaType: source.mediaType,
+        contentHash: hash(source.bytes),
+      })),
+    },
+    context()
+  );
+  const analysis = (result.structuredOutput as { analysis: BlueprintAnalysis }).analysis;
+  expect(analysis.schemaVersion).toBe(2);
+  if (analysis.schemaVersion !== 2) throw new Error('Expected the v2 Understanding analysis');
+  expect(analysis.targetDefinition).toBeNull();
+  expect(analysis.datasetUnderstanding.issues.map(issue => issue.title)).toContain(
+    'Dataset thiếu cột được System 2 mô tả'
+  );
+  expect(
+    analysis.extractionQuality.issues.some(
+      issue => issue.decisionBinding?.kind === 'dataset_target_column'
+    )
+  ).toBe(false);
+  await expect(
+    registry.execute(
+      'system3.understanding-analyzer',
+      {
+        projectId: 'project-1',
+        inputSnapshotId: 'input-1',
+        modelComparison: { ...modelComparison, prompt: 'Changed.' },
+        sources: sources.map(source => ({
+          id: source.id,
+          kind: source.kind,
+          filename: source.filename,
+          mediaType: source.mediaType,
+          contentHash: hash(source.bytes),
+        })),
+      },
+      context()
+    )
+  ).rejects.toThrow('does not match its pinned Source Version');
+});
+
 test('readiness decision resolver reports pending decisions without failing the workflow', async () => {
   const registry = new System3CapabilityRegistry();
   const decisions = [{ id: 'decision-1', status: 'pending' as const, answer: null }];
@@ -105,7 +242,98 @@ const readinessAnalysis = {
   manualReviews: [],
   dataset: null,
 };
+const readinessComparison = {
+  schemaVersion: 1 as const,
+  models: ['router9/model-a', 'router9/model-b'],
+  prompt: 'Summarize input data.',
+  harness: 'print("checks")',
+  requirementIds: ['FR-001'],
+};
 
+test('comparison readiness accepts a linked dataset without inventing a target and freezes config', async () => {
+  const registry = new System3CapabilityRegistry();
+  const analysis = {
+    ...readinessAnalysis,
+    targetDefinition: null,
+    dataset: {
+      filename: 'customers.csv',
+      rowCount: 2,
+      columnCount: 2,
+      columns: ['customer_id', 'state'],
+      targetColumn: null,
+      targetExists: false,
+      targetDistribution: {},
+    },
+  };
+  const gate = await registry.execute(
+    'system3.readiness-gate-evaluator',
+    {
+      analysis,
+      modelComparison: readinessComparison,
+      pendingDecisionCount: 0,
+      knowledgeSnapshotId: '11111111-1111-4111-8111-111111111111',
+      projectVersion: 3,
+      datasetSourceVersionId: '22222222-2222-4222-8222-222222222222',
+      requiredCapabilityIds: ['system3.project-scaffolder'],
+      availableCapabilityIds: ['system3.project-scaffolder'],
+    },
+    context()
+  );
+  const evaluation = (gate.structuredOutput as { evaluation: unknown }).evaluation;
+  expect(evaluation).toMatchObject({ status: 'passed' });
+  const built = await registry.execute(
+    'system3.readiness-contract-builder',
+    {
+      analysis,
+      modelComparison: readinessComparison,
+      evaluation,
+      datasetSourceVersionId: '22222222-2222-4222-8222-222222222222',
+      resolvedDecisions: [],
+    },
+    context()
+  );
+  expect(built.structuredOutput).toMatchObject({
+    contract: {
+      schemaVersion: 3,
+      datasetSourceVersionId: '22222222-2222-4222-8222-222222222222',
+      modelComparison: readinessComparison,
+    },
+  });
+  expect(built.structuredOutput).not.toHaveProperty('contract.targetDefinition');
+  expect(built.structuredOutput).not.toHaveProperty('contract.targetColumn');
+});
+
+test('comparison readiness blocks unknown pinned requirement IDs', async () => {
+  const registry = new System3CapabilityRegistry();
+  const evaluated = await registry.execute(
+    'system3.readiness-gate-evaluator',
+    {
+      analysis: {
+        ...readinessAnalysis,
+        dataset: {
+          filename: 'customers.csv',
+          rowCount: 2,
+          columnCount: 2,
+          columns: ['customer_id', 'churn'],
+          targetColumn: null,
+          targetExists: false,
+          targetDistribution: {},
+        },
+      },
+      modelComparison: { ...readinessComparison, requirementIds: ['MISSING'] },
+      pendingDecisionCount: 0,
+      knowledgeSnapshotId: '11111111-1111-4111-8111-111111111111',
+      projectVersion: 3,
+      datasetSourceVersionId: '22222222-2222-4222-8222-222222222222',
+      requiredCapabilityIds: ['system3.project-scaffolder'],
+      availableCapabilityIds: ['system3.project-scaffolder'],
+    },
+    context()
+  );
+  expect(evaluated.structuredOutput).toMatchObject({
+    evaluation: { status: 'blocked', nextAction: 'review_understanding' },
+  });
+});
 test('readiness returns data_required instead of ready when data-dependent work lacks a dataset', async () => {
   const registry = new System3CapabilityRegistry();
   const evaluated = await registry.execute(
@@ -400,6 +628,42 @@ test('baseline capabilities build, verify, and package a real deterministic proj
       dataResult: { status: 'passed' },
       experiment: { status: 'passed' },
     });
+    const reproduction = await readFile(join(String(reused.projectDir), 'REPRODUCING.md'), 'utf8');
+    expect(reproduction).toContain('python3 -m unittest discover -s tests -v');
+    // Delivery-only reruns package the reused project, which already carries REPRODUCING.md.
+    const reuseContext = {
+      ...context(),
+      artifactsDir: join(root, 'children', 'reuse', 'reuse-run'),
+    };
+    const repackaged = body(
+      await reuseRegistry.execute(
+        'system3.delivery-packager',
+        { projectDir: reused.projectDir, gate: gate.gate },
+        reuseContext
+      )
+    );
+    expect(repackaged.sizeBytes).toBeGreaterThan(0);
+    await writeFile(join(String(reused.projectDir), 'REPRODUCING.md'), 'tampered\n');
+    await expect(
+      reuseRegistry.execute(
+        'system3.delivery-packager',
+        { projectDir: reused.projectDir, gate: gate.gate },
+        reuseContext
+      )
+    ).rejects.toThrow('EEXIST');
+    await writeFile(join(String(reused.projectDir), 'REPRODUCING.md'), reproduction);
+    const reproduced = Bun.spawn(['python3', '-m', 'unittest', 'discover', '-s', 'tests', '-v'], {
+      cwd: String(reused.projectDir),
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const [reproductionOutput, reproductionError, reproductionExitCode] = await Promise.all([
+      new Response(reproduced.stdout).text(),
+      new Response(reproduced.stderr).text(),
+      reproduced.exited,
+    ]);
+    expect(reproductionExitCode).toBe(0);
+    expect(`${reproductionOutput}${reproductionError}`).toContain('Ran 1 test');
     const datasetBBytes = new TextEncoder().encode(
       'customer_id,churn_new\n10,no\n11,no\n12,no\n13,yes\n'
     );
@@ -461,4 +725,4 @@ test('baseline capabilities build, verify, and package a real deterministic proj
   } finally {
     await rm(root, { recursive: true, force: true });
   }
-});
+}, 30_000);

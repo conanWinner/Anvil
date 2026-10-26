@@ -1,9 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 import { createHash } from 'node:crypto';
+import { gzipSync } from 'node:zlib';
 import {
+  buildModelComparisonArtifactBlocks,
   buildMarkdownRequirementCitationBlock,
   friendlyDecisionQuestion,
 } from './system3-activity-resources';
+import type { ModelComparisonModelReport } from '@anvil/system3';
 
 describe('friendlyDecisionQuestion', () => {
   test('presents a manual-review marker as readable text', () => {
@@ -24,6 +27,100 @@ describe('friendlyDecisionQuestion', () => {
 function sha256(value: string): string {
   return `sha256:${createHash('sha256').update(value).digest('hex')}`;
 }
+
+function projectArchive(files: readonly { path: string; content: string }[]): Uint8Array {
+  const blocks: Buffer[] = [];
+  for (const file of files) {
+    const content = Buffer.from(file.content, 'utf8');
+    const header = Buffer.alloc(512);
+    header.write(file.path, 0, 100, 'utf8');
+    header.write('0000644\0', 100, 8, 'ascii');
+    header.write('0000000\0', 108, 8, 'ascii');
+    header.write('0000000\0', 116, 8, 'ascii');
+    header.write(`${content.length.toString(8).padStart(11, '0')}\0`, 124, 12, 'ascii');
+    header.write('00000000000\0', 136, 12, 'ascii');
+    header.fill(32, 148, 156);
+    header[156] = 48;
+    header.write('ustar\0', 257, 6, 'ascii');
+    header.write('00', 263, 2, 'ascii');
+    const checksum = header.reduce((sum, byte) => sum + byte, 0);
+    header.write(`${checksum.toString(8).padStart(6, '0')}\0 `, 148, 8, 'ascii');
+    blocks.push(header, content, Buffer.alloc((512 - (content.length % 512)) % 512));
+  }
+  blocks.push(Buffer.alloc(1024));
+  return gzipSync(Buffer.concat(blocks));
+}
+
+test('verifies comparison archive hashes and fences untrusted model code', () => {
+  const code = 'print("```")\n';
+  const output = '{"rows":4}\n';
+  const inputHash = sha256('input');
+  const report: ModelComparisonModelReport = {
+    runId: 'run-model-1',
+    model: 'router9/test/model-one',
+    inputHash,
+    promptHash: sha256('prompt'),
+    codeHash: sha256(code),
+    outputHash: sha256(output),
+    harnessHash: sha256('harness'),
+    status: 'completed',
+    error: null,
+    usage: { status: 'unknown' },
+    checks: [{ requirementId: 'FR-01', passed: true, detail: 'Row count matches' }],
+  };
+  const secondCode = 'print("ok")\n';
+  const secondOutput = '{"rows":4}\n';
+  const secondReport: ModelComparisonModelReport = {
+    ...report,
+    runId: 'run-model-2',
+    model: 'router9/test/model-two',
+    codeHash: sha256(secondCode),
+    outputHash: sha256(secondOutput),
+  };
+  const archiveBytes = projectArchive([
+    {
+      path: 'project/comparison.json',
+      content: JSON.stringify({
+        schemaVersion: 1,
+        inputHash,
+        datasetHash: sha256('dataset'),
+        configHash: sha256('config'),
+        reports: [report, secondReport],
+      }),
+    },
+    { path: 'project/models/0/solution.py', content: code },
+    { path: 'project/models/0/candidate-output.json', content: output },
+    { path: 'project/models/1/solution.py', content: secondCode },
+    { path: 'project/models/1/candidate-output.json', content: secondOutput },
+  ]);
+  const blocks = buildModelComparisonArtifactBlocks({
+    archiveBytes,
+    artifactContentHash: `sha256:${createHash('sha256').update(archiveBytes).digest('hex')}`,
+    verificationInputHash: inputHash,
+    verificationModels: [report, secondReport],
+  });
+  expect(blocks).toContainEqual(
+    expect.objectContaining({
+      kind: 'table',
+      title: 'Model output · router9/test/model-one',
+      rows: [['rows', '4']],
+    })
+  );
+  const codeBlock = blocks.find(block => block.kind === 'markdown');
+  expect(codeBlock?.kind).toBe('markdown');
+  if (codeBlock?.kind === 'markdown') {
+    expect(codeBlock.markdown).toContain('````python\nprint("```")');
+    expect(codeBlock.markdown.endsWith('\n````')).toBe(true);
+  }
+  expect(() =>
+    buildModelComparisonArtifactBlocks({
+      archiveBytes,
+      artifactContentHash: sha256('tampered archive'),
+      verificationInputHash: inputHash,
+      verificationModels: [report, secondReport],
+    })
+  ).toThrow('Execution artifact content hash mismatch');
+});
 
 describe('buildMarkdownRequirementCitationBlock', () => {
   test('shows the exact requested row only after verifying its complete parent table', async () => {

@@ -27,12 +27,14 @@ export function LifecycleAttemptBar({
   selectedActivityId,
   onSelectActivity,
   onRunActivity,
+  hasExecution = false,
 }: {
   projectId: string;
   projectVersion: number;
   selectedActivityId: string;
   onSelectActivity: (activityId: string) => void;
   onRunActivity: (activityId: System3LifecycleAttemptActivity) => Promise<void>;
+  hasExecution?: boolean;
 }): ReactElement {
   const [attempts, setAttempts] = useState<System3LifecycleAttempt[]>([]);
   const [open, setOpen] = useState(false);
@@ -241,7 +243,7 @@ export function LifecycleAttemptBar({
             Lượt #{active.sequence.toString()} · {attemptStatusLabel(active.runStatus)}
           </strong>
         ) : (
-          <strong>Chưa có lượt chạy</strong>
+          <strong>{hasExecution ? 'Có lần thực thi' : 'Chưa có lượt chạy'}</strong>
         )}
         {active?.branchName ? (
           <small>
@@ -262,83 +264,92 @@ export function LifecycleAttemptBar({
                 : `Chạy bước: ${active.nextActivityId}`}
           </button>
         ) : null}
-        <button
-          type="button"
-          className="s3-button s3-button-secondary"
-          onClick={() => {
-            setShowHistory(value => !value);
-          }}
-        >
-          <History size={15} /> Lịch sử
-        </button>
-        {attempts.some(attempt => ['completed', 'failed'].includes(attempt.runStatus)) ? (
+      </div>
+      <details className="s3-attempt-advanced">
+        <summary>Lịch sử và chạy lại</summary>
+        <div className="s3-attempt-actions">
           <button
             type="button"
             className="s3-button s3-button-secondary"
-            onClick={cleanupAllAttempts}
-            disabled={loading}
+            onClick={() => {
+              setShowHistory(value => !value);
+            }}
+            aria-expanded={showHistory}
           >
-            <Trash2 size={15} /> Dọn tất cả
+            <History size={15} /> {showHistory ? 'Ẩn lịch sử' : 'Xem lịch sử'}
           </button>
-        ) : null}
-        <button
-          type="button"
-          className="s3-button s3-button-secondary"
-          onClick={event => {
-            triggerRef.current = event.currentTarget;
-            openPreview('activity');
-          }}
-        >
-          <RotateCcw size={15} /> Chạy lại từ đây
-        </button>
-        <button
-          type="button"
-          className="s3-button"
-          onClick={event => {
-            triggerRef.current = event.currentTarget;
-            openPreview('full');
-          }}
-        >
-          <Play size={15} /> Chạy lại toàn bộ
-        </button>
-      </div>
-      {showHistory ? (
-        <div className="s3-attempt-history" aria-live="polite">
-          {attempts.length === 0 ? <p>Chưa có lượt chạy nào.</p> : null}
-          {attempts.map(attempt => (
-            <div key={attempt.id} className={attempt.lifecycleStatus === 'active' ? 'current' : ''}>
-              <span>Lượt #{attempt.sequence.toString()}</span>
-              <strong>{attemptStatusLabel(attempt.runStatus)}</strong>
-              <small>
-                {attempt.scope === 'full'
-                  ? 'Toàn bộ'
-                  : attempt.scope === 'activity'
-                    ? 'Một activity'
-                    : 'Từ đây đến cuối'}
-              </small>
-              {attempt.branchName ? (
-                <small>
-                  <GitBranch size={13} /> {attempt.branchName}
-                </small>
-              ) : null}
-              {attempt.cleanupStatus === 'completed' ? <small>Đã dọn payload</small> : null}
-              {attempt.lifecycleStatus !== 'cleaned' &&
-              ['completed', 'failed'].includes(attempt.runStatus) ? (
-                <button
-                  type="button"
-                  className="s3-attempt-cleanup"
-                  onClick={() => {
-                    cleanupAttempt(attempt);
-                  }}
-                  disabled={loading}
-                >
-                  <Trash2 size={14} /> Dọn
-                </button>
-              ) : null}
-            </div>
-          ))}
+          {attempts.some(attempt => ['completed', 'failed'].includes(attempt.runStatus)) ? (
+            <button
+              type="button"
+              className="s3-button s3-button-secondary"
+              onClick={cleanupAllAttempts}
+              disabled={loading}
+            >
+              <Trash2 size={15} /> Dọn lượt đã kết thúc
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="s3-button s3-button-secondary"
+            onClick={event => {
+              triggerRef.current = event.currentTarget;
+              openPreview('activity');
+            }}
+          >
+            <RotateCcw size={15} /> Chạy lại từ đây
+          </button>
+          <button
+            type="button"
+            className="s3-button s3-button-secondary"
+            onClick={event => {
+              triggerRef.current = event.currentTarget;
+              openPreview('full');
+            }}
+          >
+            <Play size={15} /> Chạy lại toàn bộ
+          </button>
         </div>
-      ) : null}
+        {showHistory ? (
+          <div className="s3-attempt-history" aria-live="polite">
+            {attempts.length === 0 ? <p>Chưa có lượt chạy nào.</p> : null}
+            {attempts.map(attempt => (
+              <div
+                key={attempt.id}
+                className={attempt.lifecycleStatus === 'active' ? 'current' : ''}
+              >
+                <span>Lượt #{attempt.sequence.toString()}</span>
+                <strong>{attemptStatusLabel(attempt.runStatus)}</strong>
+                <small>
+                  {attempt.scope === 'full'
+                    ? 'Toàn bộ'
+                    : attempt.scope === 'activity'
+                      ? 'Một activity'
+                      : 'Từ đây đến cuối'}
+                </small>
+                {attempt.branchName ? (
+                  <small>
+                    <GitBranch size={13} /> {attempt.branchName}
+                  </small>
+                ) : null}
+                {attempt.cleanupStatus === 'completed' ? <small>Đã dọn payload</small> : null}
+                {attempt.lifecycleStatus !== 'cleaned' &&
+                ['completed', 'failed'].includes(attempt.runStatus) ? (
+                  <button
+                    type="button"
+                    className="s3-attempt-cleanup"
+                    onClick={() => {
+                      cleanupAttempt(attempt);
+                    }}
+                    disabled={loading}
+                  >
+                    <Trash2 size={14} /> Dọn
+                  </button>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </details>
       {open ? (
         <div
           className="s3-dialog-backdrop"

@@ -1,9 +1,12 @@
 import { createHash } from 'node:crypto';
+import { z } from '@hono/zod-openapi';
 import {
+  modelComparisonModelReportSchema,
   system3LifecycleActivityIdSchema,
   type System3ActivityView,
   type System3ArtifactVersionRecord,
   type System3LifecycleActivityId,
+  type ModelComparisonModelReport,
   type System3PresentationBlock,
   type System3ResourceDescriptor,
   type System3ResourcePresentation,
@@ -11,12 +14,23 @@ import {
   type System3ResourceStatus,
   type System3ResourceType,
   type System3Store,
+  validateProjectArchive,
 } from '@anvil/system3';
 
 const RENDERER_VERSION = 'system3-resource-renderer@2';
 const MAX_MARKDOWN_CITATIONS = 24;
 const MAX_CITATION_EXCERPT_CHARS = 1_200;
 const MAX_CITATION_SOURCE_BYTES = 512 * 1024;
+const MAX_COMPARISON_FILE_BYTES = 64 * 1024;
+const comparisonManifestSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    inputHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    datasetHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    configHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    reports: z.array(modelComparisonModelReportSchema).min(2).max(4),
+  })
+  .strict();
 
 interface CitationPointer {
   sourceVersionId: string;
@@ -1153,6 +1167,137 @@ function factsFromRecord(
   };
 }
 
+function sameModelReport(
+  left: ModelComparisonModelReport,
+  right: ModelComparisonModelReport
+): boolean {
+  return (
+    left.runId === right.runId &&
+    left.model === right.model &&
+    left.inputHash === right.inputHash &&
+    left.promptHash === right.promptHash &&
+    left.codeHash === right.codeHash &&
+    left.outputHash === right.outputHash &&
+    left.harnessHash === right.harnessHash &&
+    left.status === right.status &&
+    left.error === right.error &&
+    left.usage.status === right.usage.status &&
+    left.checks?.length === right.checks?.length &&
+    (left.checks === null ||
+      (right.checks !== null &&
+        left.checks.every((check, index) => {
+          const verified = right.checks?.[index];
+          return (
+            check.requirementId === verified?.requirementId &&
+            check.passed === verified.passed &&
+            check.detail === verified.detail
+          );
+        })))
+  );
+}
+
+function comparisonText(bytes: Uint8Array): string {
+  if (bytes.byteLength > MAX_COMPARISON_FILE_BYTES)
+    throw new Error('Comparison file exceeds the preview limit');
+  return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+}
+
+/** Builds a bounded preview only from archive files pinned by completed verification evidence. */
+export function buildModelComparisonArtifactBlocks(input: {
+  archiveBytes: Uint8Array;
+  artifactContentHash: string;
+  verificationInputHash: string;
+  verificationModels: readonly ModelComparisonModelReport[];
+}): System3PresentationBlock[] {
+  if (citationDigest(input.archiveBytes) !== input.artifactContentHash)
+    throw new Error('Execution artifact content hash mismatch');
+  const entries = new Map(
+    validateProjectArchive(input.archiveBytes).map(entry => [entry.path, entry.bytes])
+  );
+  const manifestBytes = entries.get('comparison.json');
+  if (manifestBytes === undefined) throw new Error('Comparison manifest is missing');
+  const manifest = comparisonManifestSchema.parse(JSON.parse(comparisonText(manifestBytes)));
+  const verifiedModels = input.verificationModels.map(report =>
+    modelComparisonModelReportSchema.parse(report)
+  );
+  if (
+    manifest.inputHash !== input.verificationInputHash ||
+    manifest.reports.length !== verifiedModels.length ||
+    !manifest.reports.every((report, index) => {
+      const verified = verifiedModels[index];
+      return (
+        verified !== undefined &&
+        report.inputHash === input.verificationInputHash &&
+        sameModelReport(report, verified)
+      );
+    })
+  ) {
+    throw new Error('Comparison manifest does not match verified model evidence');
+  }
+
+  const blocks: System3PresentationBlock[] = [];
+  for (const [index, report] of manifest.reports.entries()) {
+    blocks.push(
+      factsFromRecord('Model comparison', {
+        model: report.model,
+        status: report.status === 'completed' ? 'Hoàn tất' : 'Không hoàn tất',
+      })
+    );
+    if (report.status === 'completed') {
+      if (report.codeHash === null || report.outputHash === null)
+        throw new Error('Completed model is missing code or output hashes');
+      const solutionPath = `models/${String(index)}/solution.py`;
+      const outputPath = `models/${String(index)}/candidate-output.json`;
+      const codeBytes = entries.get(solutionPath);
+      const outputBytes = entries.get(outputPath);
+      if (codeBytes === undefined || outputBytes === undefined)
+        throw new Error('Verified comparison files are missing');
+      if (
+        citationDigest(codeBytes) !== report.codeHash ||
+        citationDigest(outputBytes) !== report.outputHash
+      )
+        throw new Error('Comparison code or output hash mismatch');
+      const code = comparisonText(codeBytes);
+      const outputValue: unknown = JSON.parse(comparisonText(outputBytes));
+      if (
+        outputValue === null ||
+        typeof outputValue !== 'object' ||
+        Array.isArray(outputValue) ||
+        Object.keys(outputValue).length > 64
+      ) {
+        throw new Error('Candidate output is not a bounded JSON object');
+      }
+      const fence = '`'.repeat(
+        Math.max(3, ...[...code.matchAll(/`+/gu)].map(match => match[0].length + 1))
+      );
+      const markdown = [
+        `**Python solution · models/${String(index)}/solution.py**`,
+        '',
+        `${fence}python`,
+        code,
+        code.endsWith('\n') ? fence : `\n${fence}`,
+      ].join('\n');
+      blocks.push(
+        {
+          kind: 'table',
+          title: `Model output · ${report.model}`,
+          columns: ['Trường', 'Giá trị'],
+          rows: Object.entries(outputValue as Record<string, unknown>).map(([key, value]) => [
+            key,
+            simpleValue(value),
+          ]),
+          truncated: false,
+        },
+        {
+          kind: 'markdown',
+          markdown,
+        }
+      );
+    }
+  }
+  return blocks;
+}
+
 function friendlyImpactText(value: string): string {
   return value
     .replaceAll('Activity và Source Version basis', 'Bước tạo kết quả và phiên bản nguồn được dùng')
@@ -1701,6 +1846,41 @@ export async function getSystem3ResourcePresentation(
         sizeBytes: artifact.sizeBytes,
       }
     );
+    const verification =
+      artifact.executionId === null
+        ? undefined
+        : context.verifications.find(value => value.executionId === artifact.executionId);
+    const comparisonEvidence = verification?.evidenceMap;
+    if (verification !== undefined && comparisonEvidence?.kind === 'model_comparison') {
+      try {
+        if (readArtifact === undefined) throw new Error('Artifact reader is unavailable');
+        const reports = z
+          .array(modelComparisonModelReportSchema)
+          .min(2)
+          .max(4)
+          .parse(comparisonEvidence.models);
+        const inputHash = z
+          .string()
+          .regex(/^sha256:[a-f0-9]{64}$/)
+          .parse(comparisonEvidence.inputHash);
+        const archiveBytes = await readArtifact(artifact.artifactKey);
+        blocks.unshift(
+          ...buildModelComparisonArtifactBlocks({
+            archiveBytes,
+            artifactContentHash: artifact.contentHash,
+            verificationInputHash: inputHash,
+            verificationModels: reports,
+          })
+        );
+      } catch {
+        blocks.push({
+          kind: 'callout',
+          tone: 'warning',
+          title: 'Không thể xác minh bản xem trước',
+          body: 'Code và output không khớp bằng chứng xác minh. Artifact bất biến vẫn có thể tải xuống để kiểm tra.',
+        });
+      }
+    }
   } else if (resourceType === 'verification_report') {
     const verification = context.verifications.find(value => value.id === resourceId);
     if (verification === undefined) return null;

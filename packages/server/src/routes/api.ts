@@ -105,6 +105,9 @@ import {
   applyUnderstandingDecisionAnswers,
   system3ReadinessEvaluationSchema,
   system3ReadinessContractBodySchema,
+  modelComparisonConfigSchema,
+  modelComparisonCodeSchema,
+  parsePinnedModelComparisonConfig,
 } from '@anvil/system3';
 import type {
   System3CapabilitySourcePort,
@@ -174,6 +177,9 @@ function getLog(): ReturnType<typeof createLogger> {
 let cachedSystem3Store: System3Store | undefined;
 let cachedSystem3CapabilityRegistry: System3CapabilityRegistry | undefined;
 const activeSystem3Operations = new Set<string>();
+
+class System3CompilationPreflightError extends Error {}
+class System3ReadinessPreflightError extends Error {}
 const system3OperationOwnerId = `server:${process.pid.toString()}:${randomUUID()}`;
 const system3OperationHeartbeatIntervalMs = 5_000;
 const system3OperationHeartbeatStaleMs = 30_000;
@@ -244,6 +250,23 @@ async function getSystem3ArtifactsRoot(projectId: string): Promise<string> {
     throw new Error('Registered codebase cannot be mapped to an Anvil workspace');
   }
   return join(projectRoot, 'artifacts');
+}
+
+async function readPinnedModelComparisonConfig(
+  projectId: string,
+  sources: readonly System3SourceRecord[]
+): Promise<z.infer<typeof modelComparisonConfigSchema> | undefined> {
+  const matches = sources.filter(
+    source => source.kind === 'constraints' && source.filename === 'model-comparison.json'
+  );
+  if (matches.length > 1) throw new Error('Use one model-comparison.json Source Version');
+  const source = matches[0];
+  if (!source) return undefined;
+  const bytes = await readSystem3Source({
+    artifactsRoot: await getSystem3ArtifactsRoot(projectId),
+    storageKey: source.storageKey,
+  });
+  return parsePinnedModelComparisonConfig(bytes, source.contentHash);
 }
 
 async function resolveUnderstandingAnalysis(input: {
@@ -858,6 +881,45 @@ function getSystem3CapabilityRegistry(): System3CapabilityRegistry {
       return snapshot?.analysis ?? null;
     },
     createUnderstandingSemanticFallback,
+    generateModelCode: async ({ projectId, model, prompt, signal }): Promise<unknown> => {
+      const project = await getSystem3Store().getProject(projectId);
+      const codebase = project ? await codebaseDb.getCodebase(project.codebaseId) : null;
+      if (!codebase) throw new Error('Model comparison project workspace is unavailable');
+      const config = await loadConfig(codebase.default_cwd);
+      const provider = getAgentProvider('pi');
+      let text = '';
+      let structured: unknown;
+      for await (const chunk of provider.sendQuery(prompt, codebase.default_cwd, undefined, {
+        model,
+        persistSession: false,
+        abortSignal: signal,
+        assistantConfig: { ...(config.assistants.pi ?? {}), enableExtensions: false },
+        nodeConfig: { allowed_tools: [], denied_tools: [], thinking: 'off' },
+        outputFormat: {
+          type: 'json_schema',
+          schema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['code'],
+            properties: { code: { type: 'string', minLength: 1, maxLength: 65536 } },
+          },
+        },
+      })) {
+        signal.throwIfAborted();
+        if (chunk.type === 'tool' || chunk.type === 'tool_result')
+          throw new Error('Model comparison provider attempted a forbidden tool');
+        if (chunk.type === 'assistant') {
+          text += chunk.content;
+          if (Buffer.byteLength(text) > 128 * 1024)
+            throw new Error('Model comparison response exceeded its size limit');
+        }
+        if (chunk.type === 'result') {
+          if (chunk.isError) throw new Error('9router model comparison request failed');
+          if (chunk.structuredOutput !== undefined) structured = chunk.structuredOutput;
+        }
+      }
+      return modelComparisonCodeSchema.parse(structured ?? JSON.parse(text));
+    },
     readArtifact: async (
       projectId,
       storageKey
@@ -7205,6 +7267,7 @@ export function registerApiRoutes(
       if (project.version !== body.expectedVersion)
         return apiError(c, 409, 'Project changed; refresh before analyzing');
       const sources = await resolveSystem3LifecycleAttemptSources({ store, projectId });
+      const modelComparison = await readPinnedModelComparisonConfig(projectId, sources);
       const blueprint =
         sources.find(source => source.kind === 'blueprint' && source.role === 'primary') ??
         sources.find(source => source.kind === 'blueprint');
@@ -7276,6 +7339,7 @@ export function registerApiRoutes(
               buildUnderstandProjectWorkflow({
                 projectId,
                 inputSnapshotId: understandingInput.id,
+                ...(modelComparison ? { modelComparison } : {}),
                 sources: understandingInput.sourceRefs.map(source => ({
                   id: source.sourceVersionId,
                   kind: source.kind,
@@ -7471,6 +7535,7 @@ export function registerApiRoutes(
     let operationId: string | null = null;
     try {
       const store = getSystem3Store();
+      const actorId = await resolveWebUserId(c);
       const begun = await store.beginProjectOperation({
         projectId,
         type: 'activate_understanding',
@@ -7481,7 +7546,15 @@ export function registerApiRoutes(
       operationId = begun.operation.id;
       if (begun.existing && begun.operation.result?.snapshotId === snapshotId) {
         const existing = await store.getUnderstandingSnapshot(projectId, snapshotId);
-        if (existing) return c.json(existing);
+        if (existing) {
+          await enqueueSystem3ReadinessAfterActivation({
+            projectId,
+            activationOperation: begun.operation,
+            userId: actorId,
+            webAdapter,
+          });
+          return c.json(existing);
+        }
       }
       if (begun.existing && begun.operation.status !== 'accepted') {
         return apiError(c, 409, 'Understanding activation is already owned by another process');
@@ -7507,7 +7580,6 @@ export function registerApiRoutes(
             answer: decision.answer,
           })),
       });
-      const actorId = await resolveWebUserId(c);
       const snapshot = await store.activateUnderstandingCandidate({
         projectId,
         snapshotId,
@@ -7523,6 +7595,12 @@ export function registerApiRoutes(
           completedActivityId: 'TW-02',
         });
       }
+      await enqueueSystem3ReadinessAfterActivation({
+        projectId,
+        activationOperation: begun.operation,
+        userId: actorId,
+        webAdapter,
+      });
       return c.json(snapshot);
     } catch (error) {
       if (operationId !== null && ownerClaimToken !== null) {
@@ -7539,9 +7617,57 @@ export function registerApiRoutes(
       if (error instanceof System3ConflictError) return apiError(c, 409, error.message);
       return apiError(c, 500, 'Failed to activate Project Understanding');
     } finally {
-      if (operationId !== null) stopSystem3OperationHeartbeat(operationId);
+      if (operationId !== null && ownerClaimToken !== null) {
+        stopSystem3OperationHeartbeat(operationId);
+      }
     }
   });
+
+  async function enqueueSystem3ReadinessAfterActivation(input: {
+    projectId: string;
+    activationOperation: Awaited<ReturnType<System3Store['beginProjectOperation']>>['operation'];
+    userId: string | undefined;
+    webAdapter: WebAdapter;
+  }): Promise<void> {
+    const store = getSystem3Store();
+    try {
+      const attempt = await store.getActiveLifecycleAttempt(input.projectId);
+      if (
+        attempt &&
+        (attempt.lifecycleStatus !== 'active' ||
+          attempt.runStatus !== 'waiting' ||
+          attempt.nextActivityId !== 'TW-03')
+      ) {
+        getLog().warn(
+          {
+            projectId: input.projectId,
+            activationOperationId: input.activationOperation.id,
+            attemptId: attempt.id,
+            nextActivityId: attempt.nextActivityId,
+          },
+          'system3.readiness_after_activation_not_eligible'
+        );
+        return;
+      }
+      await startSystem3Readiness({
+        projectId: input.projectId,
+        expectedVersion: input.activationOperation.projectVersion + 1,
+        idempotencyKey: `activation:${input.activationOperation.id}:readiness`,
+        userId: input.userId,
+        webAdapter: input.webAdapter,
+      });
+    } catch (error) {
+      getLog().error(
+        {
+          err: error,
+          projectId: input.projectId,
+          activationOperationId: input.activationOperation.id,
+          action: 'Run Readiness again from the project UI',
+        },
+        'system3.readiness_after_activation_failed'
+      );
+    }
+  }
 
   registerOpenApiRoute(answerSystem3DecisionRoute, async c => {
     const projectId = c.req.param('id') ?? '';
@@ -7559,190 +7685,439 @@ export function registerApiRoutes(
     }
   });
 
+  async function startSystem3Readiness(input: {
+    projectId: string;
+    expectedVersion: number;
+    idempotencyKey: string;
+    userId: string | undefined;
+    webAdapter: WebAdapter;
+  }): Promise<{
+    operation: Awaited<ReturnType<System3Store['beginProjectOperation']>>['operation'];
+    existing: boolean;
+  }> {
+    const { projectId, expectedVersion, idempotencyKey, userId, webAdapter } = input;
+    const store = getSystem3Store();
+    const request = { expectedVersion };
+    const startCompilationAfterReadiness = async (
+      operation: Awaited<ReturnType<System3Store['beginProjectOperation']>>['operation']
+    ): Promise<void> => {
+      const attempt = await store.getActiveLifecycleAttempt(projectId);
+      if (attempt && (attempt.runStatus !== 'waiting' || attempt.nextActivityId !== 'OP-04'))
+        return;
+      try {
+        await startSystem3Compilation({
+          projectId,
+          expectedVersion: operation.projectVersion + 1,
+          idempotencyKey: `readiness:${operation.id}:compile`,
+        });
+      } catch (error) {
+        getLog().error({ err: error, projectId }, 'system3.compile_after_readiness_failed');
+      }
+    };
+    const replay = await store.getProjectOperationReplay({
+      projectId,
+      type: 'readiness',
+      idempotencyKey,
+      request,
+    });
+    if (replay && replay.status !== 'accepted') {
+      if (replay.status === 'succeeded' && replay.result?.readinessContractId) {
+        await startCompilationAfterReadiness(replay);
+      }
+      return { operation: replay, existing: true };
+    }
+    const [project, snapshot, decisions, activeSources] = await Promise.all([
+      store.getProject(projectId),
+      store.getActiveUnderstanding(projectId),
+      store.listDecisions(projectId),
+      store.listActiveSources(projectId),
+    ]);
+    if (!project || !snapshot) {
+      throw new System3ReadinessPreflightError('Analyze project sources before readiness');
+    }
+    if (project.version !== expectedVersion)
+      throw new System3ConflictError('Project changed; refresh before running readiness');
+    if (project.freshness !== 'current') {
+      throw new System3ReadinessPreflightError(
+        'Project sources changed; analyze them again before readiness'
+      );
+    }
+    const activeDecisions = decisions.filter(
+      decision => decision.knowledgeSnapshotId === snapshot.id
+    );
+    const primaryDatasets = activeSources.filter(
+      source => source.kind === 'dataset' && source.role === 'primary'
+    );
+    const datasetSourceVersionId =
+      primaryDatasets.length === 1 ? (primaryDatasets[0]?.id ?? null) : null;
+    const modelComparison = await readPinnedModelComparisonConfig(projectId, activeSources);
+    const codebase = await codebaseDb.getCodebase(project.codebaseId);
+    if (!codebase) throw new System3ReadinessPreflightError('Linked codebase no longer exists');
+    await assertSystem3LifecycleAttemptNextActivity(projectId, 'TW-03');
+    const begun = await store.beginProjectOperation({
+      projectId,
+      type: 'readiness',
+      idempotencyKey,
+      expectedVersion,
+      request,
+    });
+    if (!begun.existing || begun.operation.status === 'accepted') {
+      activeSystem3Operations.add(begun.operation.id);
+      void (async (): Promise<void> => {
+        let ownerClaimToken: string | null = null;
+        let operationTerminal = false;
+        try {
+          ownerClaimToken = await claimSystem3Operation(store, {
+            operationId: begun.operation.id,
+            ownerInstanceId: system3OperationOwnerId,
+          });
+          const runtimeContext = await resolveSystem3WorkflowExecutionContext({
+            projectId,
+            activityId: 'TW-03',
+            codebaseId: project.codebaseId,
+            defaultCwd: codebase.default_cwd,
+            userId,
+            webAdapter,
+          });
+          const workflow = workflowDefinitionSchema.parse(
+            buildReadinessContractWorkflow({
+              analysis: await resolveUnderstandingAnalysis({
+                projectId,
+                analysis: snapshot.analysis,
+                inputSnapshotId: snapshot.inputSnapshotId,
+                decisions: activeDecisions.map(decision => ({
+                  binding: decision.binding,
+                  status: decision.status,
+                  answer: decision.answer,
+                })),
+              }),
+              ...(modelComparison ? { modelComparison } : {}),
+              decisions: activeDecisions.map(decision => ({
+                id: decision.id,
+                status: decision.status,
+                answer: decision.answer,
+              })),
+              knowledgeSnapshotId: snapshot.id,
+              projectVersion: expectedVersion,
+              datasetSourceVersionId,
+              requiredCapabilityIds: getSystem3CapabilityRegistry()
+                .snapshot()
+                .filter(capability =>
+                  ['build', 'experiment', 'delivery'].includes(capability.phaseId)
+                )
+                .map(capability => capability.id),
+              availableCapabilityIds: getSystem3CapabilityRegistry()
+                .snapshot()
+                .map(capability => capability.id),
+            })
+          );
+          const execution = await executeWorkflow(
+            { ...createWorkflowDeps(), actionRegistry: getSystem3CapabilityRegistry() },
+            webAdapter,
+            runtimeContext.externalConversationId,
+            runtimeContext.workingPath,
+            workflow,
+            `Create System 3 readiness contract ${projectId}`,
+            runtimeContext.conversation.id,
+            { codebaseId: project.codebaseId, userId, source: 'bundled' }
+          );
+          if (!execution.success) throw new Error(execution.error);
+          if ('paused' in execution || execution.summary === undefined) {
+            throw new Error('Readiness workflow completed without a contract output');
+          }
+          const summary = JSON.parse(execution.summary) as unknown;
+          if (summary === null || typeof summary !== 'object' || Array.isArray(summary)) {
+            throw new Error('Readiness workflow returned an invalid output');
+          }
+          const evaluation = system3ReadinessEvaluationSchema.parse(
+            (summary as Record<string, unknown>).evaluation
+          );
+          const contractValue = (summary as Record<string, unknown>).contract;
+          if (evaluation.status !== 'passed') {
+            if (contractValue !== null) {
+              throw new Error('Blocked readiness workflow returned an unexpected contract');
+            }
+            await store.completeProjectOperation(
+              begun.operation.id,
+              ownerClaimToken,
+              { evaluation, readinessContractId: null, workflowRunId: execution.workflowRunId },
+              { workflowRunId: execution.workflowRunId }
+            );
+            operationTerminal = true;
+            if (runtimeContext.attemptId !== null) {
+              await store.updateLifecycleAttempt(projectId, runtimeContext.attemptId, {
+                runStatus: 'waiting',
+                checkpointActivityId: 'TW-03',
+                nextActivityId: 'TW-03',
+              });
+            }
+            return;
+          }
+          const contract = system3ReadinessContractBodySchema.parse(contractValue);
+          const artifactKey = system3AttemptArtifactStorageKey(
+            runtimeContext.attemptId,
+            `contracts/readiness/${randomUUID()}/contract.json`
+          );
+          await persistSystem3Artifact({
+            artifactsRoot: await getSystem3ArtifactsRoot(projectId),
+            storageKey: artifactKey,
+            body: contract,
+          });
+          await store.saveReadinessContract({
+            projectId,
+            knowledgeSnapshotId: snapshot.id,
+            workflowRunId: execution.workflowRunId,
+            contract,
+            artifactKey,
+            expectedVersion,
+            operation: {
+              id: begun.operation.id,
+              ownerClaimToken,
+              result: { evaluation, workflowRunId: execution.workflowRunId },
+            },
+          });
+          operationTerminal = true;
+          const attempt = await store.getActiveLifecycleAttempt(projectId);
+          if (attempt?.runStatus === 'running') {
+            await advanceSystem3LifecycleAttemptActivity({
+              projectId,
+              attemptId: attempt.id,
+              completedActivityId: 'TW-03',
+            });
+          }
+          await startCompilationAfterReadiness(begun.operation);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Unknown readiness error';
+          getLog().error({ err: error, projectId }, 'system3.readiness_operation_failed');
+          if (ownerClaimToken !== null && !operationTerminal) {
+            await store.failProjectOperation(begun.operation.id, ownerClaimToken, message);
+            await failSystem3LifecycleAttempt({ projectId, message });
+          }
+        } finally {
+          if (ownerClaimToken !== null) stopSystem3OperationHeartbeat(begun.operation.id);
+        }
+      })();
+    }
+    return begun;
+  }
+
   registerOpenApiRoute(createSystem3ReadinessContractRoute, async c => {
     const projectId = c.req.param('id') ?? '';
     const body = getValidatedBody(c, createSystem3ReadinessContractBodySchema);
     const idempotencyKey = c.req.header('Idempotency-Key');
     if (!idempotencyKey) return apiError(c, 400, 'Idempotency-Key header is required');
     try {
-      const store = getSystem3Store();
-      const replay = await store.getProjectOperationReplay({
+      const begun = await startSystem3Readiness({
         projectId,
-        type: 'readiness',
-        idempotencyKey,
-        request: body,
-      });
-      if (replay) return c.json({ operation: replay }, 202);
-      const [project, snapshot, decisions, activeSources] = await Promise.all([
-        store.getProject(projectId),
-        store.getActiveUnderstanding(projectId),
-        store.listDecisions(projectId),
-        store.listActiveSources(projectId),
-      ]);
-      if (!project || !snapshot)
-        return apiError(c, 422, 'Analyze project sources before readiness');
-      const activeDecisions = decisions.filter(
-        decision => decision.knowledgeSnapshotId === snapshot.id
-      );
-      if (project.version !== body.expectedVersion)
-        return apiError(c, 409, 'Project changed; refresh before running readiness');
-      if (project.freshness !== 'current')
-        return apiError(c, 422, 'Project sources changed; analyze them again before readiness');
-      const primaryDatasets = activeSources.filter(
-        source => source.kind === 'dataset' && source.role === 'primary'
-      );
-      const datasetSourceVersionId =
-        primaryDatasets.length === 1 ? (primaryDatasets[0]?.id ?? null) : null;
-      const codebase = await codebaseDb.getCodebase(project.codebaseId);
-      if (!codebase) return apiError(c, 422, 'Linked codebase no longer exists');
-      const userId = await resolveWebUserId(c);
-      await assertSystem3LifecycleAttemptNextActivity(projectId, 'TW-03');
-      const begun = await store.beginProjectOperation({
-        projectId,
-        type: 'readiness',
-        idempotencyKey,
         expectedVersion: body.expectedVersion,
-        request: body,
+        idempotencyKey,
+        userId: await resolveWebUserId(c),
+        webAdapter,
       });
-      if (!begun.existing) {
-        activeSystem3Operations.add(begun.operation.id);
-        void (async (): Promise<void> => {
-          let ownerClaimToken: string | null = null;
-          try {
-            ownerClaimToken = await claimSystem3Operation(store, {
-              operationId: begun.operation.id,
-              ownerInstanceId: system3OperationOwnerId,
-            });
-            const runtimeContext = await resolveSystem3WorkflowExecutionContext({
-              projectId,
-              activityId: 'TW-03',
-              codebaseId: project.codebaseId,
-              defaultCwd: codebase.default_cwd,
-              userId,
-              webAdapter,
-            });
-            const workflow = workflowDefinitionSchema.parse(
-              buildReadinessContractWorkflow({
-                analysis: await resolveUnderstandingAnalysis({
-                  projectId,
-                  analysis: snapshot.analysis,
-                  inputSnapshotId: snapshot.inputSnapshotId,
-                  decisions: activeDecisions.map(decision => ({
-                    binding: decision.binding,
-                    status: decision.status,
-                    answer: decision.answer,
-                  })),
-                }),
-                decisions: activeDecisions.map(decision => ({
-                  id: decision.id,
-                  status: decision.status,
-                  answer: decision.answer,
-                })),
-                knowledgeSnapshotId: snapshot.id,
-                projectVersion: body.expectedVersion,
-                datasetSourceVersionId,
-                requiredCapabilityIds: getSystem3CapabilityRegistry()
-                  .snapshot()
-                  .filter(capability =>
-                    ['build', 'experiment', 'delivery'].includes(capability.phaseId)
-                  )
-                  .map(capability => capability.id),
-                availableCapabilityIds: getSystem3CapabilityRegistry()
-                  .snapshot()
-                  .map(capability => capability.id),
-              })
-            );
-            const execution = await executeWorkflow(
-              { ...createWorkflowDeps(), actionRegistry: getSystem3CapabilityRegistry() },
-              webAdapter,
-              runtimeContext.externalConversationId,
-              runtimeContext.workingPath,
-              workflow,
-              `Create System 3 readiness contract ${projectId}`,
-              runtimeContext.conversation.id,
-              { codebaseId: project.codebaseId, userId, source: 'bundled' }
-            );
-            if (!execution.success) throw new Error(execution.error);
-            if ('paused' in execution || execution.summary === undefined) {
-              throw new Error('Readiness workflow completed without a contract output');
-            }
-            const summary = JSON.parse(execution.summary) as unknown;
-            if (summary === null || typeof summary !== 'object' || Array.isArray(summary)) {
-              throw new Error('Readiness workflow returned an invalid output');
-            }
-            const evaluation = system3ReadinessEvaluationSchema.parse(
-              (summary as Record<string, unknown>).evaluation
-            );
-            const contractValue = (summary as Record<string, unknown>).contract;
-            if (evaluation.status !== 'passed') {
-              if (contractValue !== null) {
-                throw new Error('Blocked readiness workflow returned an unexpected contract');
-              }
-              await store.completeProjectOperation(
-                begun.operation.id,
-                ownerClaimToken,
-                { evaluation, readinessContractId: null, workflowRunId: execution.workflowRunId },
-                { workflowRunId: execution.workflowRunId }
-              );
-              if (runtimeContext.attemptId !== null) {
-                await store.updateLifecycleAttempt(projectId, runtimeContext.attemptId, {
-                  runStatus: 'waiting',
-                  checkpointActivityId: 'TW-03',
-                  nextActivityId: 'TW-03',
-                });
-              }
-              return;
-            }
-            const contract = system3ReadinessContractBodySchema.parse(contractValue);
-            const artifactKey = system3AttemptArtifactStorageKey(
-              runtimeContext.attemptId,
-              `contracts/readiness/${randomUUID()}/contract.json`
-            );
-            await persistSystem3Artifact({
-              artifactsRoot: await getSystem3ArtifactsRoot(projectId),
-              storageKey: artifactKey,
-              body: contract,
-            });
-            await store.saveReadinessContract({
-              projectId,
-              knowledgeSnapshotId: snapshot.id,
-              workflowRunId: execution.workflowRunId,
-              contract,
-              artifactKey,
-              expectedVersion: body.expectedVersion,
-              operation: {
-                id: begun.operation.id,
-                ownerClaimToken,
-                result: { evaluation, workflowRunId: execution.workflowRunId },
-              },
-            });
-            const attempt = await store.getActiveLifecycleAttempt(projectId);
-            if (attempt?.runStatus === 'running') {
-              await advanceSystem3LifecycleAttemptActivity({
-                projectId,
-                attemptId: attempt.id,
-                completedActivityId: 'TW-03',
-              });
-            }
-          } catch (error) {
-            const message = error instanceof Error ? error.message : 'Unknown readiness error';
-            getLog().error({ err: error, projectId }, 'system3.readiness_operation_failed');
-            if (ownerClaimToken !== null) {
-              await store.failProjectOperation(begun.operation.id, ownerClaimToken, message);
-            }
-            await failSystem3LifecycleAttempt({ projectId, message });
-          } finally {
-            stopSystem3OperationHeartbeat(begun.operation.id);
-          }
-        })();
-      }
       return c.json({ operation: begun.operation }, 202);
     } catch (error) {
       getLog().error({ err: error, projectId }, 'system3.readiness_contract_failed');
+      if (error instanceof System3ReadinessPreflightError) return apiError(c, 422, error.message);
       if (error instanceof System3ConflictError) return apiError(c, 409, error.message);
       return apiError(c, 500, 'Failed to create System 3 readiness contract');
     }
   });
+
+  async function startSystem3Compilation(input: {
+    projectId: string;
+    expectedVersion: number;
+    idempotencyKey: string;
+  }): Promise<{
+    operation: Awaited<ReturnType<System3Store['beginProjectOperation']>>['operation'];
+    existing: boolean;
+  }> {
+    const { projectId, expectedVersion, idempotencyKey } = input;
+    const request = { expectedVersion };
+    const store = getSystem3Store();
+    const replay = await store.getProjectOperationReplay({
+      projectId,
+      type: 'compile',
+      idempotencyKey,
+      request,
+    });
+    if (replay && replay.status !== 'accepted') return { operation: replay, existing: true };
+    const [project, snapshot, sources, decisions, readiness, pendingImpacts, latestDelivery] =
+      await Promise.all([
+        store.getProject(projectId),
+        store.getActiveUnderstanding(projectId),
+        resolveSystem3LifecycleAttemptSources({ store, projectId }),
+        store.listDecisions(projectId),
+        store.getLatestReadinessContract(projectId),
+        store.listPendingImpacts(projectId),
+        store.getLatestDelivery(projectId),
+      ]);
+    if (!project || !snapshot)
+      throw new System3CompilationPreflightError('Analyze project sources before compiling');
+    if (project.version !== expectedVersion) {
+      throw new System3ConflictError('Project changed; refresh before compiling');
+    }
+    if (project.freshness !== 'current')
+      throw new System3CompilationPreflightError(
+        'Project sources changed; analyze them again before compiling'
+      );
+    if (
+      decisions.some(
+        decision => decision.knowledgeSnapshotId === snapshot.id && decision.status === 'pending'
+      )
+    )
+      throw new System3CompilationPreflightError('Resolve all decisions before compiling');
+    if (readiness?.knowledgeSnapshotId !== snapshot.id) {
+      throw new System3CompilationPreflightError(
+        'Run readiness and freeze a current contract before compiling'
+      );
+    }
+    const readinessBody = system3ReadinessContractBodySchema.safeParse(readiness.contract);
+    if (
+      !readinessBody.success ||
+      readinessBody.data.knowledgeSnapshotId !== snapshot.id ||
+      readinessBody.data.projectVersion !== project.version - 1
+    ) {
+      throw new System3CompilationPreflightError(
+        'Readiness Contract is legacy or stale; run readiness again'
+      );
+    }
+    await assertSystem3LifecycleAttemptNextActivity(projectId, 'OP-04');
+    const begun = await store.beginProjectOperation({
+      projectId,
+      type: 'compile',
+      idempotencyKey,
+      expectedVersion,
+      request,
+    });
+    if (!begun.existing || begun.operation.status === 'accepted') {
+      const affectedPhases = system3PhaseOrder.filter(phase =>
+        pendingImpacts.some(impact => impact.affectedPhases.includes(phase))
+      );
+      const impactManifestIds = pendingImpacts.map(impact => impact.id);
+      activeSystem3Operations.add(begun.operation.id);
+      void (async (): Promise<void> => {
+        let ownerClaimToken: string | null = null;
+        let operationTerminal = false;
+        try {
+          ownerClaimToken = await claimSystem3Operation(store, {
+            operationId: begun.operation.id,
+            ownerInstanceId: system3OperationOwnerId,
+          });
+          const activeAttempt = await store.getActiveLifecycleAttempt(projectId);
+          if (activeAttempt?.runStatus === 'waiting' && activeAttempt.nextActivityId === 'OP-04') {
+            await store.updateLifecycleAttempt(projectId, activeAttempt.id, {
+              runStatus: 'running',
+            });
+          }
+          const compilationId = newCompilationId();
+          const resolvedAnalysis = await resolveUnderstandingAnalysis({
+            projectId,
+            analysis: snapshot.analysis,
+            inputSnapshotId: snapshot.inputSnapshotId,
+            decisions: decisions
+              .filter(decision => decision.knowledgeSnapshotId === snapshot.id)
+              .map(decision => ({
+                binding: decision.binding,
+                status: decision.status,
+                answer: decision.answer,
+              })),
+          });
+          const reusableBaselineArtifact = latestDelivery
+            ? await store.getBaselineArtifact(latestDelivery.executionId)
+            : null;
+          const reusableDependencySources = reusableBaselineArtifact
+            ? await Promise.all(
+                reusableBaselineArtifact.sourceVersionIds.map(sourceVersionId =>
+                  store.getSourceVersion(projectId, sourceVersionId)
+                )
+              )
+            : [];
+          const modelComparison = await readPinnedModelComparisonConfig(projectId, sources);
+          if (readinessBody.data.schemaVersion === 3) {
+            if (
+              !modelComparison ||
+              hashSystem3Definition(readinessBody.data.modelComparison) !==
+                hashSystem3Definition(modelComparison)
+            ) {
+              throw new System3CompilationPreflightError(
+                'Pinned model comparison differs from the current Readiness Contract; run readiness again'
+              );
+            }
+          } else if (modelComparison) {
+            throw new System3CompilationPreflightError(
+              'Model comparison requires a comparison Readiness Contract; run readiness again'
+            );
+          }
+          const compiled = compileCustomerChurnReference({
+            compilationId,
+            projectId,
+            projectVersion: project.version,
+            knowledgeSnapshotId: snapshot.id,
+            readinessContract: { id: readiness.id, contractHash: readiness.contractHash },
+            readinessContractBody: readinessBody.data,
+            sources,
+            analysis: resolvedAnalysis,
+            modelComparison,
+            availableCapabilities: getSystem3CapabilityRegistry().snapshot(),
+            rerunScope:
+              affectedPhases.length > 0
+                ? {
+                    impactManifestIds,
+                    affectedPhases,
+                    ...(latestDelivery && reusableBaselineArtifact
+                      ? {
+                          reusableArtifact: {
+                            kind: 'delivery_package' as const,
+                            storageKey: latestDelivery.packageStorageKey,
+                            contentHash: latestDelivery.contentHash,
+                            sourceExecutionId: latestDelivery.executionId,
+                            sourceVersionIds: reusableDependencySources
+                              .filter(
+                                source => source?.kind === 'blueprint' || source?.kind === 'dataset'
+                              )
+                              .map(source => source?.id)
+                              .filter((sourceId): sourceId is string => sourceId !== undefined),
+                          },
+                        }
+                      : {}),
+                  }
+                : undefined,
+          });
+          await store.saveCompilation({
+            id: compilationId,
+            projectId,
+            knowledgeSnapshotId: snapshot.id,
+            expectedVersion,
+            impactManifestIds,
+            plan: compiled.plan,
+            definitionHash: compiled.definitionHash,
+            capabilityRegistryHash: compiled.capabilityRegistryHash,
+            workflowBundleSnapshots: compiled.workflowBundles,
+            operation: { id: begun.operation.id, ownerClaimToken },
+          });
+          operationTerminal = true;
+          const attempt = await store.getActiveLifecycleAttempt(projectId);
+          if (attempt?.runStatus === 'running') {
+            await advanceSystem3LifecycleAttemptActivity({
+              projectId,
+              attemptId: attempt.id,
+              completedActivityId: 'OP-04',
+            });
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Unknown compilation error';
+          getLog().error({ err: error, projectId }, 'system3.compile_operation_failed');
+          if (ownerClaimToken !== null && !operationTerminal) {
+            await store.failProjectOperation(begun.operation.id, ownerClaimToken, message);
+            await failSystem3LifecycleAttempt({ projectId, message });
+          }
+        } finally {
+          if (ownerClaimToken !== null) stopSystem3OperationHeartbeat(begun.operation.id);
+        }
+      })();
+    }
+    return begun;
+  }
 
   registerOpenApiRoute(compileSystem3ProjectRoute, async c => {
     const projectId = c.req.param('id') ?? '';
@@ -7750,158 +8125,15 @@ export function registerApiRoutes(
     const idempotencyKey = c.req.header('Idempotency-Key');
     if (!idempotencyKey) return apiError(c, 400, 'Idempotency-Key header is required');
     try {
-      const store = getSystem3Store();
-      const replay = await store.getProjectOperationReplay({
+      const begun = await startSystem3Compilation({
         projectId,
-        type: 'compile',
-        idempotencyKey,
-        request: body,
-      });
-      if (replay) return c.json({ operation: replay }, 202);
-      const [project, snapshot, sources, decisions, readiness, pendingImpacts, latestDelivery] =
-        await Promise.all([
-          store.getProject(projectId),
-          store.getActiveUnderstanding(projectId),
-          resolveSystem3LifecycleAttemptSources({ store, projectId }),
-          store.listDecisions(projectId),
-          store.getLatestReadinessContract(projectId),
-          store.listPendingImpacts(projectId),
-          store.getLatestDelivery(projectId),
-        ]);
-      if (!project || !snapshot)
-        return apiError(c, 422, 'Analyze project sources before compiling');
-      if (project.freshness !== 'current')
-        return apiError(c, 422, 'Project sources changed; analyze them again before compiling');
-      if (
-        decisions.some(
-          decision => decision.knowledgeSnapshotId === snapshot.id && decision.status === 'pending'
-        )
-      )
-        return apiError(c, 422, 'Resolve all decisions before compiling');
-      if (readiness?.knowledgeSnapshotId !== snapshot.id) {
-        return apiError(c, 422, 'Run readiness and freeze a current contract before compiling');
-      }
-      const readinessBody = system3ReadinessContractBodySchema.safeParse(readiness.contract);
-      if (!readinessBody.success || readinessBody.data.knowledgeSnapshotId !== snapshot.id) {
-        return apiError(c, 422, 'Readiness Contract is legacy or stale; run readiness again');
-      }
-      await assertSystem3LifecycleAttemptNextActivity(projectId, 'OP-04');
-      const activeAttempt = await store.getActiveLifecycleAttempt(projectId);
-      if (activeAttempt) {
-        await store.updateLifecycleAttempt(projectId, activeAttempt.id, { runStatus: 'running' });
-      }
-      const begun = await store.beginProjectOperation({
-        projectId,
-        type: 'compile',
-        idempotencyKey,
         expectedVersion: body.expectedVersion,
-        request: body,
+        idempotencyKey,
       });
-      if (!begun.existing) {
-        const affectedPhases = system3PhaseOrder.filter(phase =>
-          pendingImpacts.some(impact => impact.affectedPhases.includes(phase))
-        );
-        const impactManifestIds = pendingImpacts.map(impact => impact.id);
-        activeSystem3Operations.add(begun.operation.id);
-        void (async (): Promise<void> => {
-          let ownerClaimToken: string | null = null;
-          try {
-            ownerClaimToken = await claimSystem3Operation(store, {
-              operationId: begun.operation.id,
-              ownerInstanceId: system3OperationOwnerId,
-            });
-            const compilationId = newCompilationId();
-            const resolvedAnalysis = await resolveUnderstandingAnalysis({
-              projectId,
-              analysis: snapshot.analysis,
-              inputSnapshotId: snapshot.inputSnapshotId,
-              decisions: decisions
-                .filter(decision => decision.knowledgeSnapshotId === snapshot.id)
-                .map(decision => ({
-                  binding: decision.binding,
-                  status: decision.status,
-                  answer: decision.answer,
-                })),
-            });
-            const reusableBaselineArtifact = latestDelivery
-              ? await store.getBaselineArtifact(latestDelivery.executionId)
-              : null;
-            const reusableDependencySources = reusableBaselineArtifact
-              ? await Promise.all(
-                  reusableBaselineArtifact.sourceVersionIds.map(sourceVersionId =>
-                    store.getSourceVersion(projectId, sourceVersionId)
-                  )
-                )
-              : [];
-            const compiled = compileCustomerChurnReference({
-              compilationId,
-              projectId,
-              projectVersion: project.version,
-              knowledgeSnapshotId: snapshot.id,
-              readinessContract: { id: readiness.id, contractHash: readiness.contractHash },
-              sources,
-              analysis: resolvedAnalysis,
-              availableCapabilities: getSystem3CapabilityRegistry().snapshot(),
-              rerunScope:
-                affectedPhases.length > 0
-                  ? {
-                      impactManifestIds,
-                      affectedPhases,
-                      ...(latestDelivery && reusableBaselineArtifact
-                        ? {
-                            reusableArtifact: {
-                              kind: 'delivery_package' as const,
-                              storageKey: latestDelivery.packageStorageKey,
-                              contentHash: latestDelivery.contentHash,
-                              sourceExecutionId: latestDelivery.executionId,
-                              sourceVersionIds: reusableDependencySources
-                                .filter(
-                                  source =>
-                                    source?.kind === 'blueprint' || source?.kind === 'dataset'
-                                )
-                                .map(source => source?.id)
-                                .filter((sourceId): sourceId is string => sourceId !== undefined),
-                            },
-                          }
-                        : {}),
-                    }
-                  : undefined,
-            });
-            await store.saveCompilation({
-              id: compilationId,
-              projectId,
-              knowledgeSnapshotId: snapshot.id,
-              expectedVersion: body.expectedVersion,
-              impactManifestIds,
-              plan: compiled.plan,
-              definitionHash: compiled.definitionHash,
-              capabilityRegistryHash: compiled.capabilityRegistryHash,
-              workflowBundleSnapshots: compiled.workflowBundles,
-              operation: { id: begun.operation.id, ownerClaimToken },
-            });
-            const attempt = await store.getActiveLifecycleAttempt(projectId);
-            if (attempt?.runStatus === 'running') {
-              await advanceSystem3LifecycleAttemptActivity({
-                projectId,
-                attemptId: attempt.id,
-                completedActivityId: 'OP-04',
-              });
-            }
-          } catch (error) {
-            const message = error instanceof Error ? error.message : 'Unknown compilation error';
-            getLog().error({ err: error, projectId }, 'system3.compile_operation_failed');
-            if (ownerClaimToken !== null) {
-              await store.failProjectOperation(begun.operation.id, ownerClaimToken, message);
-            }
-            await failSystem3LifecycleAttempt({ projectId, message });
-          } finally {
-            stopSystem3OperationHeartbeat(begun.operation.id);
-          }
-        })();
-      }
       return c.json({ operation: begun.operation }, 202);
     } catch (error) {
       getLog().error({ err: error, projectId }, 'system3.project_compile_failed');
+      if (error instanceof System3CompilationPreflightError) return apiError(c, 422, error.message);
       if (error instanceof System3ConflictError) return apiError(c, 409, error.message);
       return apiError(c, 500, 'Failed to compile System 3 project');
     }
@@ -7989,25 +8221,122 @@ export function registerApiRoutes(
     if (!idempotencyKey) return apiError(c, 400, 'Idempotency-Key header is required');
     try {
       const store = getSystem3Store();
-      const priorExecution = await store.getExecutionByIdempotencyKey(projectId, idempotencyKey);
-      if (priorExecution && priorExecution.approvalId !== body.approvalId) {
-        return apiError(
-          c,
-          409,
-          'Idempotency-Key was already used for a different execution request'
+      let approvalId: string;
+      let executionExpectedVersion = body.expectedVersion;
+      let completeApprovalActivity = false;
+      if ('approvalId' in body) {
+        approvalId = body.approvalId;
+      } else {
+        // This mode is an explicit approval request for the exact plan shown in
+        // the UI. The deterministic key lets a retry after interruption reuse
+        // the same Approval Manifest before attempting the Execution again.
+        const approvalKey = `execute-approval:${idempotencyKey}`;
+        const priorApproval = await store.getApprovalByIdempotencyKey(projectId, approvalKey);
+        if (priorApproval && priorApproval.compilationId !== body.compilationId) {
+          return apiError(c, 409, 'Idempotency-Key was already used for a different compilation');
+        }
+        let approval = priorApproval;
+        if (!approval) {
+          const [project, compilation, latestCompilation] = await Promise.all([
+            store.getProject(projectId),
+            store.getCompilation(projectId, body.compilationId),
+            store.getLatestCompilation(projectId),
+          ]);
+          if (!project) return apiError(c, 404, 'System 3 project not found');
+          if (!compilation || latestCompilation?.id !== compilation.id) {
+            return apiError(c, 422, 'Compilation is not the active plan');
+          }
+          if (compilation.plan.schemaVersion !== 3) {
+            return recompileRequired(
+              c,
+              new Error('Legacy compilation must be recompiled before approval')
+            );
+          }
+          if (
+            project.version !== body.expectedVersion ||
+            project.freshness !== 'current' ||
+            compilation.knowledgeSnapshotId !== project.activeKnowledgeSnapshotId
+          ) {
+            return apiError(c, 422, 'Compilation was invalidated by newer project inputs');
+          }
+          try {
+            await assertSystem3LifecycleAttemptNextActivity(projectId, 'OP-05');
+          } catch (error) {
+            // A concurrent identical request may have persisted the approval
+            // between the first lookup and this lifecycle check.
+            approval = await store.getApprovalByIdempotencyKey(projectId, approvalKey);
+            if (approval?.compilationId !== body.compilationId) throw error;
+          }
+          if (!approval) {
+            const workflowBundles = await store.listWorkflowBundleSnapshots({
+              projectId,
+              compilationId: compilation.id,
+            });
+            const manifest = createApprovalManifest({
+              compilationId: compilation.id,
+              projectId,
+              plan: compilation.plan,
+              definitionHash: compilation.definitionHash,
+              capabilityRegistryHash: compilation.capabilityRegistryHash,
+              workflowBundles,
+              approvedBy: (await resolveWebUserId(c)) ?? 'anonymous-web',
+            });
+            approval = await store.approveCompilation({
+              id: randomUUID(),
+              projectId,
+              compilationId: compilation.id,
+              idempotencyKey: approvalKey,
+              manifest,
+              expectedVersion: body.expectedVersion,
+            });
+          }
+        }
+        approvalId = approval.id;
+        completeApprovalActivity = true;
+        // Approval advances the project exactly once. Pin this value to the
+        // request basis so an execution retry uses the same fingerprint even
+        // after the execution itself has advanced project state.
+        executionExpectedVersion = body.expectedVersion + 1;
+      }
+      const executionReplay = await store.getExecutionReplay({
+        projectId,
+        idempotencyKey,
+        approvalId,
+        expectedVersion: executionExpectedVersion,
+      });
+      if (executionReplay && executionReplay.operation.status !== 'accepted') {
+        return c.json(
+          {
+            execution: executionReplay.execution,
+            operation: {
+              ...executionReplay.operation,
+              workflowRunId: executionReplay.execution.workflowRunId,
+            },
+          },
+          202
         );
+      }
+      if (completeApprovalActivity && !executionReplay) {
+        const attempt = await store.getActiveLifecycleAttempt(projectId);
+        if (attempt?.runStatus === 'waiting' && attempt.nextActivityId === 'OP-05') {
+          await advanceSystem3LifecycleAttemptActivity({
+            projectId,
+            attemptId: attempt.id,
+            completedActivityId: 'OP-05',
+          });
+        }
       }
       const [project, snapshot, compilation, approval, decisions] = await Promise.all([
         store.getProject(projectId),
         store.getActiveUnderstanding(projectId),
         store.getLatestCompilation(projectId),
-        store.getLatestApproval(projectId),
+        store.getApproval(projectId, approvalId),
         store.listDecisions(projectId),
       ]);
       if (!project || !snapshot || !compilation || !approval) {
         return apiError(c, 422, 'Analyze, compile, and approve the project before executing');
       }
-      if (approval.id !== body.approvalId || approval.compilationId !== compilation.id) {
+      if (approval.id !== approvalId || approval.compilationId !== compilation.id) {
         return apiError(c, 422, 'Approval is not the active manifest');
       }
       if (
@@ -8044,7 +8373,7 @@ export function registerApiRoutes(
           error instanceof Error ? error.message : 'System 3 capability policy preflight failed'
         );
       }
-      const executionId = priorExecution?.id ?? randomUUID();
+      const executionId = executionReplay?.execution.id ?? randomUUID();
       let approvedExecutionBundle: {
         bundle: NonNullable<Awaited<ReturnType<System3Store['getWorkflowBundleSnapshot']>>>;
         definitions: WorkflowDefinition[];
@@ -8125,7 +8454,12 @@ export function registerApiRoutes(
           })),
       });
       const targetColumn = resolvedAnalysis.dataset?.targetColumn;
-      if (!targetColumn || resolvedAnalysis.dataset?.targetExists !== true) {
+      const requiresTargetColumn =
+        compilation.plan.schemaVersion !== 3 || !compilation.plan.modelComparison;
+      if (
+        requiresTargetColumn &&
+        (!targetColumn || resolvedAnalysis.dataset?.targetExists !== true)
+      ) {
         return apiError(c, 422, 'A profiled dataset target column is required for execution');
       }
       try {
@@ -8139,34 +8473,69 @@ export function registerApiRoutes(
       }
       const codebase = await codebaseDb.getCodebase(project.codebaseId);
       if (!codebase) return apiError(c, 422, 'Linked codebase no longer exists');
-      const userId = await resolveWebUserId(c);
-      const runtimeContext = await resolveSystem3WorkflowExecutionContext({
-        projectId,
-        activityId: 'TW-06',
-        codebaseId: project.codebaseId,
-        defaultCwd: codebase.default_cwd,
-        userId,
-        webAdapter,
-      });
-      const conversationId = runtimeContext.externalConversationId;
-      const conversation = runtimeContext.conversation;
-      const workingPath = runtimeContext.workingPath;
-      const begun = await store.beginExecution({
-        executionId,
-        projectId,
-        approvalId: approval.id,
-        definitionHash: compilation.definitionHash,
-        bundleSnapshotId: approvedExecutionBundle.bundle.id,
-        bundleHash: approvedExecutionBundle.bundle.definitionHash,
-        runtimeBindings: { executionId },
-        expectedVersion: body.expectedVersion,
-        idempotencyKey,
-        conversationId: conversation.id,
-        codebaseId: project.codebaseId,
-        userId,
-        workingPath,
-      });
-      if (!begun.existing) {
+      const userId = executionReplay
+        ? (executionReplay.workflowRun.user_id ?? undefined)
+        : await resolveWebUserId(c);
+      let runtimeContext: Awaited<ReturnType<typeof resolveSystem3WorkflowExecutionContext>>;
+      let conversationId: string;
+      let conversation: Awaited<ReturnType<typeof conversationDb.getOrCreateConversation>>;
+      let workingPath: string;
+      if (executionReplay) {
+        const persistedConversation = await conversationDb.getConversationById(
+          executionReplay.workflowRun.conversation_id
+        );
+        if (
+          persistedConversation?.platform_type !== 'web' ||
+          persistedConversation.codebase_id !== project.codebaseId ||
+          executionReplay.workflowRun.codebase_id !== project.codebaseId ||
+          executionReplay.workflowRun.workflow_name !== 'system3-customer-churn-execution' ||
+          executionReplay.workflowRun.working_path.length === 0 ||
+          executionReplay.workflowRun.metadata.system3ExecutionId !== executionReplay.execution.id
+        ) {
+          return apiError(c, 409, 'Accepted execution is missing its persisted conversation');
+        }
+        conversation = persistedConversation;
+        conversationId = conversation.platform_conversation_id;
+        workingPath = executionReplay.workflowRun.working_path;
+        const attempt = await store.getActiveLifecycleAttempt(projectId);
+        runtimeContext = {
+          externalConversationId: conversationId,
+          conversation,
+          workingPath,
+          attemptId: attempt?.workingPath === workingPath ? attempt.id : null,
+        };
+      } else {
+        runtimeContext = await resolveSystem3WorkflowExecutionContext({
+          projectId,
+          activityId: 'TW-06',
+          codebaseId: project.codebaseId,
+          defaultCwd: codebase.default_cwd,
+          userId,
+          webAdapter,
+        });
+        conversationId = runtimeContext.externalConversationId;
+        conversation = runtimeContext.conversation;
+        workingPath = runtimeContext.workingPath;
+      }
+      webAdapter.setConversationDbId(conversationId, conversation.id);
+      const begun = executionReplay
+        ? { ...executionReplay, existing: true }
+        : await store.beginExecution({
+            executionId,
+            projectId,
+            approvalId: approval.id,
+            definitionHash: compilation.definitionHash,
+            bundleSnapshotId: approvedExecutionBundle.bundle.id,
+            bundleHash: approvedExecutionBundle.bundle.definitionHash,
+            runtimeBindings: { executionId },
+            expectedVersion: executionExpectedVersion,
+            idempotencyKey,
+            conversationId: conversation.id,
+            codebaseId: project.codebaseId,
+            userId,
+            workingPath,
+          });
+      if (!begun.existing || begun.operation.status === 'accepted') {
         activeSystem3Operations.add(begun.operation.id);
         void (async (): Promise<void> => {
           let ownerClaimToken: string | null = null;
@@ -8177,6 +8546,26 @@ export function registerApiRoutes(
               workflowRunId: begun.execution.workflowRunId,
               executionId: begun.execution.id,
             });
+            if (executionReplay && completeApprovalActivity) {
+              const attempt = await store.getActiveLifecycleAttempt(projectId);
+              if (attempt?.runStatus === 'waiting' && attempt.nextActivityId === 'OP-05') {
+                await advanceSystem3LifecycleAttemptActivity({
+                  projectId,
+                  attemptId: attempt.id,
+                  completedActivityId: 'OP-05',
+                });
+              }
+            }
+            const claimedAttempt = await store.getActiveLifecycleAttempt(projectId);
+            if (
+              executionReplay &&
+              claimedAttempt?.runStatus === 'waiting' &&
+              claimedAttempt.nextActivityId === 'TW-06'
+            ) {
+              await store.updateLifecycleAttempt(projectId, claimedAttempt.id, {
+                runStatus: 'running',
+              });
+            }
             await store.markExecutionRunning(begun.execution.id);
             const execution = await executeWorkflow(
               { ...createWorkflowDeps(), actionRegistry: getSystem3CapabilityRegistry() },
@@ -8344,8 +8733,14 @@ export function registerApiRoutes(
                     .map(value => ({
                       requirementId:
                         typeof value.requirementId === 'string' ? value.requirementId : null,
-                      status: 'not_verified' as const,
-                      evidence: [] as string[],
+                      status:
+                        map.kind === 'model_comparison' && value.status === 'passed'
+                          ? ('passed' as const)
+                          : ('not_verified' as const),
+                      evidence:
+                        map.kind === 'model_comparison' && typeof map.inputHash === 'string'
+                          ? [map.inputHash]
+                          : [],
                       reason:
                         typeof value.reason === 'string'
                           ? value.reason
@@ -8365,6 +8760,18 @@ export function registerApiRoutes(
                       reason: null,
                     }))
                 : [];
+              if ((gate as Record<string, unknown>).status !== 'passed') {
+                await store.failVerification({
+                  operationId: verification.operation.id,
+                  ownerClaimToken: verificationOwnerClaimToken,
+                  verificationId: verification.verification.id,
+                  projectId,
+                  error: 'Shared harness checks or requirement Evidence are incomplete',
+                  evidenceMap: map,
+                  gate: gate as Record<string, unknown>,
+                });
+                return;
+              }
               await store.completeVerification({
                 operationId: verification.operation.id,
                 ownerClaimToken: verificationOwnerClaimToken,
@@ -8422,9 +8829,11 @@ export function registerApiRoutes(
                   );
                 });
             }
-            await failSystem3LifecycleAttempt({ projectId, message, workingPath });
+            if (ownerClaimToken !== null) {
+              await failSystem3LifecycleAttempt({ projectId, message, workingPath });
+            }
           } finally {
-            stopSystem3OperationHeartbeat(begun.operation.id);
+            if (ownerClaimToken !== null) stopSystem3OperationHeartbeat(begun.operation.id);
           }
         })();
       }
@@ -8579,8 +8988,14 @@ export function registerApiRoutes(
                   .map(value => ({
                     requirementId:
                       typeof value.requirementId === 'string' ? value.requirementId : null,
-                    status: 'not_verified' as const,
-                    evidence: [] as string[],
+                    status:
+                      map.kind === 'model_comparison' && value.status === 'passed'
+                        ? ('passed' as const)
+                        : ('not_verified' as const),
+                    evidence:
+                      map.kind === 'model_comparison' && typeof map.inputHash === 'string'
+                        ? [map.inputHash]
+                        : [],
                     reason:
                       typeof value.reason === 'string'
                         ? value.reason
@@ -8600,6 +9015,18 @@ export function registerApiRoutes(
                     reason: null,
                   }))
               : [];
+            if ((gate as Record<string, unknown>).status !== 'passed') {
+              await store.failVerification({
+                operationId: begun.operation.id,
+                ownerClaimToken,
+                verificationId: begun.verification.id,
+                projectId,
+                error: 'Shared harness checks or requirement Evidence are incomplete',
+                evidenceMap: map,
+                gate: gate as Record<string, unknown>,
+              });
+              return;
+            }
             await store.completeVerification({
               operationId: begun.operation.id,
               ownerClaimToken,

@@ -82,7 +82,7 @@ export function App(): React.ReactElement {
           <BrowserRouter>
             <Suspense fallback={<RouteLoading />}>
               <Routes>
-                <Route path="/" element={<Navigate to="/console" replace />} />
+                <Route path="/" element={<Navigate to="/console/projects" replace />} />
                 <Route path="/login" element={<LoginPage />} />
                 <Route
                   path="/console/projects/*"

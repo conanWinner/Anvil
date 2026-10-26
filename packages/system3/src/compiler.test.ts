@@ -1,7 +1,9 @@
 import { expect, test } from 'bun:test';
+import { z } from '@hono/zod-openapi';
 import {
   compileCustomerChurnReference,
   createApprovalManifest,
+  hashSystem3Definition,
   projectSystem3WorkflowBundlePhases,
   validateSystem3CapabilityPolicy,
 } from './compiler';
@@ -65,6 +67,39 @@ const analysisWithDataset: BlueprintAnalysis = {
   },
 };
 const executableSources = [blueprint, dataset] as const;
+const modelComparison = {
+  schemaVersion: 1 as const,
+  models: ['router9/model-a', 'router9/model-b'],
+  prompt: 'Implement churn prediction.',
+  harness: 'Check the required output.',
+  requirementIds: ['REQ-1'],
+};
+const comparisonReadinessContractBody = (config = modelComparison) => ({
+  schemaVersion: 3 as const,
+  status: 'passed' as const,
+  knowledgeSnapshotId: '00000000-0000-4000-8000-000000000020',
+  projectVersion: 1,
+  requirementIds: config.requirementIds,
+  datasetSourceVersionId: dataset.id,
+  runtime: { cpuOnly: true, ramGb: 8 },
+  decisions: [],
+  checks: [],
+  modelComparison: config,
+});
+const analysisWithRequirement: BlueprintAnalysis = {
+  ...analysisWithDataset,
+  requirements: [
+    {
+      id: 'REQ-1',
+      kind: 'functional',
+      priority: null,
+      source: null,
+      statement: 'Predict churn.',
+      acceptanceCriterion: 'Return a churn prediction.',
+      sourcePointer: 'blueprint#requirement-1',
+    },
+  ],
+};
 
 test('compiles a deterministic Customer Churn execution plan', () => {
   const input = {
@@ -93,6 +128,226 @@ test('compiles a deterministic Customer Churn execution plan', () => {
   );
   expect(first.plan.phases[0]?.workflow).toBe('system3-understand-project');
   expect(first.plan.phases[0]?.resourceProfile).toEqual({ cpuOnly: true, ramGb: 8 });
+});
+
+test('pins model comparison through candidates and independent verification', () => {
+  const compiled = compileCustomerChurnReference({
+    knowledgeSnapshotId: '00000000-0000-4000-8000-000000000020',
+    sources: executableSources,
+    analysis: analysisWithRequirement,
+    modelComparison,
+    readinessContractBody: comparisonReadinessContractBody(),
+  });
+  expect(compiled.plan.modelComparison).toEqual(modelComparison);
+  expect(
+    compiled.workflowBundles.find(bundle => bundle.activityId === 'TW-06')?.definition.workflows
+  ).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        name: 'system3-model-candidate-0',
+        nodes: expect.arrayContaining([
+          expect.objectContaining({
+            action: expect.objectContaining({
+              input: expect.not.objectContaining({ targetColumn: 'target' }),
+            }),
+          }),
+        ]),
+      }),
+    ])
+  );
+  const build = compiled.workflowBundles.find(bundle => bundle.activityId === 'TW-06');
+  const workflowDefs = build?.definition.workflows ?? [];
+  const root = workflowDefs.find(workflow => workflow.name === 'system3-customer-churn-execution');
+  expect(workflowDefs.map(workflow => workflow.name)).toContain('system3-model-candidate-0');
+  expect(
+    z
+      .array(z.object({ id: z.string() }))
+      .parse(root?.nodes)
+      .map(node => node.id)
+  ).toEqual(['model-candidate-0', 'model-candidate-1', 'package-model-comparison']);
+  const verification = compiled.workflowBundles.find(bundle => bundle.activityId === 'TW-07');
+  const verifyWorkflow = verification?.definition.workflows.find(
+    workflow => workflow.name === 'system3-verify'
+  );
+  const pinnedInputs = z
+    .array(z.object({ action: z.object({ input: z.record(z.string(), z.unknown()) }) }))
+    .parse(verifyWorkflow?.nodes)
+    .slice(0, 2)
+    .map(node => node.action.input.modelComparison);
+  expect(pinnedInputs?.[0]).toEqual(pinnedInputs?.[1]);
+  expect(pinnedInputs?.[0]).toMatchObject({
+    config: modelComparison,
+    inputHash: expect.stringMatching(/^sha256:/),
+    datasetHash: dataset.contentHash,
+  });
+  const verificationNodes = z
+    .array(
+      z.object({
+        action: z.object({
+          executor: z.string(),
+          input: z.record(z.string(), z.unknown()),
+        }),
+        timeout: z.number(),
+      })
+    )
+    .parse(verifyWorkflow?.nodes);
+  expect(verificationNodes.map(node => node.action.executor)).toEqual([
+    'system3.model-comparison-validator',
+    'system3.model-comparison-evidence',
+    'system3.baseline-gate-evaluator',
+  ]);
+  expect(verificationNodes.slice(0, 2).map(node => node.timeout)).toEqual([150_000, 150_000]);
+  expect(verificationNodes[2]?.action.input).toEqual({
+    evidenceMap: '$build-evidence-map.output.evidenceMap',
+  });
+  const comparisonDelivery = compiled.plan.phases.find(phase => phase.phaseId === 'delivery');
+  expect(comparisonDelivery?.permissions).toContain('process:python');
+  const validatorCapability = compiled.plan.capabilityRegistry.find(
+    capability => capability.id === 'system3.model-comparison-validator'
+  );
+  expect(validatorCapability).toMatchObject({
+    phaseId: 'delivery',
+    permissions: ['artifact:read', 'process:python'],
+    timeoutMs: 150_000,
+  });
+  expect(comparisonDelivery?.executors).toMatchObject({
+    'system3-verify/validate-artifact-schemas': 'system3.model-comparison-validator',
+    'system3-verify/build-evidence-map': 'system3.model-comparison-evidence',
+  });
+  expect(compiled.plan.runtimeProfileHash).toBe(
+    hashSystem3Definition(compiled.plan.runtimeProfile)
+  );
+  expect(compiled.capabilityRegistryHash).toBe(
+    hashSystem3Definition(compiled.plan.capabilityRegistry)
+  );
+  expect(() =>
+    validateSystem3CapabilityPolicy(
+      compiled.plan,
+      compiled.plan.capabilityRegistry.map(capability =>
+        capability.id === 'system3.model-comparison-validator'
+          ? { ...capability, timeoutMs: 150_001 }
+          : capability
+      )
+    )
+  ).toThrow("Capability policy changed for 'system3.model-comparison-validator@1'");
+  const baseline = compileCustomerChurnReference({
+    knowledgeSnapshotId: '00000000-0000-4000-8000-000000000020',
+    sources: executableSources,
+    analysis: analysisWithRequirement,
+  });
+  expect(
+    baseline.plan.phases.find(phase => phase.phaseId === 'delivery')?.permissions
+  ).not.toContain('process:python');
+  const changedModelComparison = { ...modelComparison, prompt: 'A changed approved prompt.' };
+  expect(() =>
+    compileCustomerChurnReference({
+      knowledgeSnapshotId: '00000000-0000-4000-8000-000000000020',
+      sources: executableSources,
+      analysis: analysisWithRequirement,
+      modelComparison: changedModelComparison,
+      readinessContractBody: comparisonReadinessContractBody(),
+    })
+  ).toThrow('matching pinned comparison Readiness Contract');
+});
+
+test('comparison compiles without a fabricated target when its readiness contract is pinned', () => {
+  const analysisWithoutTarget: BlueprintAnalysis = {
+    ...analysisWithRequirement,
+    targetDefinition: null,
+    dataset: {
+      ...analysisWithDataset.dataset!,
+      targetColumn: null,
+      targetExists: false,
+      targetDistribution: {},
+    },
+  };
+  const compiled = compileCustomerChurnReference({
+    knowledgeSnapshotId: '00000000-0000-4000-8000-000000000020',
+    sources: executableSources,
+    analysis: analysisWithoutTarget,
+    modelComparison,
+    readinessContractBody: comparisonReadinessContractBody(),
+  });
+  expect(compiled.plan.modelComparison).toEqual(modelComparison);
+  expect(JSON.stringify(compiled.workflowBundles)).not.toContain('"targetColumn":"target"');
+  expect(
+    compiled.workflowBundles.find(bundle => bundle.activityId === 'TW-06')?.definition.workflows
+  ).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        name: 'system3-model-candidate-0',
+        nodes: expect.arrayContaining([
+          expect.objectContaining({
+            action: expect.objectContaining({
+              input: expect.objectContaining({
+                analysis: expect.objectContaining({
+                  targetDefinition: null,
+                  dataset: expect.objectContaining({ targetColumn: null, targetExists: false }),
+                }),
+              }),
+            }),
+          }),
+        ]),
+      }),
+    ])
+  );
+});
+
+test('rejects unknown and scoped model comparison requirements', () => {
+  const input = {
+    knowledgeSnapshotId: '00000000-0000-4000-8000-000000000020',
+    sources: executableSources,
+    analysis: analysisWithRequirement,
+  };
+  expect(() => compileCustomerChurnReference({ ...input, modelComparison })).toThrow(
+    'matching pinned comparison Readiness Contract'
+  );
+  expect(() =>
+    compileCustomerChurnReference({
+      ...input,
+      readinessContractBody: comparisonReadinessContractBody(),
+    })
+  ).toThrow('requires its pinned model comparison config');
+  expect(() =>
+    compileCustomerChurnReference({
+      ...input,
+      projectVersion: 3,
+      modelComparison,
+      readinessContractBody: comparisonReadinessContractBody(),
+    })
+  ).toThrow('matching pinned comparison Readiness Contract');
+  expect(() =>
+    compileCustomerChurnReference({
+      ...input,
+      modelComparison: { ...modelComparison, requirementIds: ['MISSING'] },
+      readinessContractBody: comparisonReadinessContractBody({
+        ...modelComparison,
+        requirementIds: ['MISSING'],
+      }),
+    })
+  ).toThrow('unknown requirement IDs: MISSING');
+  expect(() =>
+    compileCustomerChurnReference({
+      ...input,
+      modelComparison,
+      readinessContractBody: comparisonReadinessContractBody(),
+      rerunScope: {
+        impactManifestId: '00000000-0000-4000-8000-000000000040',
+        affectedPhases: ['experiments'],
+      },
+    })
+  ).toThrow('full execution only');
+  const full = compileCustomerChurnReference({
+    ...input,
+    modelComparison,
+    readinessContractBody: comparisonReadinessContractBody(),
+    rerunScope: {
+      impactManifestId: '00000000-0000-4000-8000-000000000040',
+      affectedPhases: ['data', 'experiments', 'delivery'],
+    },
+  });
+  expect(full.plan.rerunScope.executionMode).toBe('full');
+  expect(full.plan.modelComparison).toEqual(modelComparison);
 });
 
 test('pins the primary dataset Source Version and hash into the TW-06 bundle', () => {

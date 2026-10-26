@@ -1,28 +1,28 @@
-# Tài liệu kỹ thuật System 3
+# Tài liệu kỹ thuật Anvil / System 3
 
-Thư mục này chứa chi tiết dành cho người thiết kế và triển khai. Người chỉ muốn hiểu sản phẩm có thể đọc [Tổng quan hệ thống](../1.%20Tổng%20quan%20hệ%20thống.md) và [10 Lifecycle Activity](../lifecycle_activity/README.md).
+## Công việc hiện hành
 
-## Danh sách tài liệu
+- [11 — Tinh giản và luồng cốt lõi](11-simplification-and-core-flow-plan.md): kế hoạch UI-0–UI-7 ngày 26/10, mẫu chạy nhiều LLM, nghiệm thu; task S0–S7 và bằng chứng cũ để đối chiếu. Đây là kế hoạch ưu tiên hiện tại.
+- [12 — Cấu hình 9router qua Pi](12-9router-setup.md): gateway, model, credential và kiểm tra kết nối.
 
-| Tài liệu | Câu hỏi được trả lời |
-|---|---|
-| [01 — Ranh giới và contract](01-system-boundaries-and-contracts.md) | System 3 sở hữu gì, runtime sở hữu gì và các activity chuyển dữ liệu cho nhau thế nào? |
-| [02 — Input, output và versioning](02-input-output-and-versioning.md) | Hệ thống nhận nguồn nào, tạo snapshot/version ra sao và đầu ra gồm những gì? |
-| [03 — Artifact và chạy lại có phạm vi](03-artifacts-and-scoped-rerun.md) | Khi nguồn thay đổi, kết quả nào được giữ lại và kết quả nào phải tạo lại? |
-| [04 — UI Hiểu dự án và API](04-understanding-ui-and-api.md) | UI cần hiển thị báo cáo nào và backend cần chuẩn bị read model/API nào? |
-| [05 — Độ tin cậy, bảo mật và LLM](05-reliability-security-and-llm.md) | Lỗi, retry, bảo mật, theo dõi và LLM fallback được kiểm soát ra sao? |
-| [06 — Kế hoạch triển khai và kiểm thử](06-implementation-and-testing.md) | Nên triển khai theo thứ tự nào và điều kiện hoàn thành là gì? |
-| [07 — UI Project Lifecycle](07-system3-lifecycle-ui.md) | UI ánh xạ 6 phase/10 activity, trình bày OP-00, motion và accessibility như thế nào? |
-| [08 — Báo cáo khả năng vận hành](08-product-readiness-audit.md) | Checkout ngày 07/09/2026 đã chạy được gì, bằng chứng nào và còn thiếu gì? |
-| [09 — Execution Brief và task](09-product-readiness-execution-brief.md) | Sol tiếp tục hoàn thiện theo thứ tự, dependency và tiêu chí nghiệm thu nào? |
-| [10 — Spec ghim Workflow Bundle](10-approved-workflow-bundle-binding-spec.md) | Approval phải ghim DAG thực thi như thế nào và xử lý lịch sử cũ ra sao? |
+## Contract và thiết kế để tra cứu
 
-## Ranh giới sử dụng
+| Tài liệu                                                                     | Mở khi sửa                                                     |
+| ---------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| [01 — Ranh giới và contract](01-system-boundaries-and-contracts.md)          | Domain, runtime và giao tiếp giữa các phần                     |
+| [02 — Input/output và versioning](02-input-output-and-versioning.md)         | Source Version, Input Snapshot và đầu ra                       |
+| [03 — Artifact và scoped rerun](03-artifacts-and-scoped-rerun.md)            | Invalidation, reuse và chạy lại                                |
+| [04 — Understanding UI/API](04-understanding-ui-and-api.md)                  | Báo cáo và API Hiểu dự án                                      |
+| [05 — Reliability, security và LLM](05-reliability-security-and-llm.md)      | Lỗi, retry, quyền và hỗ trợ LLM                                |
+| [07 — Lifecycle UI](07-system3-lifecycle-ui.md)                              | Điều hướng 6 phase/10 activity, inline viewer và accessibility |
+| [10 — Approved Workflow Bundle](10-approved-workflow-bundle-binding-spec.md) | Binding DAG và chính xác nội dung approval                     |
 
-- Các tài liệu này là **thiết kế đích**, không phải cam kết rằng code hiện tại đã có đủ mọi hành vi.
-- Ngoại lệ: tài liệu **08** là báo cáo kiểm chứng theo ngày/baseline; **09** là kế hoạch thực thi dựa trên báo cáo đó. Kế hoạch không phải bằng chứng các task đã hoàn thành.
-- Tên identifier hiện có trong code được giữ nguyên cho đến khi có migration riêng.
-- Không đưa logic Customer Churn, dataset, target hoặc experiment vào generic workflow engine.
-- Khi tài liệu và code khác nhau, cần ghi rõ phần nào là hiện tại và phần nào là mục tiêu.
+Spec là thiết kế cần đạt; không chứng minh code đã triển khai đủ. Khi khác nhau, ghi rõ hiện trạng dựa trên code/test. Giữ logic theo bài toán trong System 3, runtime chỉ chứa cơ chế thực thi chung.
 
-[← Mục lục docs](../README.md)
+## Kế hoạch và kiểm chứng cũ
+
+- [06 — Kế hoạch vertical slice](06-implementation-and-testing.md): tiêu chí/test thiết kế ban đầu; thứ tự triển khai đã được thay bằng 11.
+- [08 — Audit ngày 07/09/2026](08-product-readiness-audit.md): bằng chứng của checkout cũ, không phải hiện trạng mới nhất.
+- [09 — Execution Brief ngày 07/09/2026](09-product-readiness-execution-brief.md): backlog cũ đã được thay bằng 11; đối chiếu code trước khi dùng lại task.
+
+[← Mục lục docs](../README.md) · [Tổng quan](../1.%20Tổng%20quan%20hệ%20thống.md) · [Lifecycle Activity](../lifecycle_activity/README.md)

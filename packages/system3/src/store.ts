@@ -5109,6 +5109,8 @@ export class System3Store {
     verificationId: string;
     projectId: string;
     error: string;
+    evidenceMap?: Record<string, unknown>;
+    gate?: Record<string, unknown>;
   }): Promise<boolean> {
     await this.ensureSchema();
     return this.database.withTransaction(async query => {
@@ -5132,9 +5134,15 @@ export class System3Store {
       if (!verification) return false;
       await query(
         `UPDATE remote_agent_system3_verifications
-         SET status = 'failed', error = $1, updated_at = CURRENT_TIMESTAMP
+         SET status = 'failed', error = $1, evidence_map = COALESCE($3, evidence_map),
+             gate = COALESCE($4, gate), updated_at = CURRENT_TIMESTAMP
          WHERE id = $2`,
-        [input.error, input.verificationId]
+        [
+          input.error,
+          input.verificationId,
+          input.evidenceMap ? JSON.stringify(input.evidenceMap) : null,
+          input.gate ? JSON.stringify(input.gate) : null,
+        ]
       );
       const failed = await query(
         `UPDATE remote_agent_system3_project_operations
@@ -6076,6 +6084,133 @@ export class System3Store {
     );
     const row = typedRows(result, value => value as ExecutionRow)[0];
     return row ? asExecution(row) : null;
+  }
+
+  async getExecutionReplay(input: {
+    projectId: string;
+    idempotencyKey: string;
+    approvalId: string;
+    expectedVersion: number;
+  }): Promise<{
+    execution: System3ExecutionRecord;
+    operation: System3OperationRecord;
+    workflowRun: System3PrecreatedWorkflowRun;
+  } | null> {
+    await this.ensureSchema();
+    const result = await this.database.query(
+      `SELECT operation.*, execution.workflow_run_id AS execution_workflow_run_id,
+              execution.approval_id, execution.definition_hash,
+              execution.status AS execution_status, execution.bundle_snapshot_id AS execution_bundle_snapshot_id,
+              execution.bundle_hash AS execution_bundle_hash, execution.runtime_bindings AS execution_runtime_bindings,
+              execution.error AS execution_error, execution.created_at AS execution_created_at,
+              execution.updated_at AS execution_updated_at,
+              run.workflow_name AS execution_run_workflow_name,
+              run.conversation_id AS execution_run_conversation_id,
+              run.codebase_id AS execution_run_codebase_id,
+              run.user_message AS execution_run_user_message,
+              run.metadata AS execution_run_metadata,
+              run.started_at AS execution_run_started_at,
+              run.last_activity_at AS execution_run_last_activity_at,
+              run.working_path AS execution_run_working_path,
+              run.user_id AS execution_run_user_id
+       FROM remote_agent_system3_project_operations operation
+       JOIN remote_agent_system3_project_executions execution ON execution.id = operation.execution_id
+       JOIN remote_agent_workflow_runs run ON run.id = execution.workflow_run_id
+       WHERE operation.project_id = $1 AND operation.operation_type = 'execute'
+         AND operation.idempotency_key = $2`,
+      [input.projectId, input.idempotencyKey]
+    );
+    const row = typedRows(
+      result,
+      value =>
+        value as OperationRow & {
+          execution_workflow_run_id: string;
+          approval_id: string;
+          definition_hash: string;
+          execution_status: System3ExecutionStatus;
+          execution_bundle_snapshot_id: string | null;
+          execution_bundle_hash: string | null;
+          execution_runtime_bindings: Record<string, unknown> | string | null;
+          execution_error: string | null;
+          execution_created_at: Date | string;
+          execution_updated_at: Date | string;
+          execution_run_workflow_name: string;
+          execution_run_conversation_id: string;
+          execution_run_codebase_id: string;
+          execution_run_user_message: string;
+          execution_run_metadata: Record<string, unknown> | string | null;
+          execution_run_started_at: Date | string;
+          execution_run_last_activity_at: Date | string | null;
+          execution_run_working_path: string;
+          execution_run_user_id: string | null;
+        }
+    )[0];
+    if (!row) {
+      if (await this.getExecutionByIdempotencyKey(input.projectId, input.idempotencyKey)) {
+        throw new System3ConflictError('Execution replay is missing its persisted Workflow Run');
+      }
+      return null;
+    }
+    if (row.execution_id === null) {
+      throw new System3ConflictError('Execution replay is missing its persisted execution');
+    }
+    const runtimeBindings = jsonObject<Record<string, unknown>>(
+      row.execution_runtime_bindings ?? {}
+    );
+    const fingerprint = `sha256:${createHash('sha256')
+      .update(
+        canonicalJson({
+          approvalId: row.approval_id,
+          definitionHash: row.definition_hash,
+          bundleSnapshotId: row.execution_bundle_snapshot_id,
+          bundleHash: row.execution_bundle_hash,
+          runtimeBindings,
+          expectedVersion: input.expectedVersion,
+        })
+      )
+      .digest('hex')}`;
+    if (row.approval_id !== input.approvalId || row.request_fingerprint !== fingerprint) {
+      throw new System3ConflictError(
+        'Idempotency-Key was already used for a different execution request'
+      );
+    }
+    return {
+      operation: asOperation(row),
+      execution: asExecution({
+        id: row.execution_id,
+        project_id: row.project_id,
+        approval_id: row.approval_id,
+        workflow_run_id: row.execution_workflow_run_id,
+        definition_hash: row.definition_hash,
+        bundle_snapshot_id: row.execution_bundle_snapshot_id,
+        bundle_hash: row.execution_bundle_hash,
+        runtime_bindings: runtimeBindings,
+        status: row.execution_status,
+        error: row.execution_error,
+        created_at: row.execution_created_at,
+        updated_at: row.execution_updated_at,
+      }),
+      workflowRun: {
+        id: row.execution_workflow_run_id,
+        workflow_name: row.execution_run_workflow_name,
+        conversation_id: row.execution_run_conversation_id,
+        parent_conversation_id: null,
+        parent_workflow_run_id: null,
+        parent_node_id: null,
+        codebase_id: row.execution_run_codebase_id,
+        status: 'pending',
+        user_message: row.execution_run_user_message,
+        metadata: jsonObject<Record<string, unknown>>(row.execution_run_metadata ?? {}),
+        started_at: new Date(row.execution_run_started_at),
+        completed_at: null,
+        last_activity_at:
+          row.execution_run_last_activity_at === null
+            ? null
+            : new Date(row.execution_run_last_activity_at),
+        working_path: row.execution_run_working_path,
+        user_id: row.execution_run_user_id,
+      },
+    };
   }
 
   async listOperations(projectId: string): Promise<System3OperationRecord[]> {

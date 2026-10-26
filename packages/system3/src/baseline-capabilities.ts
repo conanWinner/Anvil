@@ -6,7 +6,10 @@ import { z } from '@hono/zod-openapi';
 import { blueprintAnalysisSchema } from './contracts';
 import type { System3CapabilityDescriptor } from './contracts';
 import { SYSTEM3_CSV_LIMITS } from './csv-contract';
+import { extractProjectArchive } from './project-archive';
 import { profileDatasetCsvStream } from './understanding/dataset-profiler';
+import { modelComparisonConfigSchema } from './model-comparison';
+import { verifyModelComparison } from './model-comparison-runner';
 
 function descriptor<const T extends string>(
   id: T,
@@ -66,7 +69,7 @@ export const baselineCapabilityDescriptors = [
   descriptor(
     'system3.delivery-artifact-materializer',
     'delivery',
-    ['artifact:read', 'artifact:write', 'process:tar'],
+    ['artifact:read', 'artifact:write'],
     120_000
   ),
   descriptor('system3.artifact-schema-validator', 'delivery', ['artifact:read'], 10_000),
@@ -139,6 +142,9 @@ const evidenceInputSchema = projectDirInputSchema.extend({
   testResult: z.record(z.string(), z.unknown()),
   dataResult: z.record(z.string(), z.unknown()),
   experiment: z.record(z.string(), z.unknown()),
+  modelComparison: z
+    .object({ config: modelComparisonConfigSchema, inputHash: z.string(), datasetHash: z.string() })
+    .optional(),
 });
 const gateInputSchema = z.object({ evidenceMap: z.record(z.string(), z.unknown()) });
 const packageInputSchema = projectDirInputSchema.extend({
@@ -254,18 +260,6 @@ async function runPython(
     throw new Error(`python3 ${args.join(' ')} failed: ${stderr.trim() || stdout.trim()}`);
   }
   return commandResult;
-}
-
-async function runTar(args: string[], cwd: string, signal: AbortSignal): Promise<string> {
-  const process = Bun.spawn(['tar', ...args], { cwd, stdout: 'pipe', stderr: 'pipe', signal });
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(process.stdout).text(),
-    new Response(process.stderr).text(),
-    process.exited,
-  ]);
-  if (exitCode !== 0)
-    throw new Error(`tar ${args.join(' ')} failed: ${stderr.trim() || stdout.trim()}`);
-  return stdout;
 }
 
 export const baselineCapabilityHandlers: Readonly<Record<BaselineCapabilityId, CapabilityHandler>> =
@@ -472,19 +466,9 @@ export const baselineCapabilityHandlers: Readonly<Record<BaselineCapabilityId, C
       const reuseRoot = join(context.artifactsDir, 'reuse');
       const archivePath = join(reuseRoot, 'approved-delivery.tar.gz');
       const projectDir = join(reuseRoot, 'generated_project');
-      await mkdir(projectDir, { recursive: true });
+      await mkdir(reuseRoot, { recursive: true });
       await writeFile(archivePath, input.archiveBytes, { flag: 'wx' });
-      const listing = await runTar(['-tzf', archivePath], reuseRoot, context.signal);
-      for (const entry of listing.split(/\r?\n/).filter(Boolean)) {
-        if (entry.startsWith('/') || entry.split('/').includes('..')) {
-          throw new Error(`Reusable delivery artifact contains unsafe path '${entry}'`);
-        }
-      }
-      await runTar(
-        ['-xzf', archivePath, '--strip-components=1', '-C', projectDir],
-        reuseRoot,
-        context.signal
-      );
+      await extractProjectArchive(input.archiveBytes, projectDir, context.signal);
       const [testResult, dataResult, experiment] = await Promise.all([
         readFile(join(projectDir, 'reports', 'test-results.json'), 'utf8').then(JSON.parse),
         readFile(join(projectDir, 'reports', 'data_run.json'), 'utf8').then(JSON.parse),
@@ -510,6 +494,10 @@ export const baselineCapabilityHandlers: Readonly<Record<BaselineCapabilityId, C
       const input = evidenceInputSchema.parse(raw);
       const projectDir = await assertExecutionPath(input.projectDir, context);
       const experiment = input.experiment;
+      if (input.modelComparison) {
+        await verifyModelComparison(projectDir, input.modelComparison, context);
+        return result({ valid: true, projectDir });
+      }
       if (experiment.status !== 'passed' || experiment.model !== 'majority_class_baseline') {
         throw new Error('Baseline experiment artifact does not satisfy the MVP schema');
       }
@@ -518,6 +506,49 @@ export const baselineCapabilityHandlers: Readonly<Record<BaselineCapabilityId, C
     'system3.evidence-map-builder': async (raw, context) => {
       assertNotAborted(context);
       const input = evidenceInputSchema.parse(raw);
+      if (input.modelComparison) {
+        const manifest = await verifyModelComparison(
+          input.projectDir,
+          input.modelComparison,
+          context
+        );
+        const complete = manifest.reports.every(report => report.status === 'completed');
+        const requirements = input.analysis.requirements.map(requirement => ({
+          requirementId: requirement.id,
+          status: manifest.reports.every(report =>
+            report.checks?.some(check => check.requirementId === requirement.id && check.passed)
+          )
+            ? 'passed'
+            : 'not_verified',
+          reason: 'Independent shared harness checks for every selected LLM.',
+          sourcePointer: requirement.sourcePointer,
+        }));
+        const verified = requirements.filter(requirement => requirement.status === 'passed').length;
+        const allChecksPassed =
+          complete && manifest.reports.every(report => report.checks?.every(check => check.passed));
+        const evidenceMap = {
+          schemaVersion: 1,
+          kind: 'model_comparison',
+          status: allChecksPassed && verified === requirements.length ? 'passed' : 'failed',
+          executionStatus:
+            allChecksPassed && verified === requirements.length ? 'passed' : 'failed',
+          requirementCoverage: {
+            status: verified === requirements.length ? 'verified' : 'not_verified',
+            verified,
+            total: requirements.length,
+          },
+          requirements,
+          models: manifest.reports,
+          inputHash: manifest.inputHash,
+        };
+        const evidencePath = join(
+          context.artifactsDir,
+          'verification',
+          'requirement-evidence-map.json'
+        );
+        await writeJson(evidencePath, evidenceMap);
+        return result({ evidenceMap, evidencePath });
+      }
       const testPassed = input.testResult.exitCode === 0;
       const experimentPassed = input.experiment.status === 'passed';
       const passed = testPassed && experimentPassed && input.dataResult.status === 'passed';
@@ -560,11 +591,18 @@ export const baselineCapabilityHandlers: Readonly<Record<BaselineCapabilityId, C
       const passed = input.evidenceMap.executionStatus === 'passed';
       const gate = {
         id: 'G5',
-        name: 'Ready for MVP Baseline Delivery',
+        name:
+          input.evidenceMap.kind === 'model_comparison'
+            ? 'Ready for Model Comparison Delivery'
+            : 'Ready for MVP Baseline Delivery',
         status: passed ? 'passed' : 'blocked',
-        limitations: ['Full DESIGN_B_2 requirement coverage remains not verified'],
+        limitations:
+          input.evidenceMap.kind === 'model_comparison'
+            ? []
+            : ['Full DESIGN_B_2 requirement coverage remains not verified'],
       };
-      if (!passed) throw new Error('G5 baseline delivery gate is blocked');
+      if (!passed && input.evidenceMap.kind !== 'model_comparison')
+        throw new Error('G5 baseline delivery gate is blocked');
       return result({ gate });
     },
     'system3.delivery-packager': async (raw, context) => {
@@ -572,6 +610,27 @@ export const baselineCapabilityHandlers: Readonly<Record<BaselineCapabilityId, C
       const input = packageInputSchema.parse(raw);
       if (input.gate.status !== 'passed') throw new Error('Cannot package before G5 passes');
       const projectDir = await assertExecutionPath(input.projectDir, context);
+      if (input.gate.name !== 'Ready for Model Comparison Delivery') {
+        const reproducingPath = join(projectDir, 'REPRODUCING.md');
+        const reproducing =
+          '# Reproducing this project\n\n' +
+          'Requirements: Python 3. Run from this directory:\n\n' +
+          '```sh\npython3 -m unittest discover -s tests -v\npython3 run_experiments.py\n```\n\n' +
+          'The packaged `data/input.csv` is the pinned input used for this run. If it is absent, ' +
+          'provide the approved input at that path before running the data pipeline. ' +
+          'The package does not include Anvil credentials or require a provider call.\n';
+        try {
+          await writeFile(reproducingPath, reproducing, { flag: 'wx' });
+        } catch (error) {
+          // A delivery-only rerun reuses a hash-verified project that already carries this exact
+          // file; anything else in its place is unexpected and must not be overwritten.
+          if (
+            !(error instanceof Error && 'code' in error && error.code === 'EEXIST') ||
+            (await readFile(reproducingPath, 'utf8')) !== reproducing
+          )
+            throw error;
+        }
+      }
       const deliveryDir = join(context.artifactsDir, 'delivery');
       await mkdir(deliveryDir, { recursive: true });
       const packagePath = join(deliveryDir, 'generated_project.tar.gz');

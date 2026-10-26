@@ -1,3 +1,7 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 ## Project Overview
 
 **Anvil — a self-hostable, governed agentic automation engine.** Anvil runs multi-step workflows that mix deterministic steps (bash/scripts) with AI agents (Claude Code SDK, Codex SDK, and others), with human approval gates and full audit trails — driven remotely from Slack, Telegram, GitHub, Discord, the web UI, or the CLI. Its most mature surface today is agentic **coding** (controlling Claude Code / Codex against repos); the same engine is being extended to drive general **business-operations** automation. Built with **Bun + TypeScript + SQLite/PostgreSQL** and deployed as a single-tenant install (one isolated instance per operator or client — see *Single-Tenant per Install*). Architecture prioritizes simplicity, flexibility, governance, and user control.
@@ -5,6 +9,27 @@
 ## Product Direction
 
 Anvil is being positioned as a governed agentic automation engine for business operations, not only coding.
+
+The current product focus (branch `feat/core-flow-simplification`) is **System 3** — a Project Lifecycle control plane on top of the workflow runtime: one problem (blueprint) + one dataset → several LLMs run in isolation → every model's code/output is checked by the same harness → a re-runnable delivery package. See *System 3 (Project Lifecycle)* below.
+
+## System 3 (Project Lifecycle)
+
+**Docs are in Vietnamese under `docs/`** and are the design source of truth: start at `docs/README.md` and `docs/1. Tổng quan hệ thống.md`. `docs/technical/11-simplification-and-core-flow-plan.md` is the **current plan and the only place progress/verification is recorded**; `08`/`09` are historical. Contracts per activity live in `docs/lifecycle_activity/`; UI spec in `docs/technical/07-system3-lifecycle-ui.md`. Keep each fact in one place (run instructions in README/12, progress in 11, activity mapping in `lifecycle_activity/README.md`).
+
+**Lifecycle — 6 phases / 10 activities (fixed mapping; don't add phases/activities):**
+Intake (OP-00 Source Intake, OP-01 Change Detection) → Understanding (TW-02) → Readiness (TW-03 Readiness, OP-04 Compile, OP-05 Approve) → Build (TW-06 Execute; TW-06A Build / TW-06B Data & Experiment) → Verify (TW-07) → Delivery (OP-08 Delivery Request, TW-09 Deliver). **OP** = control-plane operation (no Workflow Run by default); **TW** = technical workflow executed by the Anvil workflow runtime. Multi-LLM comparison runs *inside* TW-06.
+
+**Boundary:** problem/dataset/target/experiment policy lives in `packages/system3`, never in `packages/workflows`. System 3 owns Project, Source/Source Version, Input Snapshot, Understanding, Decision, Readiness, Compilation, Approval Manifest, Evidence, Delivery. The runtime owns DAG, runs/nodes, retries, provider sessions, isolation, artifacts.
+
+**How the pieces connect (spans several files):**
+- `packages/system3` (`@anvil/system3`, depends only on `@anvil/paths` + `@hono/zod-openapi`): Zod contracts (`contracts.ts`), blueprint/PDF/System 2 JSON understanding (`understanding/`), readiness, `compiler.ts` (compiles approved **workflow bundles** + `createApprovalManifest`), `System3Store` (`store.ts`, raw SQL over the core `IDatabase`; Postgres uses `SELECT … FOR UPDATE` per project, SQLite relies on write-transaction serialization), and a `System3CapabilityRegistry` (`capabilities.ts`, `baseline-capabilities.ts`).
+- Execution: the server calls `executeWorkflow(...)` with `deps.actionRegistry = getSystem3CapabilityRegistry()` and the **approved** bundle's `compositionDefinitions`. Workflow `action:` nodes (`packages/workflows/src/schemas/dag-node.ts`) dispatch into those capabilities via `IWorkflowActionRegistry` (`deps.ts`). The bundle actually executed must match the Approval Manifest (`verifyApprovedWorkflowBundle`).
+- Model comparison: `model-comparison-runner.ts` (`runModelCandidate` → `packageModelComparison` → `verifyModelComparison`) runs each model's generated `solution.py` and the shared `harness.py` in `python-sandbox.ts` (`systemd-run` + `bwrap --unshare-all`, Linux only, `/usr/bin/python3`, stdlib-only, CSV in / JSON out). Models are Pi refs `router9/<model-id>` through the 9router gateway — setup in `docs/technical/12-9router-setup.md` (`~/.pi/agent/models.json`, `ROUTER9_API_KEY`). No silent fallback model.
+- Server: System 3 routes are in `packages/server/src/routes/api.ts` (very large — grep for `system3`) plus `routes/system3-*.ts`; schemas in `routes/schemas/system3.schemas.ts`. Long-running operations are claimed with an owner token + heartbeat (`claimSystem3Operation`); never mark another owner's operation failed by staleness guess.
+- Web: `packages/web/src/features/system3/` (`System3App`, `store.ts`, `lifecycle-view.ts`), mounted at `/console/projects/*`; `/` redirects there, `/console/*` is the run console. Sample Olist data: `packages/web/public/samples/olist/`.
+- DB: 31 `remote_agent_system3_*` tables in `migrations/000_combined.sql`, mirrored by hand in `packages/core/src/db/adapters/sqlite.ts` (same parity rule as other tables). `bun run migrate:system3-storage` migrates old on-disk System 3 storage into the workspaces layout.
+
+**Invariants (from the docs):** pin Source Version + Input Snapshot before running — never read the "latest" source mid-run; changing source/model/prompt/permissions changes the basis and requires re-evaluation + re-approval; Decisions are questions for the user, never auto-answered by an LLM; Artifact ≠ Evidence — only Evidence confirms a requirement; never run LLM-generated code outside isolation; never auto-start Understanding, auto-answer Decisions, or auto-deliver; don't pick a "winning" model or invent quality thresholds. Customer Churn (`compileCustomerChurnReference`, `docs/system_2/DESIGN_B_2.md`) is a historical fixture, not a product constraint.
 
 ## Core Principles
 
@@ -136,7 +161,11 @@ docker-compose --profile with-db up -d postgres
 bun run test                # Run all tests (per-package, isolated processes)
 bun test --watch            # Watch mode (single package)
 bun test packages/core/src/handlers/command-handler.test.ts  # Single file
+bun --filter @anvil/system3 test   # One package
+bun --filter @anvil/web test:e2e   # Playwright (packages/web/e2e); boots server on :3090 with a temp ANVIL_HOME + Vite on :5173
 ```
+
+`@anvil/server` lists every test file explicitly in its `test` script (and `@anvil/web` lists test directories) — a new test file outside those entries must be added to the script or CI won't run it.
 
 **Test isolation (mock.module pollution):** Bun's `mock.module()` permanently replaces modules in the process-wide cache — `mock.restore()` does NOT undo it ([oven-sh/bun#7823](https://github.com/oven-sh/bun/issues/7823)). To prevent cross-file pollution, packages that have conflicting `mock.module()` calls split their tests into separate `bun test` invocations: `@anvil/core` (20 batches), `@anvil/workflows` (5), `@anvil/adapters` (6), `@anvil/isolation` (3). See each package's `package.json` for the exact splits.
 
@@ -404,6 +433,7 @@ packages/
 │       ├── community/        # Community adapters (Discord)
 │       ├── utils/            # Shared adapter utilities (message splitting)
 │       └── index.ts          # Package exports
+├── system3/                  # @anvil/system3 - Project Lifecycle control plane (see System 3 section)
 ├── server/                   # @anvil/server - HTTP server + Web adapter
 │   └── src/
 │       ├── adapters/         # Web platform adapter (SSE streaming)
@@ -419,7 +449,8 @@ packages/
         ├── experiments/      # Isolated in-repo spikes; lint-guarded against
         │   │                 # importing production web modules. Drop-in or
         │   │                 # delete cleanly. See experiments/README.md.
-        │   └── console/      # Run-centric console UI — the default at / (classic UI re-rooted under /legacy)
+        │   └── console/      # Run-centric console UI, mounted at /console/*
+        ├── features/system3/ # System 3 Project Lifecycle UI at /console/projects/* (/ redirects here)
         └── App.tsx           # Router + layout
 ```
 
@@ -457,7 +488,7 @@ import type { DagNode, WorkflowDefinition } from '@/lib/api';
 
 ### Database Schema
 
-**18 Tables (all prefixed with `remote_agent_`):**
+**Core platform tables (all prefixed with `remote_agent_`; the 31 `remote_agent_system3_*` tables are covered in the System 3 section):**
 1. **`codebases`** - Repository metadata and commands (JSONB)
 2. **`conversations`** - Track platform conversations with titles and soft-delete support; nullable `user_id` records first creator (provenance + execution-identity **fallback** only — chat turns execute as the message sender, #1982)
 3. **`sessions`** - Track AI SDK sessions with resume capability
@@ -493,6 +524,7 @@ import type { DagNode, WorkflowDefinition } from '@/lib/api';
 - **@anvil/providers**: AI agent providers (Claude, Codex, Pi community) — owns SDK deps, `IAgentProvider` interface, `sendQuery()` contract, and provider-specific option translation. `@anvil/providers/types` is the contract subpath (zero SDK deps, zero runtime side effects) that `@anvil/workflows` imports from. Providers receive raw `nodeConfig` + `assistantConfig` and translate to SDK-specific options internally. Core providers live under `claude/` and `codex/`; community providers live under `community/` (currently `community/pi/`, registered with `builtIn: false`). `@anvil/providers/oauth` is the SDK-boundary subpath wrapping Pi's `@earendil-works/pi-ai/oauth` (subscription login: Claude Pro/Max, Copilot) — `@anvil/core` drives Pi-based subscription OAuth through it so the Pi SDK dep stays in `@anvil/providers`. The ChatGPT/Codex subscription login is NOT Pi-driven: it's Anvil-owned PKCE in `@anvil/core` `credentials/openai-oauth.ts` (Pi drops the `id_token` the Codex CLI requires, #1924).
 - **@anvil/isolation**: Worktree isolation types, providers, resolver, error classifiers (depends only on @anvil/git + @anvil/paths)
 - **@anvil/workflows**: Workflow engine - loader, router, executor, DAG, logger, bundled defaults (depends only on @anvil/git + @anvil/paths + @anvil/providers/types + @hono/zod-openapi + zod; DB/AI/config injected via `WorkflowDeps`)
+- **@anvil/system3**: Project Lifecycle control plane — contracts, understanding, readiness, compiler, approval, evidence, `System3Store`, capability registry, model-comparison runner + Python sandbox (depends only on @anvil/paths + @hono/zod-openapi; consumed by @anvil/server, which injects its capabilities into the workflow executor via `actionRegistry`)
 - **@anvil/cli**: Command-line interface for running workflows and starting the web UI server (depends on @anvil/server + @anvil/adapters for the serve command)
 - **@anvil/core**: Business logic, database, orchestration (depends on @anvil/providers for AI and @hono/zod-openapi for core Zod schemas; provides `createWorkflowStore()` adapter bridging core DB → `IWorkflowStore`)
 - **@anvil/adapters**: Platform adapters for Slack, Telegram, GitHub, Discord (depends on @anvil/core)

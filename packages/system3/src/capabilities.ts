@@ -25,6 +25,13 @@ import {
   baselineCapabilityHandlers,
   type BaselineCapabilityId,
 } from './baseline-capabilities';
+import {
+  modelCandidateInputSchema,
+  modelComparisonInputSchema,
+  packageModelComparison,
+  runModelCandidate,
+} from './model-comparison-runner';
+import { modelComparisonConfigSchema, parsePinnedModelComparisonConfig } from './model-comparison';
 
 function descriptor<const T extends string>(
   id: T,
@@ -60,6 +67,30 @@ export const customerChurnCapabilityDescriptors = [
   descriptor('system3.readiness-gate-evaluator', 'readiness', ['source:read']),
   descriptor('system3.decision-resolver', 'readiness', ['source:read']),
   descriptor('system3.readiness-contract-builder', 'readiness', ['artifact:write']),
+  descriptor(
+    'system3.model-candidate',
+    'build',
+    ['source:read', 'artifact:read', 'artifact:write', 'process:python'],
+    150_000
+  ),
+  descriptor(
+    'system3.model-comparison-packager',
+    'experiment',
+    ['source:read', 'artifact:read', 'artifact:write', 'process:tar'],
+    120_000
+  ),
+  descriptor(
+    'system3.model-comparison-validator',
+    'delivery',
+    ['artifact:read', 'process:python'],
+    150_000
+  ),
+  descriptor(
+    'system3.model-comparison-evidence',
+    'delivery',
+    ['artifact:read', 'artifact:write', 'process:python'],
+    150_000
+  ),
   ...baselineCapabilityDescriptors,
 ] as const;
 
@@ -100,6 +131,12 @@ export interface System3CapabilitySourcePort {
   createUnderstandingSemanticFallback?(
     projectId: string
   ): Promise<UnderstandingSemanticFallback | undefined>;
+  generateModelCode?(input: {
+    projectId: string;
+    model: string;
+    prompt: string;
+    signal: AbortSignal;
+  }): Promise<unknown>;
   readArtifact(projectId: string, storageKey: string): Promise<Uint8Array>;
 }
 
@@ -129,6 +166,7 @@ const composeOverviewInputSchema = z.object({
 const decisionsInputSchema = z.object({ analysis: blueprintAnalysisSchema });
 const readinessGateInputSchema = z.object({
   analysis: blueprintAnalysisSchema,
+  modelComparison: modelComparisonConfigSchema.optional(),
   pendingDecisionCount: z.number().int().nonnegative(),
   knowledgeSnapshotId: z.string().uuid(),
   projectVersion: z.number().int().positive(),
@@ -147,6 +185,7 @@ const resolvedDecisionsInputSchema = z.object({
 });
 const readinessContractInputSchema = z.object({
   analysis: blueprintAnalysisSchema,
+  modelComparison: modelComparisonConfigSchema.optional(),
   evaluation: system3ReadinessEvaluationSchema,
   datasetSourceVersionId: z.string().min(1).nullable(),
   resolvedDecisions: z.array(z.object({ id: z.string(), answer: z.string() })),
@@ -274,11 +313,17 @@ const handlers: Readonly<Partial<Record<System3CapabilityId, CapabilityHandler>>
       input.analysis.schemaVersion === 1 ||
       (input.analysis.datasetUnderstanding.availability !== 'inaccessible' &&
         input.analysis.datasetUnderstanding.comparisonStatus !== 'mismatch');
+    const comparisonRequirementsReady =
+      input.modelComparison === undefined ||
+      input.modelComparison.requirementIds.every(id =>
+        input.analysis.requirements.some(requirement => requirement.id === id)
+      );
     const targetReady =
-      input.analysis.targetDefinition !== null &&
-      input.analysis.targetDefinition.trim().length > 0 &&
-      dataset?.targetExists === true &&
-      dataset.targetColumn !== null;
+      input.modelComparison !== undefined ||
+      (input.analysis.targetDefinition !== null &&
+        input.analysis.targetDefinition.trim().length > 0 &&
+        dataset?.targetExists === true &&
+        dataset.targetColumn !== null);
     const missingCapabilities = input.requiredCapabilityIds.filter(
       capabilityId => !input.availableCapabilityIds.includes(capabilityId)
     );
@@ -290,9 +335,11 @@ const handlers: Readonly<Partial<Record<System3CapabilityId, CapabilityHandler>>
       readinessCheck({
         id: 'requirements',
         label: 'Mục tiêu và yêu cầu',
-        passed: input.analysis.requirements.length > 0,
+        passed: input.analysis.requirements.length > 0 && comparisonRequirementsReady,
         passedMessage: 'Có yêu cầu đã chuẩn hóa để kiểm chứng.',
-        failedMessage: 'Bản hiểu dự án chưa có yêu cầu có thể kiểm chứng.',
+        failedMessage: comparisonRequirementsReady
+          ? 'Bản hiểu dự án chưa có yêu cầu có thể kiểm chứng.'
+          : 'Model comparison tham chiếu requirement ID không có trong Bản hiểu dự án.',
         nextAction: 'review_understanding',
       }),
       readinessCheck({
@@ -336,9 +383,11 @@ const handlers: Readonly<Partial<Record<System3CapabilityId, CapabilityHandler>>
       }),
       readinessCheck({
         id: 'target',
-        label: 'Target dữ liệu',
+        label: input.modelComparison ? 'Kiểu thực thi' : 'Target dữ liệu',
         passed: targetReady,
-        passedMessage: 'Target đã được xác định và tồn tại trong Dataset Profile.',
+        passedMessage: input.modelComparison
+          ? 'Comparison chạy các yêu cầu đã chọn, không cần target dự đoán.'
+          : 'Target đã được xác định và tồn tại trong Dataset Profile.',
         failedMessage: 'Target chưa rõ hoặc không tồn tại trong Dataset Profile hiện hành.',
         nextAction: datasetNeedsLink ? 'link_dataset' : 'review_understanding',
       }),
@@ -418,7 +467,35 @@ const handlers: Readonly<Partial<Record<System3CapabilityId, CapabilityHandler>>
         : input.analysis.dataset;
     const targetColumn = dataset?.targetColumn ?? null;
     const ramGb = input.analysis.runtime.ramGb;
-    if (targetDefinition === null || targetColumn === null || ramGb === null) {
+    if (ramGb === null) {
+      throw new Error('Passed readiness evaluation is inconsistent with its frozen inputs');
+    }
+    if (input.modelComparison !== undefined) {
+      const unknownIds = input.modelComparison.requirementIds.filter(
+        id => !input.analysis.requirements.some(requirement => requirement.id === id)
+      );
+      if (unknownIds.length > 0) {
+        throw new Error(
+          `Model comparison references unknown requirement IDs: ${unknownIds.join(', ')}`
+        );
+      }
+      return result({
+        evaluation: input.evaluation,
+        contract: system3ReadinessContractBodySchema.parse({
+          schemaVersion: 3,
+          status: 'passed',
+          knowledgeSnapshotId: input.evaluation.knowledgeSnapshotId,
+          projectVersion: input.evaluation.projectVersion,
+          requirementIds: input.modelComparison.requirementIds,
+          datasetSourceVersionId: input.datasetSourceVersionId,
+          runtime: { cpuOnly: input.analysis.runtime.cpuOnly, ramGb },
+          decisions: input.resolvedDecisions,
+          checks: input.evaluation.checks,
+          modelComparison: input.modelComparison,
+        }),
+      });
+    }
+    if (targetDefinition === null || targetColumn === null) {
       throw new Error('Passed readiness evaluation is inconsistent with its frozen inputs');
     }
     const contract = system3ReadinessContractBodySchema.parse({
@@ -456,6 +533,53 @@ export class System3CapabilityRegistry {
     context: System3CapabilityContext
   ): Promise<System3CapabilityResult> {
     const projectId = typeof input.projectId === 'string' ? input.projectId : undefined;
+    if (
+      executorId === 'system3.model-comparison-validator' ||
+      executorId === 'system3.model-comparison-evidence'
+    ) {
+      if (!input.modelComparison)
+        throw new Error('Approved comparison verification pins are missing');
+      return baselineCapabilityHandlers[
+        executorId === 'system3.model-comparison-validator'
+          ? 'system3.artifact-schema-validator'
+          : 'system3.evidence-map-builder'
+      ](input, context);
+    }
+    if (
+      executorId === 'system3.model-candidate' ||
+      executorId === 'system3.model-comparison-packager'
+    ) {
+      const parsed = modelComparisonInputSchema.parse(input);
+      if (!this.sourcePort) throw new Error('Pinned model comparison sources are unavailable');
+      const dataset = await resolvePinnedDataset(this.sourcePort, {
+        projectId: parsed.projectId,
+        datasetSourceVersionId: parsed.datasetSource.id,
+        datasetContentHash: parsed.datasetSource.contentHash,
+      });
+      if (executorId === 'system3.model-candidate') {
+        modelCandidateInputSchema.parse(input);
+        const generate = this.sourcePort.generateModelCode?.bind(this.sourcePort);
+        if (!generate) throw new Error('9router code generation is unavailable');
+        return runModelCandidate(
+          input,
+          dataset.bytes,
+          generation => generate({ ...generation, projectId: parsed.projectId }),
+          context
+        );
+      }
+      const packaged = await packageModelComparison(input, dataset.bytes, context);
+      const output = z.object({ projectDir: z.string() }).parse(packaged.structuredOutput);
+      const archive = await baselineCapabilityHandlers['system3.baseline-artifact-packager'](
+        output,
+        context
+      );
+      const archiveOutput = z.object({ packagePath: z.string() }).parse(archive.structuredOutput);
+      const combined = {
+        ...z.record(z.string(), z.unknown()).parse(packaged.structuredOutput),
+        ...archiveOutput,
+      };
+      return result(combined);
+    }
     if (
       executorId === 'system3.input-snapshot-verifier' &&
       projectId !== undefined &&
@@ -504,6 +628,23 @@ export class System3CapabilityRegistry {
         if (!source) throw new Error(`Pinned Source Version '${ref.id}' does not exist`);
         sources.push(source);
       }
+      const comparisonSources = sources.filter(
+        source => source.kind === 'constraints' && source.filename === 'model-comparison.json'
+      );
+      if (comparisonSources.length > 1)
+        throw new Error(
+          'Understanding input contains multiple model-comparison.json Source Versions'
+        );
+      const comparisonSource = comparisonSources[0];
+      const pinnedModelComparison = comparisonSource
+        ? parsePinnedModelComparisonConfig(comparisonSource.bytes, comparisonSource.contentHash)
+        : undefined;
+      const suppliedModelComparison = input.modelComparison
+        ? modelComparisonConfigSchema.parse(input.modelComparison)
+        : undefined;
+      if (JSON.stringify(pinnedModelComparison) !== JSON.stringify(suppliedModelComparison)) {
+        throw new Error('Understanding model comparison does not match its pinned Source Version');
+      }
       const semanticFallback =
         await this.sourcePort.createUnderstandingSemanticFallback?.(projectId);
       const previousAnalysis = await this.sourcePort.getActiveUnderstandingAnalysis?.(projectId);
@@ -511,6 +652,7 @@ export class System3CapabilityRegistry {
         await understandProjectSources({
           sources,
           ...(datasetSource ? { datasetSource } : {}),
+          ...(pinnedModelComparison ? { modelComparison: pinnedModelComparison } : {}),
           ...(previousAnalysis ? { previousAnalysis } : {}),
           ...(semanticFallback ? { semanticFallback } : {}),
           signal: context.signal,

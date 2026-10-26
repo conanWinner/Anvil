@@ -12,6 +12,8 @@ import type {
   System3WorkflowBundleSnapshot,
 } from './contracts';
 import type { System3SourceRecord } from './store';
+import { modelComparisonConfigSchema, type ModelComparisonConfig } from './model-comparison';
+import type { System3ReadinessContractBody } from './contracts';
 import { customerChurnCapabilityDescriptors } from './capabilities';
 import { system3PhaseOrder, type System3PhaseId } from './invalidation';
 import {
@@ -222,7 +224,7 @@ export function compileSystem3WorkflowBundles(input: {
   projectId: string;
   compilationId: string;
   projectName: string;
-  targetColumn: string;
+  targetColumn: string | null;
   datasetSource: { id: string; contentHash: string };
   plan: System3ExecutionPlan;
   analysis: BlueprintAnalysis;
@@ -243,6 +245,14 @@ export function compileSystem3WorkflowBundles(input: {
     datasetSource: input.datasetSource,
     plan: input.plan as unknown as Record<string, unknown>,
     analysis: input.analysis,
+    ...(input.plan.modelComparison
+      ? {
+          modelComparison: {
+            config: input.plan.modelComparison,
+            inputHash: hashSystem3Definition(input.plan.inputSnapshot),
+          },
+        }
+      : {}),
     rerunScope: input.rerunScope,
   });
   const runtimeArtifact = {
@@ -254,6 +264,15 @@ export function compileSystem3WorkflowBundles(input: {
     projectId: input.projectId,
     analysis: input.analysis,
     artifact: runtimeArtifact,
+    ...(input.plan.modelComparison
+      ? {
+          modelComparison: {
+            config: input.plan.modelComparison,
+            inputHash: hashSystem3Definition(input.plan.inputSnapshot),
+            datasetHash: input.datasetSource.contentHash,
+          },
+        }
+      : {}),
   });
   const delivery = buildCustomerChurnDeliveryWorkflows({
     projectId: input.projectId,
@@ -505,8 +524,10 @@ export function compileCustomerChurnReference(input: {
   projectVersion?: number;
   knowledgeSnapshotId: string;
   readinessContract?: { id: string; contractHash: string };
+  readinessContractBody?: System3ReadinessContractBody;
   sources: readonly System3SourceRecord[];
   analysis: BlueprintAnalysis;
+  modelComparison?: ModelComparisonConfig;
   rerunScope?: {
     impactManifestIds?: readonly string[];
     impactManifestId?: string;
@@ -546,6 +567,47 @@ export function compileCustomerChurnReference(input: {
   }
   const datasetSource = primaryDatasetSources[0];
   if (!datasetSource) throw new Error('Primary dataset Source Version is unavailable');
+  const modelComparison = input.modelComparison
+    ? modelComparisonConfigSchema.parse(input.modelComparison)
+    : undefined;
+  if (input.readinessContractBody?.schemaVersion === 3 && !modelComparison) {
+    throw new Error('Comparison Readiness Contract requires its pinned model comparison config');
+  }
+  if (modelComparison) {
+    if (
+      input.readinessContractBody?.schemaVersion !== 3 ||
+      hashSystem3Definition(input.readinessContractBody.modelComparison) !==
+        hashSystem3Definition(modelComparison) ||
+      input.readinessContractBody.knowledgeSnapshotId !== input.knowledgeSnapshotId ||
+      input.readinessContractBody.datasetSourceVersionId !== primaryDatasetSources[0]?.id ||
+      (input.projectVersion !== undefined &&
+        input.readinessContractBody.projectVersion !== input.projectVersion - 1) ||
+      canonicalJson(input.readinessContractBody.requirementIds) !==
+        canonicalJson(modelComparison.requirementIds) ||
+      input.readinessContractBody.runtime.cpuOnly !== input.analysis.runtime.cpuOnly ||
+      input.readinessContractBody.runtime.ramGb !== input.analysis.runtime.ramGb
+    ) {
+      throw new Error('Model comparison requires a matching pinned comparison Readiness Contract');
+    }
+    if (
+      input.rerunScope &&
+      (resolveSystem3ExecutionMode(input.rerunScope.affectedPhases) !== 'full' ||
+        input.rerunScope.reusableArtifact)
+    ) {
+      throw new Error(
+        'Model comparison supports full execution only; scoped reruns are not supported.'
+      );
+    }
+    const requirementIds = new Set(input.analysis.requirements.map(requirement => requirement.id));
+    const unknownRequirementIds = modelComparison.requirementIds.filter(
+      id => !requirementIds.has(id)
+    );
+    if (unknownRequirementIds.length > 0) {
+      throw new Error(
+        `Model comparison references unknown requirement IDs: ${unknownRequirementIds.join(', ')}`
+      );
+    }
+  }
   const availableCapabilities = input.availableCapabilities ?? capabilityRegistry;
   const availableKeys = new Set(
     availableCapabilities.map(capability => `${capability.id}@${capability.version}`)
@@ -572,6 +634,7 @@ export function compileCustomerChurnReference(input: {
       knowledgeSnapshotId: input.knowledgeSnapshotId,
       sourceIds,
       sourceHashes,
+      modelComparison: modelComparison ?? null,
       compilerVersion: 'system3-compiler@3',
     });
   const runtimeProfileHash = hashSystem3Definition(resourceProfile);
@@ -645,6 +708,7 @@ export function compileCustomerChurnReference(input: {
     buildUnderstandProjectWorkflow({
       projectId: projectIdentity,
       inputSnapshotId,
+      ...(modelComparison ? { modelComparison } : {}),
       sources: activeSources.map(source => ({
         id: source.id,
         kind: source.kind,
@@ -655,6 +719,7 @@ export function compileCustomerChurnReference(input: {
     }),
     buildReadinessContractWorkflow({
       analysis: input.analysis,
+      ...(modelComparison ? { modelComparison } : {}),
       decisions: [],
       knowledgeSnapshotId: input.knowledgeSnapshotId,
       projectVersion: input.projectVersion ?? 1,
@@ -672,12 +737,21 @@ export function compileCustomerChurnReference(input: {
     productWorkflowVersionId,
     inputSnapshotId,
     capabilityRegistrySnapshotId: snapshotId({ projectIdentity, capabilityRegistry }),
-    compilationBasisId: snapshotId({ compilationId, compilerVersion: 'system3-compiler@3' }),
-    executionPlanSnapshotId: snapshotId({ compilationId, rerunScope }),
+    compilationBasisId: snapshotId({
+      compilationId,
+      modelComparison: modelComparison ?? null,
+      compilerVersion: 'system3-compiler@3',
+    }),
+    executionPlanSnapshotId: snapshotId({
+      compilationId,
+      rerunScope,
+      modelComparison: modelComparison ?? null,
+    }),
     runtimeProfileVersionId,
     runtimeProfileHash,
     runtimeProfile: resourceProfile,
     inputSnapshot: { sourceIds, sourceHashes },
+    ...(modelComparison ? { modelComparison } : {}),
     knowledgeSnapshotId: input.knowledgeSnapshotId,
     ...(input.readinessContract ? { readinessContract: input.readinessContract } : {}),
     capabilityRegistry: capabilityRegistry.map(capability => ({ ...capability })),
@@ -688,7 +762,7 @@ export function compileCustomerChurnReference(input: {
     projectId: projectIdentity,
     compilationId,
     projectName: 'Customer Churn',
-    targetColumn: input.analysis.dataset?.targetColumn ?? 'target',
+    targetColumn: input.analysis.dataset?.targetColumn ?? (modelComparison ? null : 'target'),
     datasetSource: { id: datasetSource.id, contentHash: datasetSource.contentHash },
     plan: provisionalPlan,
     analysis: input.analysis,
@@ -726,9 +800,15 @@ export function compileCustomerChurnReference(input: {
     capabilityRegistrySnapshotId,
     runtimeProfileVersionId,
     readinessContract: input.readinessContract ?? null,
+    modelComparison: modelComparison ?? null,
     compilerVersion: 'system3-compiler@3',
   });
-  const executionPlanSnapshotId = snapshotId({ compilationId, compilationBasisId, rerunScope });
+  const executionPlanSnapshotId = snapshotId({
+    compilationId,
+    compilationBasisId,
+    rerunScope,
+    modelComparison: modelComparison ?? null,
+  });
   const plan: System3ExecutionPlan = {
     ...provisionalPlan,
     capabilityRegistrySnapshotId,
@@ -741,7 +821,7 @@ export function compileCustomerChurnReference(input: {
     projectId: projectIdentity,
     compilationId,
     projectName: 'Customer Churn',
-    targetColumn: input.analysis.dataset?.targetColumn ?? 'target',
+    targetColumn: input.analysis.dataset?.targetColumn ?? (modelComparison ? null : 'target'),
     datasetSource: { id: datasetSource.id, contentHash: datasetSource.contentHash },
     plan,
     analysis: input.analysis,

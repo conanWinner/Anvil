@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { SqliteAdapter } from '@anvil/core/db/adapters';
+import { SqliteAdapter } from '@anvil/core/db/adapters/index';
 import { System3Store, type System3ProjectRecord } from '@anvil/system3';
 
 interface ActivationFixture {

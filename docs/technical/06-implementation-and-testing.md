@@ -1,5 +1,7 @@
 # 06 — Kế hoạch triển khai và kiểm thử
 
+> **Kế hoạch cũ:** giữ tiêu chí/test của vertical slice để tra cứu. Thứ tự triển khai và tiến độ hiện tại nằm ở [kế hoạch 11](11-simplification-and-core-flow-plan.md).
+
 Tài liệu này đưa ra thứ tự triển khai, chiến lược kiểm thử và Definition of Done cho System 3 vertical slice.
 
 ## Lifecycle Attempt và worktree kiểm thử

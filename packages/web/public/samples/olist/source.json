@@ -1,0 +1,21 @@
+{
+  "source": "https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce",
+  "publisher": "Olist",
+  "license": "CC BY-NC-SA 4.0",
+  "licenseUrl": "https://creativecommons.org/licenses/by-nc-sa/4.0/",
+  "downloadUrl": "https://www.kaggle.com/api/v1/datasets/download/olistbr/brazilian-ecommerce",
+  "preparedAt": "2026-10-17",
+  "archiveSha256": "967e41e04fc306fe604e2a693f488995a8b41e5047418f8a5c8e4abd6deca784",
+  "sampleSha256": "f5ca73a0c82a8a246aec6d77367f80ddecacc12da0929e8bda16cc283a8a510a",
+  "rowCount": 1000,
+  "eligibleCustomerCount": 93358,
+  "targetDistribution": {
+    "0": 189,
+    "1": 811
+  },
+  "cutoff": "2018-08-31T23:59:59",
+  "targetRule": "1 iff cutoff - last delivered purchase > 90 days; 0 otherwise",
+  "selection": "First 1000 eligible customer_unique_id values ordered by SHA-256 digest",
+  "inputTables": ["olist_customers_dataset.csv", "olist_orders_dataset.csv"],
+  "limitations": "Derived intake/demo fixture, not the full nine-table pipeline or a leakage-safe forecasting benchmark."
+}

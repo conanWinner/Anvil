@@ -18,6 +18,68 @@ import type {
   System3ResourcePresentation,
 } from './types';
 
+export interface ModelResourceView {
+  model: string;
+  content: 'code' | 'output';
+}
+
+export interface ModelResourceSelection {
+  blocks: readonly System3PresentationBlock[];
+  unavailable: boolean;
+}
+
+export function selectModelResourceBlocks(
+  blocks: readonly System3PresentationBlock[],
+  modelView: ModelResourceView
+): ModelResourceSelection {
+  const groups: {
+    metadata: System3PresentationBlock;
+    modelIndex: number;
+    blocks: System3PresentationBlock[];
+  }[] = [];
+  for (const block of blocks) {
+    if (
+      block.kind === 'facts' &&
+      block.title === 'Model comparison' &&
+      block.items.some(item => item.label === 'model')
+    ) {
+      groups.push({ metadata: block, modelIndex: groups.length, blocks: [] });
+      continue;
+    }
+    groups.at(-1)?.blocks.push(block);
+  }
+  const matchingGroups = groups.filter(
+    item =>
+      item.metadata.kind === 'facts' &&
+      item.metadata.items.some(fact => fact.label === 'model' && fact.value === modelView.model)
+  );
+  const group = matchingGroups.length === 1 ? matchingGroups[0] : undefined;
+  if (group?.metadata.kind !== 'facts') {
+    return { blocks: [], unavailable: true };
+  }
+  const status = group.metadata.items.find(item => item.label === 'status')?.value;
+  const outputTitle = `Model output · ${modelView.model}`;
+  const outputIndex = group.blocks.findIndex(
+    block => block.kind === 'table' && block.title === outputTitle
+  );
+  if (status !== 'Hoàn tất' || outputIndex < 0) {
+    return { blocks: [group.metadata], unavailable: true };
+  }
+  if (modelView.content === 'output') {
+    const output = group.blocks[outputIndex];
+    return output?.kind === 'table'
+      ? { blocks: [group.metadata, output], unavailable: false }
+      : { blocks: [group.metadata], unavailable: true };
+  }
+  const code = group.blocks[outputIndex + 1];
+  const expectedCodePath = `**Python solution · models/${group.modelIndex.toString()}/solution.py**`;
+  return code?.kind === 'markdown' &&
+    typeof code.markdown === 'string' &&
+    code.markdown.includes(expectedCodePath)
+    ? { blocks: [group.metadata, code], unavailable: false }
+    : { blocks: [group.metadata], unavailable: true };
+}
+
 function statusLabel(status: System3ResourceDescriptor['status']): string {
   if (status === 'current') return 'Đang dùng';
   if (status === 'candidate') return 'Bản nháp';
@@ -293,11 +355,13 @@ export function InlineResourceViewer({
   resource,
   opener,
   onClose,
+  modelView,
 }: {
   projectId: string;
   resource: System3ResourceDescriptor;
   opener: HTMLElement | null;
   onClose: () => void;
+  modelView?: ModelResourceView;
 }): ReactElement {
   const panelRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -307,6 +371,10 @@ export function InlineResourceViewer({
   const [technical, setTechnical] = useState<string | null>(null);
   const [technicalLoading, setTechnicalLoading] = useState(false);
   const resourceUrl = `/api/system3/projects/${encodeURIComponent(projectId)}/resources/${encodeURIComponent(resource.resourceType)}/${encodeURIComponent(resource.id)}`;
+  const modelSelection =
+    presentation !== null && modelView !== undefined
+      ? selectModelResourceBlocks(presentation.blocks, modelView)
+      : null;
 
   useEffect(() => {
     const controller = new AbortController();
@@ -427,11 +495,23 @@ export function InlineResourceViewer({
               </div>
             </section>
           )}
-          {presentation?.blocks.map((block, index) => (
+          {modelSelection?.unavailable ? (
+            <section className="s3-presentation-callout warning" role="status">
+              <AlertTriangle size={17} aria-hidden="true" />
+              <div>
+                <h3>Nội dung chưa khả dụng</h3>
+                <p>
+                  Chưa có {modelView?.content === 'code' ? 'code' : 'output'} đã xác minh cho model
+                  này. Tải bản gốc để kiểm tra thêm.
+                </p>
+              </div>
+            </section>
+          ) : null}
+          {(modelSelection?.blocks ?? presentation?.blocks ?? []).map((block, index) => (
             <Block
               key={`${block.kind}:${index.toString()}`}
               block={block}
-              downloadUrl={presentation.downloadUrl}
+              downloadUrl={presentation?.downloadUrl ?? null}
             />
           ))}
           {presentation?.technicalDetailsAvailable ? (

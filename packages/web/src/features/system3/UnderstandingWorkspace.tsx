@@ -1,7 +1,7 @@
 import { AlertTriangle, Check, CircleHelp, Database, FileCheck2, RefreshCw } from 'lucide-react';
 import { useCallback, useEffect, useState, type ReactElement } from 'react';
 import { presentDecisionQuestion } from './decision-presentation';
-import { system3Store } from './store';
+import { system3Store, useSystem3Project } from './store';
 import type { System3UnderstandingView } from './types';
 
 function qualityLabel(
@@ -26,6 +26,10 @@ export function UnderstandingWorkspace({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [answers, setAnswers] = useState<Record<string, string>>({});
+  const project = useSystem3Project();
+  const analyzing =
+    project.operation?.type === 'analyze' &&
+    (project.operation.status === 'accepted' || project.operation.status === 'running');
   const load = useCallback(async (): Promise<void> => {
     setLoading(true);
     setError(null);
@@ -37,9 +41,10 @@ export function UnderstandingWorkspace({
       setLoading(false);
     }
   }, []);
+  const operationKey = `${project.operation?.id ?? ''}:${project.operation?.status ?? ''}`;
   useEffect(() => {
     void load();
-  }, [load, projectId, projectVersion]);
+  }, [load, projectId, projectVersion, operationKey]);
 
   if (loading && view === null) {
     return (
@@ -69,6 +74,36 @@ export function UnderstandingWorkspace({
   if (view === null) return <section className="s3-understanding-panel" />;
   const candidate = view.candidateSnapshot;
   const active = view.activeSnapshot;
+  if (candidate === null && active === null && view.decisions.length === 0) {
+    return (
+      <section className="s3-understanding-empty" aria-live="polite">
+        {analyzing ? (
+          <>
+            <RefreshCw size={20} className="s3-spin" aria-hidden="true" />
+            <div>
+              <strong>Anvil đang đọc mô tả bài toán và dữ liệu…</strong>
+              <p>
+                Bản hiểu sẽ hiện tại đây để bạn xác nhận. Bạn có thể rời trang; tiến độ được lưu
+                trên máy chủ.
+              </p>
+            </div>
+          </>
+        ) : (
+          <>
+            <FileCheck2 size={20} aria-hidden="true" />
+            <div>
+              <strong>Chưa phân tích</strong>
+              <p>
+                Phân tích đọc các nguồn đã ghim, rút ra mục tiêu, yêu cầu và những câu hỏi cần bạn
+                xác nhận. Bước này chưa chạy các LLM so sánh.
+              </p>
+            </div>
+          </>
+        )}
+      </section>
+    );
+  }
+  const reviewed = candidate ?? active;
   const quality = candidate?.qualityReport;
   const pendingDecisions = view.decisions.filter(decision => decision.status === 'pending');
   const answeredDecisions = view.decisions.filter(decision => decision.status === 'answered');
@@ -187,54 +222,84 @@ export function UnderstandingWorkspace({
         ) : null}
       </header>
 
-      <div className="s3-understanding-summary">
-        <article>
-          <FileCheck2 size={18} aria-hidden="true" />
+      {reviewed ? (
+        <div className="s3-understanding-brief">
           <div>
-            <span>Bản đang hoạt động</span>
-            <strong>
-              {active
-                ? `Đã kích hoạt ${new Date(active.activatedAt ?? active.createdAt).toLocaleString('vi-VN')}`
-                : 'Chưa có'}
-            </strong>
-            <small>{active?.analysis.businessGoal ?? 'Chưa có mục tiêu được xác nhận.'}</small>
+            <span>Mục tiêu</span>
+            <p>{reviewed.analysis.businessGoal ?? 'Tài liệu chưa nêu rõ mục tiêu.'}</p>
           </div>
-        </article>
-        <article>
-          <Database size={18} aria-hidden="true" />
-          <div>
-            <span>Đầu vào bản nháp</span>
-            <strong>
-              {view.inputSnapshot
-                ? `${view.inputSnapshot.sourceRefs.length.toString()} phiên bản nguồn đã ghim`
-                : 'Chưa có'}
-            </strong>
-            <small>{view.inputSnapshot?.parserVersion ?? 'Chưa chạy bộ đọc tài liệu.'}</small>
-          </div>
-        </article>
-        <article>
-          <CircleHelp size={18} aria-hidden="true" />
-          <div>
-            <span>Chất lượng trích xuất</span>
-            <strong>
-              {quality
-                ? `${quality.extractedComponents.toString()} / ${quality.totalComponents.toString()} thành phần đã trích xuất`
-                : 'Chưa kiểm tra'}
-            </strong>
-            <small>
-              {quality
-                ? `${quality.unsupportedComponents.toString()} không hỗ trợ · ${quality.unclassifiedComponents.toString()} chưa phân loại`
-                : 'Chưa có báo cáo.'}
-            </small>
-          </div>
-        </article>
-      </div>
+          {reviewed.analysis.requirements.length > 0 ? (
+            <div>
+              <span>Yêu cầu ({reviewed.analysis.requirements.length.toString()})</span>
+              <ul>
+                {reviewed.analysis.requirements.slice(0, 6).map(requirement => (
+                  <li key={requirement.id}>
+                    <b>{requirement.id}</b> {requirement.statement}
+                  </li>
+                ))}
+              </ul>
+              {reviewed.analysis.requirements.length > 6 ? (
+                <small>
+                  +{(reviewed.analysis.requirements.length - 6).toString()} yêu cầu khác trong báo
+                  cáo Bản hiểu
+                </small>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      <details className="s3-understanding-metrics">
+        <summary>Chi tiết trích xuất</summary>
+        <div className="s3-understanding-summary">
+          <article>
+            <FileCheck2 size={18} aria-hidden="true" />
+            <div>
+              <span>Bản đang hoạt động</span>
+              <strong>
+                {active
+                  ? `Đã kích hoạt ${new Date(active.activatedAt ?? active.createdAt).toLocaleString('vi-VN')}`
+                  : 'Chưa có'}
+              </strong>
+              <small>{active?.analysis.businessGoal ?? 'Chưa có mục tiêu được xác nhận.'}</small>
+            </div>
+          </article>
+          <article>
+            <Database size={18} aria-hidden="true" />
+            <div>
+              <span>Đầu vào bản nháp</span>
+              <strong>
+                {view.inputSnapshot
+                  ? `${view.inputSnapshot.sourceRefs.length.toString()} phiên bản nguồn đã ghim`
+                  : 'Chưa có'}
+              </strong>
+              <small>{view.inputSnapshot?.parserVersion ?? 'Chưa chạy bộ đọc tài liệu.'}</small>
+            </div>
+          </article>
+          <article>
+            <CircleHelp size={18} aria-hidden="true" />
+            <div>
+              <span>Chất lượng trích xuất</span>
+              <strong>
+                {quality
+                  ? `${quality.extractedComponents.toString()} / ${quality.totalComponents.toString()} thành phần đã trích xuất`
+                  : 'Chưa kiểm tra'}
+              </strong>
+              <small>
+                {quality
+                  ? `${quality.unsupportedComponents.toString()} không hỗ trợ · ${quality.unclassifiedComponents.toString()} chưa phân loại`
+                  : 'Chưa có báo cáo.'}
+              </small>
+            </div>
+          </article>
+        </div>
+      </details>
 
       {view.blockingReasons.length > 0 ? (
         <div className="s3-understanding-blockers" role="status">
           <AlertTriangle size={18} aria-hidden="true" />
           <div>
-            <strong>Chưa thể kích hoạt bản nháp</strong>
+            <strong>Cần xử lý trước khi chấp nhận</strong>
             <ul>
               {view.blockingReasons.map(reason => (
                 <li key={reason}>{reason}</li>
@@ -245,7 +310,7 @@ export function UnderstandingWorkspace({
       ) : candidate ? (
         <div className="s3-understanding-ready">
           <Check size={18} aria-hidden="true" />
-          Bản nháp đã đủ điều kiện để bạn kích hoạt.
+          Bản hiểu đã sẵn sàng. Chấp nhận để Anvil kiểm tra điều kiện và chuẩn bị kế hoạch chạy.
         </div>
       ) : null}
 
@@ -274,31 +339,33 @@ export function UnderstandingWorkspace({
 
       <footer>
         <p>{error}</p>
-        <button
-          type="button"
-          className="s3-button"
-          disabled={!view.canActivate || candidate === null || submitting}
-          onClick={() => {
-            if (candidate === null) return;
-            setSubmitting(true);
-            setError(null);
-            void system3Store
-              .activateUnderstanding(candidate.id, view.projectVersion)
-              .then(load)
-              .catch(actionError => {
-                setError(
-                  actionError instanceof Error
-                    ? actionError.message
-                    : 'Không thể kích hoạt Bản hiểu dự án'
-                );
-              })
-              .finally(() => {
-                setSubmitting(false);
-              });
-          }}
-        >
-          {submitting ? 'Đang lưu…' : 'Kích hoạt Bản hiểu dự án'}
-        </button>
+        {candidate === null ? null : (
+          <button
+            type="button"
+            className="s3-button"
+            disabled={!view.canActivate || candidate === null || submitting}
+            onClick={() => {
+              if (candidate === null) return;
+              setSubmitting(true);
+              setError(null);
+              void system3Store
+                .activateUnderstanding(candidate.id, view.projectVersion)
+                .then(load)
+                .catch(actionError => {
+                  setError(
+                    actionError instanceof Error
+                      ? actionError.message
+                      : 'Không thể kích hoạt Bản hiểu dự án'
+                  );
+                })
+                .finally(() => {
+                  setSubmitting(false);
+                });
+            }}
+          >
+            {submitting ? 'Đang lưu…' : 'Chấp nhận Bản hiểu'}
+          </button>
+        )}
       </footer>
     </section>
   );

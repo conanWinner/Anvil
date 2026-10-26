@@ -30,9 +30,17 @@ const reusableArtifact = {
 };
 
 test('TW-02 pins exact sources before its deterministic analysis node', () => {
+  const modelComparison = {
+    schemaVersion: 1 as const,
+    models: ['router9/model-a', 'router9/model-b'],
+    prompt: 'Summarize input.',
+    harness: 'print("checks")',
+    requirementIds: ['FR-01'],
+  };
   const workflow = buildUnderstandProjectWorkflow({
     projectId: base.projectId,
     inputSnapshotId: '55555555-5555-4555-8555-555555555555',
+    modelComparison,
     sources: [
       {
         id: '66666666-6666-4666-8666-666666666666',
@@ -48,6 +56,7 @@ test('TW-02 pins exact sources before its deterministic analysis node', () => {
     'analyze-understanding',
   ]);
   expect(workflow.outputs.analysis).toBe('$analyze-understanding.output.analysis');
+  expect(workflow.nodes[1]?.action).toMatchObject({ input: { modelComparison } });
   expect(workflow.nodes[0]).toMatchObject({
     action: {
       input: {
@@ -63,8 +72,16 @@ test('TW-02 pins exact sources before its deterministic analysis node', () => {
 });
 
 test('TW-03 returns a business evaluation and an optional passed contract', () => {
+  const modelComparison = {
+    schemaVersion: 1 as const,
+    models: ['router9/model-a', 'router9/model-b'],
+    prompt: 'Compare aggregate output.',
+    harness: 'print("checks")',
+    requirementIds: ['FR-01'],
+  };
   const workflow = buildReadinessContractWorkflow({
     analysis: {},
+    modelComparison,
     decisions: [],
     knowledgeSnapshotId: '11111111-1111-4111-8111-111111111111',
     projectVersion: 3,
@@ -78,6 +95,8 @@ test('TW-03 returns a business evaluation and an optional passed contract', () =
     contract: '$finalize-contract.output.contract',
   });
   expect(workflow.output_schema.required).toEqual(['evaluation', 'contract']);
+  expect(workflow.nodes[0]?.action).toMatchObject({ input: { modelComparison } });
+  expect(workflow.nodes[2]?.action).toMatchObject({ input: { modelComparison } });
 });
 
 test('full execution compiles only build and experiment children', () => {

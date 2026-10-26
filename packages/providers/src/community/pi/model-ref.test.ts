@@ -24,6 +24,13 @@ describe('parsePiModelRef', () => {
     });
   });
 
+  test('supports the 9router alias without changing the upstream model id', () => {
+    expect(parsePiModelRef('router9/vendor/model-name')).toEqual({
+      provider: 'router9',
+      modelId: 'vendor/model-name',
+    });
+  });
+
   test('rejects empty provider', () => {
     expect(parsePiModelRef('/model')).toBeUndefined();
   });
