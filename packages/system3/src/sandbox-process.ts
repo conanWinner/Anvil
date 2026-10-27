@@ -43,8 +43,9 @@ export async function assertSystemdManager(): Promise<void> {
 }
 
 export function within(root: string, path: string): boolean {
-  const relativePath = path.slice(root.length);
-  return path === root || (relativePath.startsWith(sep) && relativePath !== sep);
+  if (path === root) return true;
+  const prefix = root.endsWith(sep) ? root : `${root}${sep}`;
+  return path.startsWith(prefix) && path.length > prefix.length;
 }
 
 /** Returns the canonical path of a real (non-symlink) directory that is not the filesystem root. */
