@@ -166,7 +166,7 @@ Ba mô hình cây đạt ngưỡng ROC-AUC ≥ 0,70 của blueprint; baseline kh
 ### Còn lại
 
 - Trả lời câu hỏi của agent ngay trong UI (hiện phải cập nhật blueprint rồi phân tích/duyệt lại).
-- Chạy lại một phần (chỉ phương án đổi) và chọn tập con phương án trước khi duyệt.
+- Chạy ở nơi khác (Kaggle/Colab) rồi tải dự đoán lên để Anvil chấm (§10 bước 4).
 - Trần chi phí token; hàng đợi thí nghiệm giữa nhiều tiến trình Anvil.
 
 ## 10. Đợt 2 — Tách "viết code + kiểm thử" khỏi "chạy thật"

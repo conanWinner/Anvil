@@ -21,6 +21,5 @@ Mục tiêu hiện tại: triển khai nhanh các phương án thí nghiệm do 
 - [CLI, workflow, provider và adapter](../packages/docs-web/src/content/docs/reference/index.md): tài liệu nền tảng trong `packages/docs-web`; không phải các bước bắt buộc của luồng nhiều LLM.
 - [Blueprint System 2 mẫu](system_2/DESIGN_B_2.md): fixture Customer Churn, không phải yêu cầu chung cho mọi dự án.
 - [Audit 08](technical/08-product-readiness-audit.md) và [Execution Brief 09](technical/09-product-readiness-execution-brief.md): lịch sử ngày 07/09/2026, giữ để đối chiếu; không dùng làm backlog hiện tại.
-- [Trao đổi TW-02 cũ](lifecycle_activity/02.1.md): ghi chú thiết kế, không phải contract đã nghiệm thu. `lifecycle_activity/02.2.md` đang trống.
 
-Giữ mỗi nội dung ở một nơi: cách chạy trong README/12, tiến độ trong 11, mapping hoạt động trong `lifecycle_activity/README.md`, contract chi tiết trong `technical/`. Khi thay đổi cấu trúc tài liệu, cập nhật mục lục và liên kết liên quan.
+Giữ mỗi nội dung ở một nơi: cách chạy trong README/12, tiến độ trong 13, mapping hoạt động trong `lifecycle_activity/README.md`, contract chi tiết trong `technical/`. Khi thay đổi cấu trúc tài liệu, cập nhật mục lục và liên kết liên quan.

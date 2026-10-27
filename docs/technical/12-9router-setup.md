@@ -46,7 +46,9 @@ Muốn tách cấu hình thử nghiệm, đặt `PI_CODING_AGENT_DIR` tới thư
 
 ## 2. Chọn model trong Anvil
 
-Ở form tạo dự án, mở **So sánh nhiều LLM**, bật comparison và nhập 2–4 model khác nhau, mỗi model một dòng:
+**Chế độ thí nghiệm (mặc định):** trên form tạo dự án chọn **Agent thi công (viết code)** và **Agent review** từ danh sách model `router9/...` trong registry Pi; có thể dùng cùng một model (hai phiên riêng). Lựa chọn được ghim vào nguồn `experiment-config.json`; đổi agent cần phân tích và duyệt lại.
+
+**Chế độ so sánh nhiều LLM (cũ):** chọn chế độ này trên form và nhập 2–4 model khác nhau, mỗi model một dòng:
 
 ```text
 router9/<model-id-1>
@@ -68,7 +70,8 @@ assistants:
 
 - Chạy `bun run cli doctor` để kiểm tra môi trường. Lệnh này không thay thế một request thật qua gateway; `GET /models` thành công cũng chưa chứng minh chat/credential hợp lệ.
 - Ngày 16/10/2026 đã chạy hai model `router9/cx/gpt-6-luna` và `router9/cx/gpt-5.6-luna` trên cùng CSV qua Web, Verify và Delivery; đã tải gói và tái chạy. Streaming rồi hủy và timeout qua `PiProvider.sendQuery` cũng đã được kiểm tra.
-- Đây là kiểm chứng theo thời điểm trên bài toán đếm dòng; chưa nghiệm thu dữ liệu nghiệp vụ, nút hủy từng model trên Web hoặc mọi capability của gateway. Chi tiết bằng chứng, lệnh và giới hạn tại [kế hoạch 11](11-simplification-and-core-flow-plan.md).
+- Ngày 27/10/2026 đã nghiệm thu chế độ thí nghiệm qua Web với `router9/cx/gpt-6-luna` làm agent thi công và review trên bộ mẫu Olist; bằng chứng tại [kế hoạch 13](13-experiment-execution-plan.md).
+- Lần 16/10 là kiểm chứng theo thời điểm trên bài toán đếm dòng; chưa nghiệm thu dữ liệu nghiệp vụ, nút hủy từng model trên Web hoặc mọi capability của gateway. Chi tiết bằng chứng, lệnh và giới hạn tại [kế hoạch 11](11-simplification-and-core-flow-plan.md).
 - Structured output của Pi là best-effort: đường thực thi Anvil phải xác thực schema trước khi nhận kết quả. Sandbox thực thi code còn cần Linux, systemd, bubblewrap và Python; xem giới hạn trong 11.
 
 [← README dự án](../../README.md) · [Mục lục kỹ thuật](README.md)

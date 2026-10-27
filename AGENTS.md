@@ -60,6 +60,8 @@ For System 3 architecture, lifecycle, UI, API, sources, artifacts, Evidence, or 
 4. docs/technical/README.md and the relevant technical document
 5. docs/system_2/DESIGN_B_2.md only when a concrete System 2 example is needed
 
+The current plan, progress and verification record is `docs/technical/13-experiment-execution-plan.md` (experiment mode: builder + reviewer agents, sandboxed variant runs, Anvil-owned scoring, the user chooses the variant).
+
 When adding, moving, or renaming documentation, update the documentation maps and inbound links.
 
 ## Canonical Project Lifecycle
