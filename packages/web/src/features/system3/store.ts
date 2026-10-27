@@ -334,6 +334,10 @@ function toProject(
       };
     }),
     compilation: compilationSummary(flow.compilation),
+    // Only a build of the active approval can be run.
+    ...(flow.experimentBuild && flow.experimentBuild.approvalId === flow.approval?.id
+      ? { experimentBuild: flow.experimentBuild }
+      : {}),
     deliveryReady: flow.verification?.status === 'completed' && flow.delivery === null,
     deliveryAvailable: flow.delivery !== null,
   };
@@ -424,6 +428,8 @@ async function watchOperation(operationId: string): Promise<void> {
 
 async function watchAutomaticVerification(executionOperationId: string): Promise<void> {
   for (let attempt = 0; attempt < 20; attempt += 1) {
+    // An experiment build waits for the run choice; nothing is verified yet.
+    if (current.experimentBuild?.executionId === current.execution?.id) return;
     const operation = current.operation;
     if (operation?.id !== executionOperationId && operation?.type === 'verify') {
       if (operation.status === 'accepted' || operation.status === 'running') {
@@ -939,6 +945,44 @@ export const system3Store = {
         await errorMessage(response, `Không thể phê duyệt và chạy (${response.status})`)
       );
     }
+    const body = (await response.json()) as {
+      operation: System3OperationResponse;
+      execution: System3Project['execution'];
+    };
+    publish({ ...project, operation: body.operation, execution: body.execution });
+    await watchOperation(body.operation.id);
+    await watchAutomaticVerification(body.operation.id);
+  },
+  /** Runs variants of the latest experiment build (plan 13 §10). */
+  runExperiment: async (choice: {
+    variantIds: readonly string[];
+    parallelism: number;
+    /** Keep the latest run's results for variants not run again. */
+    keepEarlierResults: boolean;
+  }): Promise<void> => {
+    const project = current;
+    const build = project.experimentBuild;
+    if (!project.approvalId || !build) throw new Error('Chưa có gói code đã build để chạy');
+    const response = await fetch(`/api/system3/projects/${project.id}/executions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
+      body: JSON.stringify({
+        approvalId: project.approvalId,
+        expectedVersion: project.version,
+        experimentRun: {
+          buildExecutionId: build.executionId,
+          variantIds: choice.variantIds,
+          parallelism: choice.parallelism,
+          ...(choice.keepEarlierResults && build.latestRunExecutionId
+            ? { carryOverExecutionId: build.latestRunExecutionId }
+            : {}),
+        },
+      }),
+    });
+    if (!response.ok)
+      throw new Error(
+        await errorMessage(response, `Không thể chạy thí nghiệm (${response.status})`)
+      );
     const body = (await response.json()) as {
       operation: System3OperationResponse;
       execution: System3Project['execution'];

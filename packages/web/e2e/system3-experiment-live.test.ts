@@ -28,8 +28,15 @@ test('runs the Olist review-risk experiment from the default form to a chosen va
   await expect(plan).toContainText('ROC-AUC');
   await page.getByRole('button', { name: 'Phê duyệt và chạy', exact: true }).click();
 
+  // Build first: the agent writes and smoke-tests the code, then the user chooses what to run.
+  await expect(page.getByRole('heading', { name: 'Code đã sẵn sàng' })).toBeVisible({
+    timeout: 40 * 60_000,
+  });
+  await page.screenshot({ path: testInfo.outputPath('experiment-build.png'), fullPage: true });
+  await page.getByRole('button', { name: 'Chạy 4 phương án' }).click();
+
   await expect(page.getByRole('heading', { name: 'Kết quả thí nghiệm' })).toBeVisible({
-    timeout: 70 * 60_000,
+    timeout: 40 * 60_000,
   });
   const rows = page.locator('.s3-experiment-table tbody > tr');
   await expect(rows).toHaveCount(4);

@@ -537,6 +537,7 @@ export function buildCustomerChurnExecutionWorkflows(input: {
               variantIds: input.experiment.pin.variantIds,
               blueprintSource: input.experiment.blueprintSource,
               datasetSources: input.experiment.datasetSources,
+              run: '$BINDING.experimentRun',
             },
           },
           timeout: 4 * 60 * 60_000,

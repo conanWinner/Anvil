@@ -643,11 +643,13 @@ export class System3CapabilityRegistry {
     if (executorId === 'system3.experiment-execute') {
       const readSourceVersion = this.sourcePort?.readSourceVersion?.bind(this.sourcePort);
       const generateStructured = this.sourcePort?.generateStructured?.bind(this.sourcePort);
-      if (!readSourceVersion || !generateStructured)
+      const readArtifact = this.sourcePort?.readArtifact.bind(this.sourcePort);
+      if (!readSourceVersion || !generateStructured || !readArtifact)
         throw new Error('Experiment execution needs pinned source reads and model access');
       const executed = await executeExperiment(input, context, {
         readSourceVersion,
         generateStructured,
+        readArtifact,
       });
       // Archive the self-contained package exactly like the baseline flow does.
       const archive = await baselineCapabilityHandlers['system3.baseline-artifact-packager'](

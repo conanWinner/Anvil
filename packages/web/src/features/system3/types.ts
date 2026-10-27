@@ -20,6 +20,8 @@ export interface System3ExperimentResults {
   agents: NonNullable<System3EvidenceMap['agents']>;
   mismatches: NonNullable<System3EvidenceMap['mismatches']>;
 }
+/** The latest experiment build waiting for (or used by) a run choice (plan 13 §10). */
+export type System3ExperimentBuild = NonNullable<System3ProjectFlowResponse['experimentBuild']>;
 export type System3ModelComparisonModelReport = NonNullable<
   NonNullable<NonNullable<System3ProjectFlowResponse['verification']>['evidenceMap']>['models']
 >[number];
@@ -359,6 +361,7 @@ export interface System3Project {
   };
   deliveryReady: boolean;
   deliveryAvailable: boolean;
+  experimentBuild?: System3ExperimentBuild;
 }
 
 type System3ActivityResponse =

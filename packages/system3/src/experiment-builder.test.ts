@@ -200,3 +200,58 @@ sandboxTest(
   },
   600_000
 );
+
+sandboxTest(
+  'a build stage reports unresolved review findings instead of failing',
+  async () => {
+    const runtime = await resolveMlRuntime();
+    const root = await mkdtemp(join(tmpdir(), 'anvil-experiment-review-'));
+    const rawDataDir = join(root, 'raw');
+    await mkdir(rawDataDir);
+    const rows = Array.from({ length: 200 }, (_, index) => {
+      const churned = index % 3 === 0 ? 1 : 0;
+      return `c${index.toString()},${(churned ? 1 : 5).toString()},${(churned ? 10 : 80 + index).toString()},${churned.toString()}`;
+    });
+    await writeFile(
+      join(rawDataDir, 'customers.csv'),
+      ['customer,visits,spend,churned', ...rows].join('\n') + '\n'
+    );
+    const finding = {
+      severity: 'blocking' as const,
+      file: 'prepare_data.py',
+      message: 'Possible leak',
+    };
+    const generate: ExperimentGenerate = ({ role, prompt }) =>
+      Promise.resolve(
+        role === 'reviewer'
+          ? { verdict: 'changes_required', summary: 'Leak?', findings: [finding] }
+          : {
+              files: prompt.includes('DATA PREPARATION')
+                ? [{ path: 'prepare_data.py', content: prepare }]
+                : [{ path: 'train_variant.py', content: trainVariant }],
+              notes: 'ok',
+              question: null,
+            }
+      );
+    const build = (reportUnresolvedReview: boolean): ReturnType<typeof buildExperimentCodebase> =>
+      buildExperimentCodebase({
+        blueprint: '# Churn blueprint',
+        plan,
+        variantIds: ['logistic_regression'],
+        rawDataDir,
+        projectDir: join(root, `project-${String(reportUnresolvedReview)}`),
+        workDir: join(root, `work-${String(reportUnresolvedReview)}`),
+        runtime,
+        generate,
+        maxFixRounds: 1,
+        maxReviewRounds: 0,
+        reportUnresolvedReview,
+        signal: new AbortController().signal,
+      });
+    expect((await build(false)).status).toBe('failed');
+    const reported = await build(true);
+    expect(reported.status).toBe('ready');
+    if (reported.status === 'ready') expect(reported.review.findings).toEqual([finding]);
+  },
+  300_000
+);

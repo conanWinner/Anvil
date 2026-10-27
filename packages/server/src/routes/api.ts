@@ -109,12 +109,14 @@ import {
   EXPERIMENT_CONFIG_FILENAME,
   deriveExperimentPlan,
   experimentConfigSchema,
+  experimentHostSlots,
   hashExperimentPlan,
   mlRuntimeLockHash,
   parsePinnedExperimentConfig,
   type BlueprintAnalysis,
   type ExperimentConfig,
   type ExperimentPin,
+  type ExperimentRun,
   modelComparisonCodeSchema,
   parsePinnedModelComparisonConfig,
 } from '@anvil/system3';
@@ -592,6 +594,71 @@ async function prepareSystem3LifecycleAttemptIsolation(input: {
  * isolation preparation succeeded. Control-plane operations still remain in
  * the System 3 store; this helper merely supplies the execution environment.
  */
+/**
+ * Turns an execute request into the experiment-mode `experimentRun` binding (plan 13 §10).
+ * Bundles approved before the build/run split declare no such slot and keep build-and-run.
+ */
+async function resolveSystem3ExperimentRun(input: {
+  store: System3Store;
+  projectId: string;
+  approvalId: string;
+  bundle: { definition: { runtimeBindings: readonly { name: string }[] } };
+  request:
+    | {
+        buildExecutionId: string;
+        variantIds: string[];
+        parallelism: number;
+        carryOverExecutionId?: string;
+      }
+    | undefined;
+}): Promise<{ binding: ExperimentRun | undefined } | { error: string }> {
+  const declared = input.bundle.definition.runtimeBindings.some(
+    slot => slot.name === 'experimentRun'
+  );
+  if (!declared)
+    return input.request
+      ? { error: 'Kế hoạch này được duyệt trước khi tách bước chạy; hãy phân tích và duyệt lại' }
+      : { binding: undefined };
+  if (!input.request) return { binding: { stage: 'build' } };
+  const slots = experimentHostSlots();
+  if (input.request.parallelism > slots)
+    return {
+      error: `Máy này chỉ chạy được ${slots.toString()} phương án cùng lúc`,
+    };
+  const artifactOf = async (
+    executionId: string,
+    kind: 'baseline_package' | 'experiment_build'
+  ): Promise<{ executionId: string; storageKey: string; contentHash: string } | null> => {
+    const execution = await input.store.getExecution(executionId);
+    if (
+      execution?.projectId !== input.projectId ||
+      execution.approvalId !== input.approvalId ||
+      execution.status !== 'completed'
+    )
+      return null;
+    const artifact = await input.store.getBaselineArtifact(executionId, kind);
+    return artifact
+      ? { executionId, storageKey: artifact.artifactKey, contentHash: artifact.contentHash }
+      : null;
+  };
+  const buildArtifact = await artifactOf(input.request.buildExecutionId, 'experiment_build');
+  if (!buildArtifact) return { error: 'Không tìm thấy gói code đã build của kế hoạch này' };
+  const carryOver = input.request.carryOverExecutionId
+    ? await artifactOf(input.request.carryOverExecutionId, 'baseline_package')
+    : null;
+  if (input.request.carryOverExecutionId && !carryOver)
+    return { error: 'Không tìm thấy lần chạy trước để giữ kết quả' };
+  return {
+    binding: {
+      stage: 'run',
+      buildArtifact,
+      variantIds: input.request.variantIds,
+      parallelism: input.request.parallelism,
+      carryOver,
+    },
+  };
+}
+
 async function resolveSystem3WorkflowExecutionContext(input: {
   projectId: string;
   activityId: (typeof system3LifecycleAttemptActivities)[number];
@@ -1194,6 +1261,8 @@ import {
   retrySystem3IntakeOperationBodySchema,
   retrySystem3SourceIntakeOperationRoute,
   uploadSystem3SourceRoute,
+  system3ExperimentBuildSummarySchema,
+  type system3ExperimentBuildViewSchema,
 } from './schemas/system3.schemas';
 import {
   getSystem3ActivityResourceView,
@@ -5484,6 +5553,7 @@ export function registerApiRoutes(
   async function buildSystem3Flow(projectId: string): Promise<
     | (Omit<NonNullable<Awaited<ReturnType<System3Store['buildFlow']>>>, 'sources'> & {
         sources: Omit<System3SourceRecord, 'storageKey'>[];
+        experimentBuild: z.infer<typeof system3ExperimentBuildViewSchema> | null;
       })
     | null
   > {
@@ -5516,7 +5586,52 @@ export function registerApiRoutes(
     );
     return flow === null
       ? null
-      : { ...flow, sources: flow.sources.map(source => publicSystem3Source(source)) };
+      : {
+          ...flow,
+          sources: flow.sources.map(source => publicSystem3Source(source)),
+          experimentBuild: await latestSystem3ExperimentBuild(projectId),
+        };
+  }
+
+  /**
+   * The latest experiment build (plan 13 §10) and the latest run made from it, so the UI can offer
+   * "run" and "re-run failed variants". Null outside experiment mode.
+   */
+  async function latestSystem3ExperimentBuild(
+    projectId: string
+  ): Promise<z.infer<typeof system3ExperimentBuildViewSchema> | null> {
+    const store = getSystem3Store();
+    const finished = (await store.listOperations(projectId))
+      .filter(operation => operation.type === 'execute' && operation.status === 'succeeded')
+      .sort((left, right) =>
+        (right.finishedAt ?? right.createdAt).localeCompare(left.finishedAt ?? left.createdAt)
+      );
+    const buildOperation = finished.find(operation => operation.result?.experimentBuild);
+    if (!buildOperation?.executionId) return null;
+    const buildExecutionId = buildOperation.executionId;
+    const execution = await store.getExecution(buildExecutionId);
+    const summary = system3ExperimentBuildSummarySchema.safeParse(
+      buildOperation.result?.experimentBuild
+    );
+    if (!execution || !summary.success) return null;
+    let latestRunExecutionId: string | null = null;
+    for (const operation of finished) {
+      if (!operation.executionId || operation.executionId === buildExecutionId) continue;
+      const run = (await store.getExecution(operation.executionId))?.runtimeBindings
+        ?.experimentRun as { buildArtifact?: { executionId?: string } } | undefined;
+      if (run?.buildArtifact?.executionId === buildExecutionId) {
+        latestRunExecutionId = operation.executionId;
+        break;
+      }
+    }
+    return {
+      executionId: buildExecutionId,
+      approvalId: execution.approvalId,
+      builtAt: buildOperation.finishedAt ?? buildOperation.createdAt,
+      ...summary.data,
+      hostSlots: experimentHostSlots(),
+      latestRunExecutionId,
+    };
   }
 
   async function getSystem3OperationProjection(operationId: string): Promise<
@@ -8477,6 +8592,7 @@ export function registerApiRoutes(
         );
       }
       const executionId = executionReplay?.execution.id ?? randomUUID();
+      let executionBindings: Record<string, unknown> = { executionId };
       let approvedExecutionBundle: {
         bundle: NonNullable<Awaited<ReturnType<System3Store['getWorkflowBundleSnapshot']>>>;
         definitions: WorkflowDefinition[];
@@ -8492,7 +8608,19 @@ export function registerApiRoutes(
           approvalManifest: approval.manifest,
           activityId: 'TW-06',
         });
-        const bound = bindApprovedSystem3Bundle(bundle, { executionId });
+        const experimentRun = await resolveSystem3ExperimentRun({
+          store,
+          projectId,
+          approvalId: approval.id,
+          bundle,
+          request: 'experimentRun' in body ? body.experimentRun : undefined,
+        });
+        if ('error' in experimentRun) return apiError(c, 422, experimentRun.error);
+        executionBindings = {
+          executionId,
+          ...(experimentRun.binding ? { experimentRun: experimentRun.binding } : {}),
+        };
+        const bound = bindApprovedSystem3Bundle(bundle, executionBindings);
         approvedExecutionBundle = { bundle, ...bound };
         approvedVerificationSnapshot = await loadApprovedSystem3Bundle({
           projectId,
@@ -8631,7 +8759,7 @@ export function registerApiRoutes(
             definitionHash: compilation.definitionHash,
             bundleSnapshotId: approvedExecutionBundle.bundle.id,
             bundleHash: approvedExecutionBundle.bundle.definitionHash,
-            runtimeBindings: { executionId },
+            runtimeBindings: executionBindings,
             expectedVersion: executionExpectedVersion,
             idempotencyKey,
             conversationId: conversation.id,
@@ -8703,10 +8831,14 @@ export function registerApiRoutes(
             const packagePath = baseline.packagePath;
             if (typeof packagePath !== 'string')
               throw new Error('Baseline artifact package path is missing');
+            const experimentBuilt =
+              typeof baseline.experiment === 'object' &&
+              baseline.experiment !== null &&
+              (baseline.experiment as Record<string, unknown>).kind === 'experiment_build';
             const persisted = await persistSystem3BinaryArtifact({
               artifactsRoot: await getSystem3ArtifactsRoot(projectId),
               category: 'execution',
-              filename: 'baseline-artifact.tar.gz',
+              filename: experimentBuilt ? 'experiment-build.tar.gz' : 'baseline-artifact.tar.gz',
               bytes: await readFile(packagePath),
               ...(runtimeContext.attemptId
                 ? { storagePrefix: join('attempts', runtimeContext.attemptId) }
@@ -8717,13 +8849,26 @@ export function registerApiRoutes(
               ownerClaimToken,
               executionId: begun.execution.id,
               projectId,
+              ...(experimentBuilt
+                ? {
+                    stage: 'experiment_build' as const,
+                    result: { experimentBuild: baseline.experiment as Record<string, unknown> },
+                  }
+                : {}),
               artifact: {
                 artifactKey: persisted.storageKey,
-                artifactKind: 'baseline_package',
+                artifactKind: experimentBuilt ? 'experiment_build' : 'baseline_package',
                 contentHash: persisted.contentHash,
                 sizeBytes: persisted.sizeBytes,
               },
             });
+            if (experimentBuilt) {
+              // The code is ready; TW-06 continues once the user chooses how to run it.
+              const attempt = await store.getActiveLifecycleAttempt(projectId);
+              if (attempt?.workingPath === workingPath && attempt.runStatus === 'running')
+                await store.updateLifecycleAttempt(projectId, attempt.id, { runStatus: 'waiting' });
+              return;
+            }
             const activeAttempt = await store.getActiveLifecycleAttempt(projectId);
             if (
               activeAttempt?.workingPath === workingPath &&

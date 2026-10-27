@@ -425,6 +425,26 @@ export const system3ReadinessEvaluationSchema = z
   })
   .openapi('System3ReadinessEvaluation');
 
+/** What an experiment build recorded for the run-choice screen (plan 13 §10). */
+export const system3ExperimentBuildSummarySchema = z.object({
+  variantIds: z.array(z.string()),
+  review: experimentEvidenceViewSchema.shape.review,
+  split: experimentEvidenceViewSchema.shape.split,
+  builderModel: z.string(),
+  reviewerModel: z.string(),
+});
+export const system3ExperimentBuildViewSchema = system3ExperimentBuildSummarySchema
+  .extend({
+    executionId: z.string().uuid(),
+    approvalId: z.string().uuid(),
+    builtAt: z.string(),
+    /** Variants this host can run at once. */
+    hostSlots: z.number().int().positive(),
+    /** Latest run made from this build; its results can be kept when re-running some variants. */
+    latestRunExecutionId: z.string().uuid().nullable(),
+  })
+  .openapi('System3ExperimentBuild');
+
 export const system3FlowSchema = z
   .object({
     project: system3ProjectSchema,
@@ -528,6 +548,7 @@ export const system3FlowSchema = z
     ),
     understandingRunId: z.string().uuid().nullable(),
     phases: z.array(system3PhaseSchema),
+    experimentBuild: system3ExperimentBuildViewSchema.nullable().optional(),
   })
   .openapi('System3ProjectFlow');
 
@@ -567,9 +588,26 @@ export const createSystem3ReadinessContractBodySchema = z
 export const approveSystem3ProjectBodySchema = z
   .object({ compilationId: z.string().uuid(), expectedVersion: z.number().int().positive() })
   .openapi('ApproveSystem3ProjectBody');
+const variantIdSchema = z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/u);
 export const executeSystem3ProjectBodySchema = z
   .union([
-    z.strictObject({ approvalId: z.string().uuid(), expectedVersion: z.number().int().positive() }),
+    z.strictObject({
+      approvalId: z.string().uuid(),
+      expectedVersion: z.number().int().positive(),
+      /**
+       * Experiment mode (plan 13 §10): run variants of a completed build. Omitted means build the
+       * code (or, for plans approved before the build/run split, build and run at once).
+       */
+      experimentRun: z
+        .strictObject({
+          buildExecutionId: z.string().uuid(),
+          variantIds: z.array(variantIdSchema).min(1).max(12),
+          parallelism: z.number().int().min(1).max(16),
+          /** Keep results of this earlier run for variants not run again. */
+          carryOverExecutionId: z.string().uuid().optional(),
+        })
+        .optional(),
+    }),
     z.strictObject({
       compilationId: z.string().uuid(),
       expectedVersion: z.number().int().positive(),
@@ -583,10 +621,7 @@ export const startSystem3DeliveryBodySchema = z
   .object({
     expectedVersion: z.number().int().positive(),
     /** Experiment mode: the variant the user chose; recorded in the delivery manifest. */
-    selectedVariant: z
-      .string()
-      .regex(/^[a-z0-9][a-z0-9_-]{0,63}$/u)
-      .optional(),
+    selectedVariant: variantIdSchema.optional(),
   })
   .openapi('StartSystem3DeliveryBody');
 

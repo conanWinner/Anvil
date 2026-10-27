@@ -47,6 +47,7 @@ import { LifecycleAttemptBar } from './LifecycleAttemptBar';
 import { buildJourney } from './journey';
 import { JourneySteps } from './JourneySteps';
 import { ExperimentResultsView, metricLabel } from './ExperimentResults';
+import { ExperimentRunPanel } from './ExperimentRun';
 import { presentProjectCard } from './project-card';
 import type {
   PhaseStatus,
@@ -1300,6 +1301,22 @@ function LifecyclePhaseDetail({
     ? executionError.replace(/^Cần bạn quyết định[^:]*:\s*/u, '')
     : null;
   const experimentResults = project.verification?.experiment;
+  const experimentBuild = project.experimentBuild;
+  const experimentVariants = project.compilation?.experiment?.summary.variants ?? [];
+  // A finished build waits for the run choice; after a failed run (not an agent question) the same
+  // build can be run again.
+  const awaitingRunChoice =
+    experimentBuild !== undefined &&
+    ((project.execution?.status === 'completed' &&
+      project.execution.id === experimentBuild.executionId) ||
+      (project.execution?.status === 'failed' && agentQuestion === null));
+  // Re-running some variants is offered on the results of the latest run of the current build.
+  const canRerunExperiment =
+    experimentBuild !== undefined &&
+    experimentResults !== undefined &&
+    project.execution?.id === experimentBuild.latestRunExecutionId &&
+    project.freshness === 'current' &&
+    !project.deliveryAvailable;
   const deliveredVariant =
     typeof project.delivery?.manifest.evidenceMap === 'object' &&
     project.delivery.manifest.evidenceMap !== null &&
@@ -1376,6 +1393,7 @@ function LifecyclePhaseDetail({
           Chuẩn bị kế hoạch
         </button>
       );
+    if (selectedActivity.id === 'TW-06' && awaitingRunChoice) return null;
     if (selectedActivity.id === 'TW-06' && project.manifestApproved && !project.execution)
       return (
         <button
@@ -1513,6 +1531,23 @@ function LifecyclePhaseDetail({
           />
         ) : null}
 
+        {selectedActivity.id === 'TW-06' && awaitingRunChoice && project.freshness === 'current' ? (
+          <ExperimentRunPanel
+            key={experimentBuild.executionId}
+            build={experimentBuild}
+            variants={experimentVariants}
+            mode="first"
+            initialSelection={experimentBuild.variantIds}
+            busy={performing || understandingPending}
+            onRun={choice => {
+              runAction(() => system3Store.runExperiment(choice));
+            }}
+            onRebuild={() => {
+              runAction(system3Store.execute);
+            }}
+          />
+        ) : null}
+
         {hasComparisonResults && experimentResults ? (
           <ExperimentResultsView
             results={experimentResults}
@@ -1521,6 +1556,28 @@ function LifecyclePhaseDetail({
             locked={deliveredVariant !== null || project.deliveryAvailable}
             onSelect={setSelectedVariant}
           />
+        ) : null}
+
+        {hasComparisonResults && canRerunExperiment ? (
+          <details
+            className="s3-secondary-details s3-experiment-rerun"
+            open={experimentResults.variants.some(variant => variant.status !== 'verified')}
+          >
+            <summary>Chạy lại một phần phương án</summary>
+            <ExperimentRunPanel
+              key={experimentBuild.latestRunExecutionId}
+              build={experimentBuild}
+              variants={experimentVariants}
+              mode="rerun"
+              initialSelection={experimentResults.variants
+                .filter(variant => variant.status !== 'verified')
+                .map(variant => variant.id)}
+              busy={performing || understandingPending}
+              onRun={choice => {
+                runAction(() => system3Store.runExperiment(choice));
+              }}
+            />
+          </details>
         ) : null}
 
         {hasComparisonResults && !experimentResults ? (

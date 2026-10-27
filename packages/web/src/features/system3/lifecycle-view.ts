@@ -273,15 +273,21 @@ export function buildLifecycleView(project: System3Project): readonly LifecycleP
     },
   ];
 
-  const buildStatus: PhaseStatus = project.execution
-    ? project.execution.status === 'completed'
-      ? 'completed'
-      : project.execution.status === 'failed'
-        ? 'blocked'
-        : 'active'
-    : project.manifestApproved
-      ? 'ready'
-      : 'waiting';
+  // Experiment mode: the code is built and waits for the user's run choice (plan 13 §10).
+  const awaitingRunChoice =
+    project.execution?.status === 'completed' &&
+    project.experimentBuild?.executionId === project.execution.id;
+  const buildStatus: PhaseStatus = awaitingRunChoice
+    ? 'ready'
+    : project.execution
+      ? project.execution.status === 'completed'
+        ? 'completed'
+        : project.execution.status === 'failed'
+          ? 'blocked'
+          : 'active'
+      : project.manifestApproved
+        ? 'ready'
+        : 'waiting';
   const buildActivities: readonly LifecycleActivityView[] = [
     {
       id: 'TW-06',
@@ -290,15 +296,17 @@ export function buildLifecycleView(project: System3Project): readonly LifecycleP
       description: 'Chạy build, dữ liệu và thử nghiệm theo đúng Approval Manifest.',
       executionKind: 'workflow',
       status: buildStatus,
-      statusDetail: project.execution
-        ? project.execution.status === 'completed'
-          ? 'Execution đã hoàn tất; kết quả đang được xác minh.'
-          : project.execution.status === 'failed'
-            ? (project.execution.error ?? 'Execution thất bại và cần được xem xét.')
-            : 'Execution đang chạy trong môi trường cô lập.'
-        : project.manifestApproved
-          ? 'Kế hoạch đã duyệt và sẵn sàng thực thi.'
-          : 'Chờ Approval Manifest.',
+      statusDetail: awaitingRunChoice
+        ? 'Code đã viết và kiểm thử trên mẫu; chọn phương án và cách chạy.'
+        : project.execution
+          ? project.execution.status === 'completed'
+            ? 'Execution đã hoàn tất; kết quả đang được xác minh.'
+            : project.execution.status === 'failed'
+              ? (project.execution.error ?? 'Execution thất bại và cần được xem xét.')
+              : 'Execution đang chạy trong môi trường cô lập.'
+          : project.manifestApproved
+            ? 'Kế hoạch đã duyệt và sẵn sàng thực thi.'
+            : 'Chờ Approval Manifest.',
       input: 'Approval Manifest + project workspace cô lập',
       output: 'Execution artifacts và kết quả build/experiment',
       technicalWorkflow: 'system3-baseline-build + system3-baseline-experiment',
@@ -313,7 +321,7 @@ export function buildLifecycleView(project: System3Project): readonly LifecycleP
       : project.verification.status === 'failed'
         ? 'blocked'
         : 'active'
-    : project.execution?.status === 'completed'
+    : project.execution?.status === 'completed' && !awaitingRunChoice
       ? 'ready'
       : 'waiting';
   const verifyActivities: readonly LifecycleActivityView[] = [
@@ -513,6 +521,12 @@ export function selectSuggestedLifecycleActivity(
   }
   if (project.planCompiled && !project.manifestApproved) {
     return { activityId: 'OP-05', reason: 'approval' };
+  }
+  if (
+    project.execution?.status === 'completed' &&
+    project.experimentBuild?.executionId === project.execution.id
+  ) {
+    return { activityId: 'TW-06', reason: 'next_activity' };
   }
   if (
     (project.verification?.modelReports.length ?? 0) > 0 ||

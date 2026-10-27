@@ -124,6 +124,8 @@ export interface ExperimentBuildInput {
   generate: ExperimentGenerate;
   maxFixRounds: number;
   maxReviewRounds: number;
+  /** Return a ready build with the last review's blocking findings instead of failing. */
+  reportUnresolvedReview?: boolean;
   signal: AbortSignal;
   onEvent?: (event: BuildEvent) => void;
 }
@@ -570,6 +572,12 @@ export async function buildExperimentCodebase(
         detail: `${review.verdict}: ${blocking.length.toString()} blocking, ${(review.findings.length - blocking.length).toString()} warnings`,
       });
       if (review.verdict === 'pass' && blocking.length === 0) {
+        if (state.split === null) throw new Error('Split missing after a successful build');
+        return { status: 'ready', split: state.split, review, files, events };
+      }
+      // With a separate run step, unresolved findings go to the person who chooses whether to
+      // run (the code already passed its smoke test); otherwise the build stops here.
+      if (round > input.maxReviewRounds && input.reportUnresolvedReview === true) {
         if (state.split === null) throw new Error('Split missing after a successful build');
         return { status: 'ready', split: state.split, review, files, events };
       }

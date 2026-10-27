@@ -4639,6 +4639,13 @@ export class System3Store {
     ownerClaimToken: string;
     executionId: string;
     projectId: string;
+    /**
+     * `experiment_build` (plan 13 §10): the code is built but not yet run, so the project returns
+     * to `approved` for the run choice instead of moving on to verification.
+     */
+    stage?: 'completed' | 'experiment_build';
+    /** Extra fields stored in the operation result (e.g. the build summary the UI shows). */
+    result?: Record<string, unknown>;
     artifact: Omit<
       System3ArtifactVersionRecord,
       | 'id'
@@ -4673,6 +4680,7 @@ export class System3Store {
         ownerClaimToken: input.ownerClaimToken,
       });
       const artifactId = randomUUID();
+      const built = input.stage === 'experiment_build';
       const basisResult = await query(
         `SELECT input.source_ids, execution.approval_id
          FROM remote_agent_system3_project_executions execution
@@ -4691,8 +4699,8 @@ export class System3Store {
       await query(
         `UPDATE remote_agent_system3_artifact_versions
          SET status = 'superseded', stale_reason = NULL
-         WHERE project_id = $1 AND artifact_kind = 'baseline_package' AND status = 'current'`,
-        [input.projectId]
+         WHERE project_id = $1 AND artifact_kind = $2 AND status = 'current'`,
+        [input.projectId, input.artifact.artifactKind]
       );
       const versionResult = await query(
         `SELECT COALESCE(MAX(version), 0) AS version FROM remote_agent_system3_artifact_versions
@@ -4708,8 +4716,7 @@ export class System3Store {
           (id, project_id, execution_id, artifact_key, artifact_kind, version, content_hash,
            size_bytes, activity_id, display_name, summary, media_type, schema_id,
            schema_version, visibility, status, source_version_ids, parent_resource_ids)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'TW-06', 'Gói kết quả thực thi',
-                 'Mã nguồn và kết quả build/test/experiment của kế hoạch đã duyệt.',
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'TW-06', $11, $12,
                  'application/gzip', 'system3.execution-package', '1', 'user', 'current',
                  $9, $10) RETURNING *`,
         [
@@ -4723,6 +4730,10 @@ export class System3Store {
           input.artifact.sizeBytes,
           JSON.stringify(sourceVersionIds),
           JSON.stringify([basis.approval_id]),
+          built ? 'Gói code thí nghiệm' : 'Gói kết quả thực thi',
+          built
+            ? 'Code đã viết và kiểm thử trên mẫu, chờ chọn cách chạy.'
+            : 'Mã nguồn và kết quả build/test/experiment của kế hoạch đã duyệt.',
         ]
       );
       for (const sourceVersionId of sourceVersionIds) {
@@ -4752,7 +4763,7 @@ export class System3Store {
          WHERE id = $2 AND operation_type = 'execute' AND status = 'running'
            AND owner_claim_token = $3`,
         [
-          JSON.stringify({ executionId: input.executionId, artifactId }),
+          JSON.stringify({ ...input.result, executionId: input.executionId, artifactId }),
           input.operationId,
           input.ownerClaimToken,
         ]
@@ -4762,13 +4773,15 @@ export class System3Store {
       }
       await this.transitionProject(query, {
         projectId: input.projectId,
-        toStage: 'verifying',
+        toStage: built ? 'approved' : 'verifying',
         attention: 'none',
         operationId: operation.id,
         workflowRunId: operation.workflow_run_id,
         entityType: 'execution',
         entityId: input.executionId,
-        reason: 'Baseline execution completed; verification required',
+        reason: built
+          ? 'Experiment code built; waiting for the run choice'
+          : 'Baseline execution completed; verification required',
         metadata: { artifactId },
       });
       const row = typedRows(inserted, value => value as ArtifactVersionRow)[0];
@@ -4777,13 +4790,16 @@ export class System3Store {
     });
   }
 
-  async getBaselineArtifact(executionId: string): Promise<System3ArtifactVersionRecord | null> {
+  async getBaselineArtifact(
+    executionId: string,
+    kind: 'baseline_package' | 'experiment_build' = 'baseline_package'
+  ): Promise<System3ArtifactVersionRecord | null> {
     await this.ensureSchema();
     const result = await this.database.query(
       `SELECT * FROM remote_agent_system3_artifact_versions
-       WHERE execution_id = $1 AND artifact_kind = 'baseline_package'
+       WHERE execution_id = $1 AND artifact_kind = $2
        ORDER BY created_at DESC LIMIT 1`,
-      [executionId]
+      [executionId, kind]
     );
     const row = typedRows(result, value => value as ArtifactVersionRow)[0];
     return row ? asArtifactVersion(row) : null;

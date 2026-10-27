@@ -319,6 +319,46 @@ describe('buildLifecycleView', () => {
     ).toBe('flow');
   });
 
+  test('an experiment build waits at TW-06 for the run choice instead of verification', () => {
+    const build = {
+      executionId: '00000000-0000-4000-8000-000000000006',
+      approvalId: '00000000-0000-4000-8000-000000000005',
+      builtAt: '2026-10-27T00:00:00.000Z',
+      variantIds: ['logistic_regression'],
+      review: { verdict: 'pass' as const, summary: 'OK', findings: [] },
+      split: {
+        rows: 100,
+        trainRows: 80,
+        testRows: 20,
+        trainPositiveRate: 0.2,
+        testPositiveRate: 0.2,
+        warnings: [],
+      },
+      builderModel: 'router9/a',
+      reviewerModel: 'router9/b',
+      hostSlots: 1,
+      latestRunExecutionId: null,
+    };
+    const project = projectFixture({
+      planCompiled: true,
+      manifestApproved: true,
+      execution: {
+        id: build.executionId,
+        workflowRunId: 'run-6',
+        status: 'completed',
+        error: null,
+      },
+      experimentBuild: build,
+    });
+    const activities = buildLifecycleView(project).flatMap(item => item.activities);
+    expect(activities.find(item => item.id === 'TW-06')?.status).toBe('ready');
+    expect(activities.find(item => item.id === 'TW-07')?.status).toBe('waiting');
+    expect(selectSuggestedLifecycleActivity(project)).toEqual({
+      activityId: 'TW-06',
+      reason: 'next_activity',
+    });
+  });
+
   test('selects failed readiness as a blocker without presenting it as complete', () => {
     const failed = projectFixture({
       readinessEvaluation: {

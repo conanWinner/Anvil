@@ -10650,7 +10650,7 @@ export interface components {
               variantIds?: string[];
               /** @default 4 */
               maxFixRounds: number;
-              /** @default 2 */
+              /** @default 3 */
               maxReviewRounds: number;
               /** @default 25 */
               variantTimeoutMinutes: number;
@@ -11085,6 +11085,7 @@ export interface components {
           output: string;
         }[];
       }[];
+      experimentBuild?: components['schemas']['System3ExperimentBuild'];
     };
     System3Source: {
       /** Format: uuid */
@@ -11211,6 +11212,38 @@ export interface components {
         | 'link_dataset'
         | 'review_understanding'
         | 'configure_runtime';
+    } | null;
+    System3ExperimentBuild: {
+      variantIds: string[];
+      review: {
+        /** @enum {string} */
+        verdict: 'pass' | 'changes_required';
+        summary: string;
+        findings: {
+          /** @enum {string} */
+          severity: 'blocking' | 'warning';
+          file: string | null;
+          message: string;
+        }[];
+      };
+      split: {
+        rows: number;
+        trainRows: number;
+        testRows: number;
+        trainPositiveRate: number;
+        testPositiveRate: number;
+        warnings: string[];
+      };
+      builderModel: string;
+      reviewerModel: string;
+      /** Format: uuid */
+      executionId: string;
+      /** Format: uuid */
+      approvalId: string;
+      builtAt: string;
+      hostSlots: number;
+      /** Format: uuid */
+      latestRunExecutionId: string | null;
     } | null;
     System3SourceIntakeReportView: {
       /** Format: uuid */
@@ -11372,7 +11405,7 @@ export interface components {
             variantIds?: string[];
             /** @default 4 */
             maxFixRounds: number;
-            /** @default 2 */
+            /** @default 3 */
             maxReviewRounds: number;
             /** @default 25 */
             variantTimeoutMinutes: number;
@@ -12395,6 +12428,14 @@ export interface components {
           /** Format: uuid */
           approvalId: string;
           expectedVersion: number;
+          experimentRun?: {
+            /** Format: uuid */
+            buildExecutionId: string;
+            variantIds: string[];
+            parallelism: number;
+            /** Format: uuid */
+            carryOverExecutionId?: string;
+          };
         }
       | {
           /** Format: uuid */
@@ -12406,6 +12447,7 @@ export interface components {
     };
     StartSystem3DeliveryBody: {
       expectedVersion: number;
+      selectedVariant?: string;
     };
     System3EvidenceRecord: {
       /** Format: uuid */

@@ -168,7 +168,34 @@ Ba mô hình cây đạt ngưỡng ROC-AUC ≥ 0,70 của blueprint; baseline kh
 - Trả lời câu hỏi của agent ngay trong UI (hiện phải cập nhật blueprint rồi phân tích/duyệt lại).
 - Chạy lại một phần (chỉ phương án đổi) và chọn tập con phương án trước khi duyệt.
 - Trần chi phí token; hàng đợi thí nghiệm giữa nhiều tiến trình Anvil.
-- Cập nhật tài liệu 12: giới hạn model 9router cho thi công (context ≥ 200k, output ≥ 32k).
+
+## 10. Đợt 2 — Tách "viết code + kiểm thử" khỏi "chạy thật"
+
+**Mục tiêu:** người dùng xem gói code đã kiểm thử trước, rồi tự chọn cách chạy: trên VPS (lần lượt hoặc song song N phương án, chọn tập con) hoặc ở nơi khác (Kaggle/Colab/máy riêng) và tải dự đoán lên để Anvil chấm.
+
+**Luồng:**
+
+1. Phê duyệt → **TW-06A Build**: agent viết code, smoke test trên mẫu, review. Kết quả là _gói build_ (code, `data/agent`, `data/holdout`, review, split). Dự án quay về trạng thái đã duyệt, chờ người dùng chọn cách chạy; không chạy Verify.
+2. Người dùng chọn → **TW-06B Run**:
+   - _Trên VPS_: chọn phương án (tập con của tập đã duyệt) và số phương án chạy song song (giới hạn theo RAM/CPU máy; mặc định 1). Chạy lại một phần: các phương án không chạy lại được mang sang từ lần chạy trước của cùng gói build.
+   - _Nơi khác_ (đợt sau): tải gói chạy-ngoài (không có nhãn test), chạy ở đó, tải `predictions/*.csv` lên; Anvil chấm bằng nhãn nó giữ và ghi rõ nguồn "chạy ngoài".
+3. **TW-07 Verify** chấm lại độc lập như hiện tại → kết quả, gợi ý, người dùng chọn → bàn giao.
+
+**Thiết kế:**
+
+- Một bundle TW-06 đã duyệt, thêm runtime binding `experimentRun` (object) — không đổi hình đồ thị. Giá trị: `{ stage: 'build' }` hoặc `{ stage: 'run', buildArtifact: {executionId, storageKey, contentHash}, variantIds, parallelism, carryOver? }`. Capability kiểm tra: `variantIds ⊆` tập đã duyệt, gói build cùng approval và đúng hash, `parallelism` trong giới hạn máy. Đổi blueprint/dữ liệu/agent vẫn cần duyệt lại; chọn tập con/song song/chạy lại thì không.
+- Build hoàn tất: artifact `experiment_build`, dự án `executing → approved`, attempt chờ ở TW-06. Run hoàn tất: như hiện tại (`verifying` → TW-07).
+- Song song: hàng đợi sandbox thành semaphore theo số slot; mỗi slot giữ hồ sơ 2 GB/2 CPU. Số slot tối đa = min(⌊RAM khả dụng·0.8 / 2 GB⌋, ⌊CPU/2⌋), tối thiểu 1.
+- UI: sau build hiện thẻ "Code đã sẵn sàng" (review, split, file code) với lựa chọn phương án, số song song và nút "Chạy"; sau một lần chạy có nút "Chạy lại phương án lỗi".
+
+**Thứ tự:** (1) môi trường server: runtime ML, giới hạn model, dữ liệu khỏi `/tmp` · (2) tách build/run + tập con + chạy lại một phần · (3) song song có giới hạn tài nguyên · (4) chạy ngoài + tải dự đoán lên · (5) trả lời câu hỏi agent trong UI, trần chi phí token.
 
 
 [← Mục lục](README.md) · [Kế hoạch 11 (nền UI và luồng)](11-simplification-and-core-flow-plan.md)
+
+**Tiến độ đợt 2 (27/10):**
+
+- (1) Runtime ML đã cài vào `/var/lib/anvil`; script chuyển server khỏi `/tmp` (dừng server, chép dữ liệu, sửa đường dẫn trong DB, nâng giới hạn model, chạy bằng systemd) đã viết và thử trên bản sao DB, chờ người vận hành chạy.
+- (2) Xong: binding `experimentRun`, artifact `experiment_build`, chọn tập con, chạy lại một phần (mang kết quả sang), thẻ "Code đã sẵn sàng" và "Chạy lại một phần". Review còn lỗi chặn sau các vòng sửa ở giai đoạn build không làm hỏng build mà hiện cho người dùng quyết định.
+- (3) Xong phần lõi: semaphore theo số slot của máy (VPS 4 GB/2 CPU = 1 slot).
+- Live qua web: lần 1 review chặn feature giao hàng mà blueprint yêu cầu (đã đổi thành hiện cho người dùng); lần 2 build đạt và hiện thẻ chọn, bước chạy lỗi do `within()` so khớp đường dẫn sai (đã sửa, có test; lỗi này cũng làm kiểm tra đường dẫn của `python-sandbox` lỏng hơn dự định).

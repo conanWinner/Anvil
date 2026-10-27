@@ -319,7 +319,11 @@ export function compileSystem3WorkflowBundles(input: {
     {
       activityId: 'TW-06',
       ...execution,
-      runtimeBindings: [{ name: 'executionId', type: 'uuid' }],
+      // Experiment mode binds the build-or-run choice at execution time (plan 13 §10).
+      runtimeBindings: [
+        { name: 'executionId', type: 'uuid' },
+        ...(input.plan.experiment ? [{ name: 'experimentRun', type: 'object' } as const] : []),
+      ],
     },
     { activityId: 'TW-07', ...verification, runtimeBindings: artifactBindings },
     {

@@ -1,4 +1,5 @@
 import { mkdir } from 'node:fs/promises';
+import { availableParallelism, totalmem } from 'node:os';
 import { isAbsolute, normalize } from 'node:path';
 import type { MlRuntime } from './ml-runtime';
 import {
@@ -82,14 +83,37 @@ function projectScript(script: string): string {
   return `/work/project/${normalized}`;
 }
 
-// ponytail: in-process queue; experiments started from another Anvil process are not serialized.
-let queue: Promise<unknown> = Promise.resolve();
+const EXPERIMENT_SLOT_BYTES = 2048 * 1024 * 1024;
 
-/** Serializes experiment runs on this host: the VPS profile assumes one heavy run at a time. */
-function enqueue<T>(task: () => Promise<T>): Promise<T> {
-  const next = queue.then(task, task);
-  queue = next.catch(() => undefined);
-  return next;
+/**
+ * How many `experiment` sandboxes this host can run at once: each slot reserves the profile's
+ * 2 GB and 2 CPUs, keeping 20% of RAM for Anvil and the OS. Always at least 1.
+ */
+export function experimentHostSlots(): number {
+  const byMemory = Math.floor((totalmem() * 0.8) / EXPERIMENT_SLOT_BYTES);
+  const byCpu = Math.floor(availableParallelism() / 2);
+  return Math.max(1, Math.min(byMemory, byCpu));
+}
+
+// ponytail: in-process slots; experiments started from another Anvil process are not counted.
+let running = 0;
+const waiting: (() => void)[] = [];
+
+/** Bounds concurrent sandboxes on this host to `experimentHostSlots()`. */
+async function withSlot<T>(task: () => Promise<T>): Promise<T> {
+  if (running >= experimentHostSlots())
+    await new Promise<void>(resolve => {
+      waiting.push(resolve);
+    });
+  else running += 1;
+  try {
+    return await task();
+  } finally {
+    // Hand the slot straight to the next waiter so a new caller cannot overtake it.
+    const next = waiting.shift();
+    if (next) next();
+    else running -= 1;
+  }
 }
 
 export async function runExperimentSandbox(
@@ -191,5 +215,5 @@ export async function runExperimentSandbox(
       durationMs: Date.now() - started,
     };
   };
-  return enqueue(run);
+  return withSlot(run);
 }

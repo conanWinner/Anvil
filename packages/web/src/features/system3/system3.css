@@ -6376,3 +6376,114 @@
   color: var(--s3-text);
   font-size: 14.5px;
 }
+.s3-experiment-run {
+  display: grid;
+  gap: 12px;
+  margin: 16px 0;
+  padding: 18px;
+  border: 1px solid var(--s3-line);
+  border-radius: 14px;
+  background: var(--s3-surface);
+}
+.s3-experiment-rerun .s3-experiment-run {
+  margin: 12px 0 0;
+  border: 0;
+  padding: 0;
+}
+.s3-experiment-run h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--s3-text);
+  font-size: 16px;
+}
+.s3-experiment-run-lead,
+.s3-experiment-run-review {
+  max-width: 90ch;
+  margin: 0;
+  color: var(--s3-muted);
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+.s3-experiment-run-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+.s3-experiment-run-facts div {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--s3-surface-muted);
+}
+.s3-experiment-run-facts dt {
+  color: var(--s3-muted);
+  font-size: 12px;
+}
+.s3-experiment-run-facts dd {
+  margin: 4px 0 0;
+  color: var(--s3-text);
+  font-size: 13.5px;
+}
+.s3-experiment-run-variants {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.s3-experiment-run-variants legend {
+  margin-bottom: 6px;
+  color: var(--s3-text);
+  font-size: 13px;
+  font-weight: 700;
+}
+.s3-experiment-run-variants label {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--s3-line);
+  border-radius: 10px;
+  color: var(--s3-text);
+  font-size: 13.5px;
+  cursor: pointer;
+}
+.s3-experiment-run input[type='checkbox'] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--s3-brand);
+}
+.s3-experiment-run-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  color: var(--s3-text);
+  font-size: 13.5px;
+}
+.s3-experiment-run-options > label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.s3-experiment-run-options select {
+  padding: 6px 8px;
+  border: 1px solid var(--s3-line);
+  border-radius: 8px;
+  background: var(--s3-surface);
+  color: var(--s3-text);
+  font: inherit;
+}
+.s3-experiment-run-options small {
+  color: var(--s3-muted);
+  font-size: 12.5px;
+}
+.s3-experiment-run-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}

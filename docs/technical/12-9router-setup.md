@@ -38,6 +38,8 @@ Tạo hoặc chỉnh `~/.pi/agent/models.json`, giữ các provider khác đang 
 }
 ```
 
+**Chế độ thí nghiệm (kế hoạch 13):** agent thi công đọc blueprint, mô tả dữ liệu và lỗi lần trước rồi trả về toàn bộ code trong một lần gọi, nên model dùng làm agent thi công/review cần `contextWindow` ≥ 200000 và `maxTokens` ≥ 32000 (nếu model hỗ trợ). Giới hạn nhỏ hơn (ví dụ 32768/4096) làm câu trả lời bị cắt và lần build thất bại.
+
 Cấp `ROUTER9_API_KEY` cho tiến trình Anvil qua môi trường hoặc `~/.anvil/.env`; không ghi khóa vào repo, prompt hay log. Pi phân giải `$ROUTER9_API_KEY`. Cấu hình Codex riêng không tự được Pi sử dụng. Các trường cost bằng 0 trong mẫu không có nghĩa model miễn phí: comparison hiện ghi usage/chi phí **chưa biết**.
 
 Muốn tách cấu hình thử nghiệm, đặt `PI_CODING_AGENT_DIR` tới thư mục chứa `models.json` riêng trước khi khởi động Anvil. SDK đang dùng `ModelRegistry.create(authStorage)`; Anvil chưa expose tham số đường dẫn registry riêng.

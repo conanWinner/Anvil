@@ -30,6 +30,13 @@ export interface ExperimentRunResult {
 
 const KILLED_BY_SIGNAL = 137;
 
+/** Results of an earlier run of the same build, kept for variants this run does not repeat. */
+export interface CarriedVariantResults {
+  runs: VariantRun[];
+  predictionsDir: string;
+  reportedDir: string;
+}
+
 export async function runExperimentVariants(input: {
   runtime: MlRuntime;
   projectDir: string;
@@ -40,12 +47,14 @@ export async function runExperimentVariants(input: {
   workDir: string;
   timeoutMs: number;
   signal: AbortSignal;
+  /** Variants run at once; the sandbox also caps this at the host's slots. Default 1. */
+  parallelism?: number;
+  carryOver?: CarriedVariantResults;
   onVariant?: (run: VariantRun) => void;
 }): Promise<ExperimentRunResult> {
   const outputDir = join(input.workDir, 'runs');
   await rm(outputDir, { recursive: true, force: true });
-  const runs: VariantRun[] = [];
-  for (const variant of input.variantIds) {
+  const runVariant = async (variant: string): Promise<VariantRun> => {
     const variantOut = join(outputDir, variant);
     await mkdir(variantOut, { recursive: true });
     const result = await runExperimentSandbox({
@@ -71,9 +80,27 @@ export async function runExperimentVariants(input: {
       durationMs: result.durationMs,
       logTail: `${result.stderr}\n${result.stdout}`.trim().slice(-4_000),
     };
-    runs.push(run);
     input.onVariant?.(run);
-  }
+    return run;
+  };
+  const fresh = new Map<string, VariantRun>();
+  const pending = [...input.variantIds];
+  const workers = Array.from(
+    { length: Math.max(1, Math.min(input.parallelism ?? 1, pending.length)) },
+    async () => {
+      for (let variant = pending.shift(); variant !== undefined; variant = pending.shift())
+        fresh.set(variant, await runVariant(variant));
+    }
+  );
+  await Promise.all(workers);
+  const carried = (input.carryOver?.runs ?? []).filter(run => !fresh.has(run.variant));
+  const runs = [
+    ...carried,
+    ...input.variantIds.flatMap(variant => {
+      const run = fresh.get(variant);
+      return run ? [run] : [];
+    }),
+  ];
 
   // Each variant wrote into its own folder; gather predictions for one evaluator pass.
   const predictionsDir = join(input.workDir, 'collected', 'predictions');
@@ -85,18 +112,27 @@ export async function runExperimentVariants(input: {
   ]);
   for (const run of runs) {
     if (run.status !== 'completed') continue;
+    const fromCarry = !fresh.has(run.variant) && input.carryOver;
     for (const [folder, extension, target] of [
       ['predictions', 'csv', predictionsDir],
       ['reported', 'json', reportedDir],
     ] as const) {
-      const source = Bun.file(join(outputDir, run.variant, folder, `${run.variant}.${extension}`));
+      const source = Bun.file(
+        fromCarry
+          ? join(
+              folder === 'predictions' ? fromCarry.predictionsDir : fromCarry.reportedDir,
+              `${run.variant}.${extension}`
+            )
+          : join(outputDir, run.variant, folder, `${run.variant}.${extension}`)
+      );
       if (await source.exists())
         await Bun.write(join(target, `${run.variant}.${extension}`), source);
     }
   }
+  const variants = runs.map(run => run.variant);
   const evaluation = await evaluateExperimentPredictions({
     runtime: input.runtime,
-    variants: input.variantIds,
+    variants,
     holdoutDir: input.holdoutDir,
     predictionsDir,
     reportedDir,

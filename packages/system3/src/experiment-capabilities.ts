@@ -1,4 +1,5 @@
 import { z } from '@hono/zod-openapi';
+import { createHash } from 'node:crypto';
 import { cp, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { basename, join, relative, resolve, sep } from 'node:path';
 import {
@@ -11,14 +12,17 @@ import {
   evaluateExperimentPredictions,
   experimentEvaluationSchema,
   experimentMetricSchema,
+  experimentVariantIdSchema,
   rankExperimentVariants,
   splitSummarySchema,
   type ExperimentEvaluation,
 } from './experiment-evaluation';
-import { experimentPlanSchema } from './experiment-plan';
+import { experimentPlanSchema, hashExperimentPlan } from './experiment-plan';
 import { reviewResponseSchema } from './experiment-builder';
-import { runExperimentVariants } from './experiment-runner';
+import { runExperimentVariants, type CarriedVariantResults } from './experiment-runner';
+import { experimentHostSlots } from './experiment-sandbox';
 import { ML_RUNTIME_LOCK_PATH, resolveMlRuntime } from './ml-runtime';
+import { extractProjectArchive } from './project-archive';
 import type { PinnedUnderstandingSource } from './understanding';
 
 /**
@@ -45,12 +49,38 @@ export interface ExperimentCapabilityPort {
     maxResponseBytes: number;
     signal: AbortSignal;
   }): Promise<unknown>;
+  readArtifact(projectId: string, storageKey: string): Promise<Uint8Array>;
 }
 
 const pinnedSourceSchema = z.object({
   id: z.string().min(1),
   contentHash: z.string().startsWith('sha256:'),
 });
+
+const sha256Schema = z.string().regex(/^sha256:[0-9a-f]{64}$/u);
+const artifactRefSchema = z.object({
+  executionId: z.string().uuid(),
+  storageKey: z.string().min(1),
+  contentHash: sha256Schema,
+});
+
+/**
+ * Runtime choice bound into the approved TW-06 bundle (plan 13 §10). `build` writes and checks the
+ * code only; `run` runs a subset of the approved variants from a build package. Neither can change
+ * the plan, data or agents — those still need a new approval.
+ */
+export const experimentRunSchema = z.discriminatedUnion('stage', [
+  z.object({ stage: z.literal('build') }),
+  z.object({
+    stage: z.literal('run'),
+    buildArtifact: artifactRefSchema,
+    variantIds: z.array(experimentVariantIdSchema).min(1).max(12),
+    parallelism: z.number().int().min(1).max(16),
+    /** An earlier run of the same build whose results are kept for variants not run again. */
+    carryOver: artifactRefSchema.nullable(),
+  }),
+]);
+export type ExperimentRun = z.infer<typeof experimentRunSchema>;
 
 export const experimentExecuteInputSchema = z.object({
   projectId: z.string().uuid(),
@@ -59,6 +89,8 @@ export const experimentExecuteInputSchema = z.object({
   variantIds: z.array(z.string().min(1)).min(1),
   blueprintSource: pinnedSourceSchema,
   datasetSources: z.array(pinnedSourceSchema).min(1),
+  /** Absent in bundles approved before the build/run split. */
+  run: experimentRunSchema.optional(),
 });
 
 export const experimentVerifyInputSchema = z.object({
@@ -181,28 +213,92 @@ predictions, Anvil's evaluation, the review report and the build log.
 The modeling table can be rebuilt from the original raw files with \`code/prepare_data.py\` (raw data mounted at /work/data, output in /work/out).
 `;
 
-/** TW-06: build the codebase with the builder/reviewer models, run every variant, score, package. */
-export async function executeExperiment(
-  raw: Readonly<Record<string, unknown>>,
-  context: ExperimentCapabilityContext,
-  port: ExperimentCapabilityPort
-): Promise<{
+/** Recorded in a build package's `reports/experiment_results.json`. */
+const builtExperimentSchema = z.object({
+  kind: z.literal('experiment_build'),
+  planHash: sha256Schema,
+  codeHash: sha256Schema,
+  builderModel: z.string(),
+  reviewerModel: z.string(),
+});
+
+interface BuiltExperiment {
+  codeDir: string;
+  agentDataDir: string;
+  holdoutDir: string;
+  review: z.infer<typeof reviewResponseSchema>;
+  events: unknown;
+  split: z.infer<typeof splitSummarySchema>;
+  codeHash: string;
+}
+
+async function readJsonFile(path: string): Promise<unknown> {
+  return JSON.parse(await readFile(path, 'utf8')) as unknown;
+}
+
+async function extractArtifact(
+  port: ExperimentCapabilityPort,
+  projectId: string,
+  ref: z.infer<typeof artifactRefSchema>,
+  destination: string,
+  signal: AbortSignal
+): Promise<string> {
+  const bytes = await port.readArtifact(projectId, ref.storageKey);
+  const actual = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+  if (actual !== ref.contentHash)
+    throw new Error(`Artifact of execution ${ref.executionId} failed its content hash check`);
+  await extractProjectArchive(bytes, destination, signal);
+  // Extraction writes owner-only files; sandboxed runs read them as an unprivileged user.
+  const chmod = Bun.spawn(['chmod', '-R', 'a+rX', destination], { stderr: 'pipe' });
+  if ((await chmod.exited) !== 0)
+    throw new Error(
+      `Could not open extracted artifact: ${await new Response(chmod.stderr).text()}`
+    );
+  return destination;
+}
+
+/** Shared tail of every package: runtime lock, reproduction notes and the baseline report files. */
+async function writePackageFiles(
+  packageDir: string,
+  reports: { testResult: unknown; dataResult: unknown; experiment: unknown }
+): Promise<void> {
+  await mkdir(join(packageDir, 'reports'), { recursive: true });
+  await mkdir(join(packageDir, 'runtime'), { recursive: true });
+  await Promise.all([
+    writeFile(
+      join(packageDir, 'runtime', 'requirements-ml.lock'),
+      await readFile(ML_RUNTIME_LOCK_PATH)
+    ),
+    writeFile(join(packageDir, 'reproduce.sh'), REPRODUCE_SH),
+    writeFile(join(packageDir, 'REPRODUCING.md'), REPRODUCING_MD),
+    // Same report files the baseline pipeline writes, so existing persistence keeps working.
+    writeJson(join(packageDir, 'reports', 'test-results.json'), reports.testResult),
+    writeJson(join(packageDir, 'reports', 'data_run.json'), reports.dataResult),
+    writeJson(join(packageDir, 'reports', 'experiment_results.json'), reports.experiment),
+  ]);
+}
+
+type ExecuteInput = z.infer<typeof experimentExecuteInputSchema>;
+interface ExecuteOutput {
   projectDir: string;
   testResult: Record<string, unknown>;
   dataResult: Record<string, unknown>;
   experiment: Record<string, unknown>;
-}> {
-  const input = experimentExecuteInputSchema.parse(raw);
-  const protocol = input.plan.protocol;
-  if (protocol === null) throw new Error('Approved experiment plan has no evaluation protocol');
-  const root = join(context.artifactsDir, 'experiment');
+}
+
+/** TW-06A: the builder/reviewer models write and smoke-test the codebase on the pinned data. */
+async function buildStage(
+  input: ExecuteInput,
+  root: string,
+  context: ExperimentCapabilityContext,
+  port: ExperimentCapabilityPort
+): Promise<BuiltExperiment> {
   const rawDir = join(root, 'raw');
   await mkdir(rawDir, { recursive: true });
   const blueprint = await materializeSource(port, input.projectId, input.blueprintSource, root);
   for (const source of input.datasetSources)
     await materializeSource(port, input.projectId, source, rawDir);
   const runtime = await resolveMlRuntime();
-
   const generate: ExperimentGenerate = ({ role, prompt, schema, signal }) =>
     port.generateStructured({
       projectId: input.projectId,
@@ -212,18 +308,19 @@ export async function executeExperiment(
       maxResponseBytes: 900 * 1024,
       signal: AbortSignal.any([signal, AbortSignal.timeout(15 * 60_000)]),
     });
-  const projectDir = join(root, 'project');
+  const codeDir = join(root, 'project');
   const build = await buildExperimentCodebase({
     blueprint: new TextDecoder().decode(blueprint.bytes),
     plan: input.plan,
     variantIds: input.variantIds,
     rawDataDir: rawDir,
-    projectDir,
+    projectDir: codeDir,
     workDir: join(root, 'build'),
     runtime,
     generate,
     maxFixRounds: input.config.maxFixRounds,
     maxReviewRounds: input.config.maxReviewRounds,
+    reportUnresolvedReview: input.run?.stage === 'build',
     signal: context.signal,
   });
   await writeJson(join(root, 'build.json'), build);
@@ -233,75 +330,235 @@ export async function executeExperiment(
     );
   if (build.status !== 'ready')
     throw new Error(`Experiment build stopped at ${build.stage}: ${build.reason.slice(0, 2_000)}`);
-
-  const run = await runExperimentVariants({
-    runtime,
-    projectDir,
+  return {
+    codeDir,
     agentDataDir: build.split.agentDataDir,
     holdoutDir: build.split.holdoutDir,
+    review: build.review,
+    events: build.events,
+    split: build.split.summary,
+    codeHash: hashProjectFiles(build.files),
+  };
+}
+
+/** Copies the built code and split into a self-contained package folder. */
+async function packageBuild(
+  input: ExecuteInput,
+  built: BuiltExperiment,
+  packageDir: string
+): Promise<void> {
+  await mkdir(join(packageDir, 'results'), { recursive: true });
+  await Promise.all([
+    cp(built.codeDir, join(packageDir, 'code'), { recursive: true }),
+    cp(built.agentDataDir, join(packageDir, 'data', 'agent'), { recursive: true }),
+    cp(built.holdoutDir, join(packageDir, 'data', 'holdout'), { recursive: true }),
+    writeJson(join(packageDir, 'results', 'review.json'), built.review),
+    writeJson(join(packageDir, 'results', 'build-events.json'), built.events),
+    writeJson(join(packageDir, 'results', 'split.json'), built.split),
+    writeJson(join(packageDir, 'results', 'plan.json'), {
+      plan: input.plan,
+      protocol: input.plan.protocol,
+      config: input.config,
+    }),
+  ]);
+}
+
+/** TW-06B: run variants of a built codebase, score them with the held-out labels, package. */
+async function runStage(
+  input: ExecuteInput,
+  built: BuiltExperiment,
+  options: {
+    variantIds: readonly string[];
+    parallelism: number;
+    carryOver: CarriedVariantResults | null;
+  },
+  root: string,
+  context: ExperimentCapabilityContext
+): Promise<ExecuteOutput> {
+  const protocol = input.plan.protocol;
+  if (protocol === null) throw new Error('Approved experiment plan has no evaluation protocol');
+  const runtime = await resolveMlRuntime();
+  const config = input.config;
+  const run = await runExperimentVariants({
+    runtime,
+    projectDir: built.codeDir,
+    agentDataDir: built.agentDataDir,
+    holdoutDir: built.holdoutDir,
     protocol,
-    variantIds: input.variantIds,
+    variantIds: options.variantIds,
     workDir: join(root, 'runs'),
-    timeoutMs: input.config.variantTimeoutMinutes * 60_000,
+    timeoutMs: config.variantTimeoutMinutes * 60_000,
+    parallelism: options.parallelism,
+    ...(options.carryOver ? { carryOver: options.carryOver } : {}),
     signal: context.signal,
   });
+  // Report variants in the approved order, whether run now or carried over.
+  const ran = new Set(run.runs.map(item => item.variant));
+  const variantIds = input.variantIds.filter(id => ran.has(id));
 
   // Self-contained package: verification and delivery only ever read this immutable folder.
   const packageDir = join(root, 'package', 'generated_project');
-  await mkdir(join(packageDir, 'results'), { recursive: true });
-  await Promise.all([
-    cp(projectDir, join(packageDir, 'code'), { recursive: true }),
-    cp(build.split.agentDataDir, join(packageDir, 'data', 'agent'), { recursive: true }),
-    cp(build.split.holdoutDir, join(packageDir, 'data', 'holdout'), { recursive: true }),
-    cp(join(root, 'runs', 'collected'), join(packageDir, 'results'), { recursive: true }),
-    mkdir(join(packageDir, 'runtime'), { recursive: true }),
-  ]);
-  const codeHash = hashProjectFiles(build.files);
+  await packageBuild(input, built, packageDir);
+  await cp(join(root, 'runs', 'collected'), join(packageDir, 'results'), { recursive: true });
   const experiment = {
     status: run.suggestion.ranking.length > 0 ? 'passed' : 'failed',
     kind: 'experiment',
-    variantIds: input.variantIds,
+    variantIds,
     primaryMetric: protocol.primaryMetric,
     evaluation: run.evaluation,
     suggestion: run.suggestion,
     runs: run.runs,
-    review: build.review,
-    codeHash,
+    review: built.review,
+    codeHash: built.codeHash,
     runtimeLockHash: runtime.lockHash,
-    builderModel: input.config.builderModel,
-    reviewerModel: input.config.reviewerModel,
+    builderModel: config.builderModel,
+    reviewerModel: config.reviewerModel,
+    rerun: options.variantIds.length < variantIds.length ? [...options.variantIds] : null,
   };
   const testResult = {
     exitCode: run.runs.some(item => item.status === 'completed') ? 0 : 1,
     kind: 'experiment',
   };
-  const dataResult = { status: 'passed', split: build.split.summary, protocol };
+  const dataResult = { status: 'passed', split: built.split, protocol };
   await Promise.all([
     writeJson(join(packageDir, 'results', 'evaluation.json'), run.evaluation),
     writeJson(join(packageDir, 'results', 'suggestion.json'), run.suggestion),
     writeJson(join(packageDir, 'results', 'runs.json'), run.runs),
-    writeJson(join(packageDir, 'results', 'review.json'), build.review),
-    writeJson(join(packageDir, 'results', 'build-events.json'), build.events),
-    writeJson(join(packageDir, 'results', 'split.json'), build.split.summary),
-    writeJson(join(packageDir, 'results', 'plan.json'), {
-      plan: input.plan,
-      protocol,
-      config: input.config,
-    }),
-    writeFile(
-      join(packageDir, 'runtime', 'requirements-ml.lock'),
-      await readFile(ML_RUNTIME_LOCK_PATH)
-    ),
-    writeFile(join(packageDir, 'reproduce.sh'), REPRODUCE_SH),
-    writeFile(join(packageDir, 'REPRODUCING.md'), REPRODUCING_MD),
-    mkdir(join(packageDir, 'reports'), { recursive: true }),
   ]);
-  // Same report files the baseline pipeline writes, so existing persistence keeps working.
-  await Promise.all([
-    writeJson(join(packageDir, 'reports', 'test-results.json'), testResult),
-    writeJson(join(packageDir, 'reports', 'data_run.json'), dataResult),
-    writeJson(join(packageDir, 'reports', 'experiment_results.json'), experiment),
-  ]);
+  await writePackageFiles(packageDir, { testResult, dataResult, experiment });
+  return { projectDir: packageDir, testResult, dataResult, experiment };
+}
+
+/** Re-opens a build package and checks it belongs to this approved plan. */
+async function openBuildPackage(input: ExecuteInput, dir: string): Promise<BuiltExperiment> {
+  const reported = builtExperimentSchema.parse(
+    await readJsonFile(join(dir, 'reports', 'experiment_results.json'))
+  );
+  if (
+    reported.planHash !== hashExperimentPlan(input.plan) ||
+    reported.builderModel !== input.config.builderModel ||
+    reported.reviewerModel !== input.config.reviewerModel
+  )
+    throw new Error('The build package was made for a different approved plan');
+  return {
+    codeDir: join(dir, 'code'),
+    agentDataDir: join(dir, 'data', 'agent'),
+    holdoutDir: join(dir, 'data', 'holdout'),
+    review: reviewResponseSchema.parse(await readJsonFile(join(dir, 'results', 'review.json'))),
+    events: await readJsonFile(join(dir, 'results', 'build-events.json')),
+    split: splitSummarySchema.parse(await readJsonFile(join(dir, 'results', 'split.json'))),
+    codeHash: reported.codeHash,
+  };
+}
+
+/** Results of an earlier run package, usable only when it ran the same code on the same split. */
+async function openCarryOver(
+  built: BuiltExperiment,
+  dir: string,
+  approved: readonly string[]
+): Promise<CarriedVariantResults> {
+  const reported = z
+    .object({ kind: z.literal('experiment'), codeHash: sha256Schema })
+    .parse(await readJsonFile(join(dir, 'reports', 'experiment_results.json')));
+  const sameLabels = (await readFile(join(dir, 'data', 'holdout', 'test_labels.csv'))).equals(
+    await readFile(join(built.holdoutDir, 'test_labels.csv'))
+  );
+  if (reported.codeHash !== built.codeHash || !sameLabels)
+    throw new Error('The earlier run used different code or a different split');
+  const runs = z
+    .array(runRecordSchema.extend({ exitCode: z.number(), logTail: z.string() }))
+    .parse(await readJsonFile(join(dir, 'results', 'runs.json')))
+    .filter(run => approved.includes(run.variant));
+  return {
+    runs,
+    predictionsDir: join(dir, 'results', 'predictions'),
+    reportedDir: join(dir, 'results', 'reported'),
+  };
+}
+
+/**
+ * TW-06 for experiment mode. With a `run` binding it performs one stage (build, or run from a
+ * build package); without one (bundles approved before plan 13 §10) it builds and runs at once.
+ */
+export async function executeExperiment(
+  raw: Readonly<Record<string, unknown>>,
+  context: ExperimentCapabilityContext,
+  port: ExperimentCapabilityPort
+): Promise<ExecuteOutput> {
+  const input = experimentExecuteInputSchema.parse(raw);
+  if (input.plan.protocol === null)
+    throw new Error('Approved experiment plan has no evaluation protocol');
+  const root = join(context.artifactsDir, 'experiment');
+  await mkdir(root, { recursive: true });
+  const stage = input.run;
+
+  if (stage?.stage === 'run') {
+    const outside = stage.variantIds.filter(id => !input.variantIds.includes(id));
+    if (outside.length > 0)
+      throw new Error(`Variants outside the approved plan: ${outside.join(', ')}`);
+    const slots = experimentHostSlots();
+    if (stage.parallelism > slots)
+      throw new Error(
+        `This host can run ${slots.toString()} variant(s) at once; ${stage.parallelism.toString()} requested`
+      );
+    const buildDir = await extractArtifact(
+      port,
+      input.projectId,
+      stage.buildArtifact,
+      join(root, 'build-package'),
+      context.signal
+    );
+    const built = await openBuildPackage(input, buildDir);
+    const carryOver = stage.carryOver
+      ? await openCarryOver(
+          built,
+          await extractArtifact(
+            port,
+            input.projectId,
+            stage.carryOver,
+            join(root, 'carry-over'),
+            context.signal
+          ),
+          input.variantIds
+        )
+      : null;
+    return runStage(
+      input,
+      built,
+      { variantIds: stage.variantIds, parallelism: stage.parallelism, carryOver },
+      root,
+      context
+    );
+  }
+
+  const built = await buildStage(input, root, context, port);
+  if (stage?.stage !== 'build')
+    return runStage(
+      input,
+      built,
+      { variantIds: input.variantIds, parallelism: 1, carryOver: null },
+      root,
+      context
+    );
+
+  const packageDir = join(root, 'package', 'generated_project');
+  await packageBuild(input, built, packageDir);
+  const experiment = {
+    status: 'built',
+    kind: 'experiment_build',
+    variantIds: input.variantIds,
+    planHash: hashExperimentPlan(input.plan),
+    codeHash: built.codeHash,
+    runtimeLockHash: (await resolveMlRuntime()).lockHash,
+    builderModel: input.config.builderModel,
+    reviewerModel: input.config.reviewerModel,
+    review: built.review,
+    split: built.split,
+    hostSlots: experimentHostSlots(),
+  };
+  const testResult = { exitCode: 0, kind: 'experiment_build' };
+  const dataResult = { status: 'passed', split: built.split, protocol: input.plan.protocol };
+  await writePackageFiles(packageDir, { testResult, dataResult, experiment });
   return { projectDir: packageDir, testResult, dataResult, experiment };
 }
 
