@@ -6487,3 +6487,7 @@
   flex-wrap: wrap;
   gap: 8px;
 }
+.s3-experiment-run-facts dd svg {
+  display: inline;
+  vertical-align: -2px;
+}
