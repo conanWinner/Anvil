@@ -246,10 +246,11 @@ và raw I/O; không phải nơi bắt đầu hoặc tiếp tục Project Lifecyc
 ## 11. Tạo project và thao tác nâng cao
 
 Tạo project dùng một form duy nhất gồm tên, blueprint Markdown bắt buộc và dataset CSV tùy chọn.
-Nhãn chính là **Mô tả bài toán (.md)**. Chọn 2–4 LLM qua 9router là nội dung chính cho project mới,
-dùng tên từ Pi catalog; nhập ref thủ công nằm trong cấu hình nâng cao. Bộ mẫu chạy code cung cấp cả
-prompt, requirement IDs và harness đã kiểm tra, nêu đúng phạm vi bài tập. Tệp riêng vẫn cần cấu hình
-bộ kiểm tra hợp lệ; không tự đặt tiêu chí hoặc âm thầm chuyển sang baseline khi thiếu cấu hình.
+Nhãn chính là **Mô tả bài toán (.md)**. Mặc định là chế độ **Thí nghiệm theo System 2**: blueprint,
+bảng dữ liệu CSV và hai model qua 9router (agent thi công, agent review), tên lấy từ Pi catalog.
+Chế độ cũ (so sánh 2–4 LLM, baseline Customer Churn) nằm trong **Cấu hình bộ kiểm tra và nâng cao**;
+bài toán riêng ở chế độ so sánh vẫn cần prompt, requirement IDs và bộ kiểm tra hợp lệ. Không tự đặt
+tiêu chí hoặc âm thầm chuyển sang baseline khi thiếu cấu hình.
 Ràng buộc ít dùng nằm trong disclosure; không có bước xác nhận riêng để lặp cùng thông tin.
 Sau khi tạo và tiếp nhận nguồn, mở workspace Lifecycle. Nếu tiếp nhận lỗi sau khi project được tạo,
 UI phải giữ project có thể truy cập được để người dùng sửa nguồn hoặc thử lại; không che lỗi sau

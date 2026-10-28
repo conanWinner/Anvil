@@ -2,6 +2,7 @@
 
 ## Công việc hiện hành
 
+- [14 — Review code và quy trình ngày 28/10/2026](14-code-and-process-review-2026-10-28.md): đánh giá độc lập tại `3d550f8`, lỗi cần sửa và giới hạn kiểm chứng trước phát hành.
 - [11 — Tinh giản và luồng cốt lõi](11-simplification-and-core-flow-plan.md): kế hoạch UI-0–UI-7 ngày 26/10, mẫu chạy nhiều LLM, nghiệm thu; task S0–S7 và bằng chứng cũ để đối chiếu. Nền UI/luồng; hướng so sánh LLM được thay bởi 13.
 - [12 — Cấu hình 9router qua Pi](12-9router-setup.md): gateway, model, credential và kiểm tra kết nối.
 - [13 — Triển khai phương án thí nghiệm từ System 2](13-experiment-execution-plan.md): **kế hoạch hiện hành** — agent thi công + review, sandbox ML, Anvil tự chấm, gợi ý và người dùng chọn.

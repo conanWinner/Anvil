@@ -55,7 +55,7 @@ Thi công chia **hai giai đoạn**, vì với dữ liệu thô nhiều bảng t
 ### 3.3 Thi công bằng agent, mọi lệnh chạy trong sandbox
 
 - Agent thi công chỉ có công cụ **đọc/ghi file** trong workspace; **không có Bash trên máy chủ**. Mọi lệnh chạy (kiểm tra nhanh trên mẫu nhỏ, test) đi qua sandbox; lỗi được đưa lại cho agent (`loop`, tối đa N vòng, cấu hình trong kế hoạch).
-- Agent review đọc code + blueprint + giao thức, tìm: rò rỉ dữ liệu (dùng nhãn test, fit trên toàn bộ dữ liệu), sai split/seed, metric tính sai, thiếu phương án, lệch blueprint. Lỗi chặn quay lại agent thi công (giới hạn vòng); hết vòng thì dừng và hiện cho người dùng, không chạy tiếp.
+- Agent review đọc code + blueprint + giao thức, tìm: rò rỉ dữ liệu (dùng nhãn test, fit trên toàn bộ dữ liệu), sai split/seed, metric tính sai, thiếu phương án, lệch blueprint. Lỗi chặn quay lại agent thi công (giới hạn vòng); hết vòng thì dừng và hiện cho người dùng. *(Thay bởi đợt 2: ở giai đoạn build, lỗi chặn còn lại hiện cho người dùng quyết định chạy hay không; lo ngại về yêu cầu blueprint thành câu hỏi — đợt 4.)*
 - Báo cáo review là artifact có trong kết quả và trong gói.
 
 ### 3.4 Runtime và sandbox thí nghiệm
@@ -106,7 +106,7 @@ Trên VPS, với `DESIGN_B_2.md` + Olist (bản thu nhỏ có tái lập nếu b
 
 1. Người dùng thao tác: tạo dự án → phân tích → trả lời Decision → duyệt kế hoạch → chọn phương án → tải gói. Không viết Python, không gọi API tay.
 2. Ít nhất Logistic Regression + một mô hình cây có metric **do Anvil tính lại** khớp số agent báo (sai lệch < 1e-6), cùng split hash.
-3. Báo cáo review có trong kết quả; lỗi chặn của review không bị bỏ qua.
+3. Báo cáo review có trong kết quả; lỗi chặn của review không bị bỏ qua — người dùng thấy nó trước khi chạy và trong gói bàn giao. Verify đạt nghĩa là metric được Anvil chấm lại khớp, không phải code review đạt hay mọi yêu cầu blueprint đã được xác minh (`requirementCoverage: not_verified`).
 4. Gói tái lập chạy lại ra cùng metric trên máy có cùng runtime lock, không gọi LLM.
 5. Không có lệnh nào của code do LLM sinh chạy ngoài sandbox.
 
@@ -219,3 +219,10 @@ Ba mô hình cây đạt ngưỡng ROC-AUC ≥ 0,70 của blueprint; baseline kh
 - Live lần 2 cho thấy review lật qua lật lại: vòng 1 chặn feature giao hàng vì rò rỉ theo thời gian (agent bỏ feature mà FR-03 yêu cầu), vòng 2 chặn vì thiếu FR-03 (agent thêm lại). Nay review có trường `question`: lo ngại về một yêu cầu của blueprint thành câu hỏi cho người dùng và build dừng ở "cần bạn quyết định" (giai đoạn review), không gửi cho agent sửa; builder được dặn không bỏ yêu cầu của blueprint để qua review/sandbox mà phải hỏi. Có test sandbox thật cho trường hợp này. Ghi chú, tóm tắt, phát hiện và câu hỏi của agent phải viết bằng tiếng Việt (trước đây có lúc lẫn tiếng Tây Ban Nha).
 - Màn tải đầu tiên của trang dự án không còn nháy nền tối: `index.html` tô sẵn nền sáng System 3 (`data-surface="system3-light"`) theo URL và theme đã lưu; System 3 giữ thuộc tính này theo theme và gỡ khi sang `/console`. Bảng màu System 3 đã ghi vào brand guide (mục "System 3 surface") và doc 07 (§8, §10 cập nhật theo 7 tab).
 - Pipeline một trang (28/10): tab đầu tiên của dự án là **Pipeline** — 6 bước xếp dọc, bước hiện tại tự mở với đúng phần cần thao tác (chế độ `compact` của chi tiết activity), các tab còn lại là "Chi tiết từng bước". Live (Olist, `gpt-6-luna`), toàn bộ trên một trang: tạo dự án → chấp nhận bản hiểu → phê duyệt và chạy → agent dừng hỏi về FR-03 (đúng quy tắc mới, bằng tiếng Việt) → tải blueprint đã làm rõ → "Phân tích lại với nguồn mới" → chấp nhận → build (review đạt) → chạy 4 phương án song song 2 → Verify → chọn Random Forest (gợi ý, ROC-AUC 0,770) → tải gói; manifest ghi `selectedVariant: random_forest`. Blueprint mẫu `review-risk-blueprint.md` tự mâu thuẫn ở FR-03 (cần độ trễ giao hàng nhưng cấm thông tin sau thời điểm đánh giá); đã làm rõ: chỉ tính khi ngày giao thực tế trước thời điểm tạo đánh giá. Sửa kèm: sau khi phân tích lại, các bước sau Bản hiểu hiện "Đang chờ" thay vì kết quả/lỗi của nền cũ; form thêm nguồn thẳng hàng; khung đầu trang Nguồn dữ liệu dùng nền phẳng của System 3; nhãn "Chờ bạn" cho phê duyệt và bàn giao.
+
+**Đợt 5 (28/10) — sửa theo [review 14](14-code-and-process-review-2026-10-28.md):** mỗi lỗi một nhánh riêng, chưa merge vào `dev`.
+
+- F1 `reproduce.sh` trong gói bàn giao không còn mount cả `/`: chỉ thấy runtime, code, `data/agent` và thư mục output; xóa biến môi trường; không thấy home và `data/holdout`. F5 bộ chấm: CSV có cột thừa là `invalid_predictions` của riêng phương án đó, JSON số liệu tham khảo hỏng chỉ là cảnh báo; các phương án khác vẫn được chấm (nhánh `claude/fervent-pare-d71301`).
+- F3 Claude provider không tự gửi lại prompt sau khi lượt trước đã chuyển công cụ/nội dung cho caller; chỉ thử lại lỗi trước khi có sự kiện nào (nhánh `claude/interesting-kirch-00d4e2`).
+- F2 Docker image có workspace `@anvil/system3`; image chưa hỗ trợ sandbox ML. F4 script build binary khôi phục đúng nội dung file hằng số thay vì `git checkout` (nhánh `claude/kind-panini-d59aa3`).
+- Không làm: chặn cứng review hoặc bắt chấp nhận ngoại lệ gắn hash build (giữ quyết định đợt 2: người dùng thấy lỗi chặn và tự quyết định).
