@@ -940,6 +940,45 @@ function classifyAndEnrichError(
   return { enrichedError, errorClass, shouldRetry };
 }
 
+/**
+ * Thrown when a retryable subprocess failure happens after the attempt already
+ * streamed chunks that may reflect side effects (tool calls, tool results,
+ * subagent tasks, model output). Re-sending the prompt could re-run tools, so
+ * the provider surfaces the failure and lets the caller resume deliberately
+ * from `sessionId` (when the SDK reported one).
+ */
+export class ClaudeQueryInterruptedError extends Error {
+  readonly sessionId: string | undefined;
+
+  constructor(message: string, sessionId: string | undefined, cause: Error) {
+    super(message);
+    this.name = 'ClaudeQueryInterruptedError';
+    this.sessionId = sessionId;
+    this.cause = cause;
+  }
+}
+
+/**
+ * Chunks that carry no model work and therefore keep an attempt safe to replay.
+ * Everything else (assistant text, tool calls/results, tasks, hooks, results)
+ * means the attempt progressed far enough that a re-send could repeat effects.
+ */
+function isReplaySafeChunk(chunk: MessageChunk): boolean {
+  return chunk.type === 'system' || chunk.type === 'rate_limit';
+}
+
+/** Pass SDK events through, reporting the session id carried by SDK messages. */
+async function* captureSessionId(
+  events: AsyncGenerator,
+  onSessionId: (sessionId: string) => void
+): AsyncGenerator {
+  for await (const msg of events) {
+    const sessionId = (msg as { session_id?: unknown }).session_id;
+    if (typeof sessionId === 'string' && sessionId) onSessionId(sessionId);
+    yield msg;
+  }
+}
+
 // ─── Claude Provider ───────────────────────────────────────────────────────
 
 /**
@@ -1084,6 +1123,11 @@ export class ClaudeProvider implements IAgentProvider {
         getLog().debug({ cwd, attempt }, 'starting_new_session');
       }
 
+      // Per-attempt replay guard: once a non-replay-safe chunk reached the
+      // caller, a retry could re-run tools with side effects.
+      let replayUnsafe = false;
+      let attemptSessionId: string | undefined;
+
       try {
         // 4. Run query with first-event timeout protection
         const rawEvents = query({ prompt, options });
@@ -1098,10 +1142,19 @@ export class ClaudeProvider implements IAgentProvider {
         // Claude resumes-or-errors: an invalid resume id throws (and is
         // retried/surfaced), so reaching the result stream means the prior
         // session was restored. Hence `true` whenever a resume was requested.
-        yield* withResumedOutcome(
-          streamClaudeMessages(events, toolResultQueue),
+        const chunks = withResumedOutcome(
+          streamClaudeMessages(
+            captureSessionId(events, id => {
+              attemptSessionId = id;
+            }),
+            toolResultQueue
+          ),
           resumedOutcome(resumeSessionId, true)
         );
+        for await (const chunk of chunks) {
+          if (!isReplaySafeChunk(chunk)) replayUnsafe = true;
+          yield chunk;
+        }
         return;
       } catch (error) {
         const err = error as Error;
@@ -1118,9 +1171,26 @@ export class ClaudeProvider implements IAgentProvider {
             errorClass,
             attempt,
             maxRetries: MAX_SUBPROCESS_RETRIES,
+            replayUnsafe,
+            sessionId: attemptSessionId,
           },
           'query_error'
         );
+
+        if (shouldRetry && replayUnsafe) {
+          getLog().warn(
+            { attempt, errorClass, sessionId: attemptSessionId },
+            'claude.retry_skipped_after_side_effects'
+          );
+          const resumeHint = attemptSessionId
+            ? `; resume session ${attemptSessionId} to continue`
+            : '';
+          throw new ClaudeQueryInterruptedError(
+            `${enrichedError.message} — not retried because tool calls or output were already streamed${resumeHint}`,
+            attemptSessionId,
+            enrichedError
+          );
+        }
 
         if (!shouldRetry || attempt >= MAX_SUBPROCESS_RETRIES) {
           throw enrichedError;
