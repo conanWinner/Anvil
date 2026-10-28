@@ -1536,6 +1536,97 @@ describe('sendQuery decomposition behaviors', () => {
     expect(err.message).toContain('diagnostic: something broke');
   }, 5_000);
 
+  test('does not retry a crash after a tool_use was streamed', async () => {
+    mockQuery.mockImplementation(async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 'sess-side-effect' };
+      yield {
+        type: 'assistant',
+        session_id: 'sess-side-effect',
+        message: {
+          content: [{ type: 'tool_use', id: 'tu-1', name: 'Bash', input: { command: 'touch x' } }],
+        },
+      };
+      throw new Error('process exited with code 1');
+    });
+
+    const chunks: unknown[] = [];
+    const consumeGenerator = async (): Promise<void> => {
+      for await (const chunk of client.sendQuery('test', '/workspace')) {
+        chunks.push(chunk);
+      }
+    };
+
+    const err = await consumeGenerator().catch((e: unknown) => e as Error);
+    expect(err).toBeInstanceOf(claudeModule.ClaudeQueryInterruptedError);
+    expect(err.message).toContain('Claude Code crash');
+    expect(err.message).toContain('sess-side-effect');
+    expect((err as claudeModule.ClaudeQueryInterruptedError).sessionId).toBe('sess-side-effect');
+    // The SDK must not be re-invoked: a replay would run the tool again.
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    expect(chunks.filter(c => (c as { type: string }).type === 'tool')).toHaveLength(1);
+  }, 5_000);
+
+  test('still retries a crash when only replay-safe chunks were streamed', async () => {
+    let callCount = 0;
+    mockQuery.mockImplementation(async function* () {
+      callCount++;
+      yield { type: 'system', subtype: 'init', session_id: `sess-${callCount}` };
+      if (callCount === 1) {
+        throw new Error('process exited with code 1');
+      }
+      yield {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: 'ok' }] },
+      };
+    });
+
+    const chunks = [];
+    for await (const chunk of client.sendQuery('test', '/workspace')) {
+      chunks.push(chunk);
+    }
+
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+    expect(chunks).toEqual([{ type: 'assistant', content: 'ok' }]);
+  }, 5_000);
+
+  test('still retries a crash before any event and surfaces the plain error', async () => {
+    mockQuery.mockImplementation(async function* () {
+      throw new Error('process exited with code 1');
+    });
+
+    const consumeGenerator = async (): Promise<void> => {
+      for await (const _ of client.sendQuery('test', '/workspace')) {
+        // consume
+      }
+    };
+
+    const err = await consumeGenerator().catch((e: unknown) => e as Error);
+    expect(err).not.toBeInstanceOf(claudeModule.ClaudeQueryInterruptedError);
+    expect(err.message).toContain('Claude Code crash');
+    expect(mockQuery).toHaveBeenCalledTimes(4);
+  }, 5_000);
+
+  test('auth error after a tool_use stays a plain non-retried auth error', async () => {
+    mockQuery.mockImplementation(async function* () {
+      yield {
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', id: 'tu-1', name: 'Read', input: {} }] },
+      };
+      throw new Error('unauthorized');
+    });
+
+    const consumeGenerator = async (): Promise<void> => {
+      for await (const _ of client.sendQuery('test', '/workspace')) {
+        // consume
+      }
+    };
+
+    const err = await consumeGenerator().catch((e: unknown) => e as Error);
+    expect(err).not.toBeInstanceOf(claudeModule.ClaudeQueryInterruptedError);
+    expect(err.message).toContain('Claude Code auth error');
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+  }, 5_000);
+
   test('PostToolUse hook handles circular reference without crashing', async () => {
     mockQuery.mockImplementation(async function* (args: {
       options: {
