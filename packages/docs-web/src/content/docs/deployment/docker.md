@@ -574,11 +574,15 @@ docker run --env-file .env -p 3000:3000 anvil
 - **Runtime**: Bun 1.2 (runs TypeScript directly, no compile step)
 - **System deps**: git, curl, gh (GitHub CLI), postgresql-client, Chromium
 - **Browser tooling**: [agent-browser](https://github.com/vercel-labs/agent-browser) (Vercel Labs) — enables E2E testing workflows via CDP. Uses system Chromium (`AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium`)
-- **App**: All 10 workspace packages (source), pre-built web UI
+- **App**: The 10 server-side workspace packages (source, including `system3` and its `runtime/`), pre-built web UI
 - **User**: Non-root `appuser` (UID 1001) — required by Claude Code SDK
 - **Anvil dirs**: `/.anvil/workspaces`, `/.anvil/worktrees`
 
 The multi-stage build keeps the image lean — no devDependencies, test files, docs, or `.git/`.
+
+:::caution[System 3 experiment sandboxes are not supported in Docker yet]
+The image does not include `bwrap`, `systemd-run`, or the locked ML runtime (`uv` + `libgomp1`). The System 3 project lifecycle UI and API work, but running experiment variants or model-comparison candidates (TW-06) does not. Do not work around this with privileged mode or host mounts; run System 3 experiments on a Linux host install instead.
+:::
 
 ### Customizing the Image
 

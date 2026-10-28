@@ -21,6 +21,14 @@ OUTFILE="${OUTFILE:-}"
 
 echo "Building Anvil CLI v${VERSION} (commit: ${GIT_COMMIT})"
 
+# This script rewrites bundled-build.ts below; refuse to run on top of local
+# edits to it so nothing uncommitted can be lost.
+BUNDLED_BUILD_FILE="packages/paths/src/bundled-build.ts"
+if ! git diff --quiet -- "$BUNDLED_BUILD_FILE" || ! git diff --cached --quiet -- "$BUNDLED_BUILD_FILE"; then
+  echo "ERROR: ${BUNDLED_BUILD_FILE} has staged or unstaged changes. Commit or move them aside before building binaries — this script rewrites that file." >&2
+  exit 1
+fi
+
 # Regenerate bundled defaults from .anvil/{commands,workflows}/defaults/ so the
 # compiled binary always embeds the current on-disk contents. CI also runs
 # `bun run check:bundled` to catch committed drift.
@@ -30,8 +38,10 @@ bun run scripts/generate-bundled-defaults.ts
 # Update build-time constants in source before compiling.
 # The file is restored via an EXIT trap so the dev tree is never left dirty,
 # even if `bun build --compile` fails mid-way. See GitHub issue #979.
-BUNDLED_BUILD_FILE="packages/paths/src/bundled-build.ts"
-trap 'echo "Restoring ${BUNDLED_BUILD_FILE}..."; git checkout -- "${BUNDLED_BUILD_FILE}" || echo "WARNING: failed to restore ${BUNDLED_BUILD_FILE} — working tree may be dirty" >&2' EXIT
+# Restore from a byte-exact backup, never via git checkout/reset.
+BUNDLED_BUILD_BACKUP="$(mktemp)"
+cp -p "$BUNDLED_BUILD_FILE" "$BUNDLED_BUILD_BACKUP"
+trap 'echo "Restoring ${BUNDLED_BUILD_FILE}..."; if cp -p "$BUNDLED_BUILD_BACKUP" "$BUNDLED_BUILD_FILE"; then rm -f "$BUNDLED_BUILD_BACKUP"; else echo "WARNING: failed to restore ${BUNDLED_BUILD_FILE} — original kept at ${BUNDLED_BUILD_BACKUP}" >&2; fi' EXIT
 
 echo "Updating build-time constants (version=${VERSION}, is_binary=true)..."
 cat > "$BUNDLED_BUILD_FILE" << EOF
