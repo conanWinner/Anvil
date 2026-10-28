@@ -641,6 +641,9 @@ function FlowPage(): ReactElement {
     phase.activities.some(activity => activity.id === suggestedActivityId)
   )?.id;
   const [openPhases, setOpenPhases] = useState<ReadonlySet<string>>(() => new Set());
+  // State, not the selection ref: picking the activity that is already selected (the current one)
+  // must still re-render it in full.
+  const [inspectedActivityId, setInspectedActivityId] = useState<string | null>(null);
   const currentStepRef = useRef<HTMLLIElement>(null);
   const shownPhaseId = useRef(currentPhaseId);
   useEffect(() => {
@@ -704,6 +707,7 @@ function FlowPage(): ReactElement {
                         if (phase.id === selected.id) {
                           selectionWasExplicit.current = false;
                           setSelectedActivityId(suggestedActivityId);
+                          setInspectedActivityId(null);
                         }
                       }}
                     >
@@ -743,7 +747,7 @@ function FlowPage(): ReactElement {
                       ) : null}
                       <LifecyclePhaseDetail
                         // An activity picked in the lifecycle rail is being inspected: show it in full.
-                        compact={!(selectionWasExplicit.current && phase.id === selected.id)}
+                        compact={inspectedActivityId !== activityId}
                         onResourceOpen={() => {
                           selectionWasExplicit.current = true;
                         }}
@@ -792,6 +796,7 @@ function FlowPage(): ReactElement {
                         onClick={() => {
                           selectionWasExplicit.current = true;
                           setSelectedActivityId(activity.id);
+                          setInspectedActivityId(activity.id);
                         }}
                       >
                         <span>{activity.id}</span>
