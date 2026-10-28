@@ -185,16 +185,48 @@ async function materializeSource(
   return source;
 }
 
-const REPRODUCE_SH = `#!/bin/sh
-# Re-run one experiment variant offline with the locked runtime (see REPRODUCING.md).
+/**
+ * Mirrors the `experiment` profile of `experiment-sandbox.ts`: variant code sees only `/usr`, the
+ * locked venv, the code (read-only), the data it saw during the run (read-only) and one output
+ * directory. No home directory, no `data/holdout`, no host environment, no network.
+ */
+export const REPRODUCE_SH = `#!/bin/sh
+# Re-run one experiment variant offline in a sandbox like Anvil's (see REPRODUCING.md).
 # Usage: sh reproduce.sh <variant-id> <python-of-locked-venv>
 set -eu
-variant="$1"; python="$2"
+fail() { echo "reproduce.sh: $*" >&2; exit 1; }
+[ "$#" -eq 2 ] || fail "usage: sh reproduce.sh <variant-id> <python-of-locked-venv>"
+variant="$1"
+command -v bwrap >/dev/null 2>&1 || fail "bubblewrap (bwrap) is required; variant code is never run unsandboxed"
 here=$(cd "$(dirname "$0")" && pwd)
+[ -d "$here/code" ] && [ -d "$here/data/agent" ] || fail "run from an unpacked delivery package (code/ and data/agent/ missing)"
+venv=$(cd "$(dirname "$2")/.." && pwd) || fail "python path $2 is not inside a venv"
+python="$venv/bin/$(basename "$2")"
+[ -x "$python" ] || fail "$python is not executable"
+# A venv links to its base interpreter; mount that read-only too when it lives outside /usr.
+base=$("$python" -I -c 'import sys; print(sys.base_prefix)') || fail "could not start $python"
+set -- --ro-bind "$venv" "$venv"
+case "$base" in /usr | /usr/*) ;; *) set -- "$@" --ro-bind "$base" "$base" ;; esac
 out=$(mktemp -d)
-bwrap --die-with-parent --unshare-all --ro-bind / / \\
-  --ro-bind "$here/code" /work/project --ro-bind "$here/data/agent" /work/data \\
-  --bind "$out" /work/out --chdir /work/project \\
+mkdir -p "$out/predictions" "$out/reported"
+limits=""
+if command -v systemd-run >/dev/null 2>&1 && systemd-run --user --scope --quiet true >/dev/null 2>&1; then
+  limits="systemd-run --user --scope --quiet -p MemoryMax=2G -p MemorySwapMax=0 -p CPUQuota=200% -p TasksMax=64 --"
+else
+  echo "reproduce.sh: no systemd user manager; running without memory/CPU caps" >&2
+fi
+# $limits is intentionally unquoted: it is empty or a fixed word list.
+# shellcheck disable=SC2086
+$limits timeout 1800 bwrap --die-with-parent --new-session --unshare-all --clearenv --cap-drop ALL \\
+  --ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib64 /lib64 \\
+  --proc /proc --dev /dev --tmpfs /tmp \\
+  "$@" \\
+  --tmpfs /work --ro-bind "$here/code" /work/project --ro-bind "$here/data/agent" /work/data \\
+  --bind "$out" /work/out --remount-ro / \\
+  --setenv PATH /usr/bin:/bin --setenv HOME /tmp --setenv LANG C.UTF-8 \\
+  --setenv MPLBACKEND Agg --setenv MPLCONFIGDIR /tmp/matplotlib --setenv PYTHONHASHSEED 0 \\
+  --setenv OMP_NUM_THREADS 2 --setenv OPENBLAS_NUM_THREADS 2 --setenv MKL_NUM_THREADS 2 \\
+  --setenv NUMBA_CACHE_DIR /tmp/numba --chdir /work/project \\
   "$python" -I -B train_variant.py --variant "$variant"
 echo "$out/predictions/$variant.csv"
 `;
@@ -208,6 +240,11 @@ predictions, Anvil's evaluation, the review report and the build log.
 
 1. Create the runtime: \`uv venv --python python3.12 venv && uv pip sync --python venv/bin/python --require-hashes runtime/requirements-ml.lock\`.
 2. Re-run a variant: \`sh reproduce.sh <variant-id> $(pwd)/venv/bin/python\` (Linux with bubblewrap; no network, no provider call).
+   The script refuses to run without \`bwrap\`. Like Anvil's own sandbox, variant code sees only \`/usr\`,
+   the venv (and its base Python) read-only, \`code/\` at /work/project and \`data/agent/\` at /work/data
+   read-only, and a fresh output directory at /work/out. Your home directory, \`data/holdout/\` and your
+   environment variables are not visible. The run is capped at 30 minutes, and at 2 GB RAM / 2 CPUs when a
+   systemd user manager is available (otherwise it warns and runs uncapped).
 3. Compare the new predictions with \`results/predictions/<variant-id>.csv\`; official metrics are in \`results/evaluation.json\`.
 
 The modeling table can be rebuilt from the original raw files with \`code/prepare_data.py\` (raw data mounted at /work/data, output in /work/out).

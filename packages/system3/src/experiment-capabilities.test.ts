@@ -1,9 +1,14 @@
 import { expect, test } from 'bun:test';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { executeExperiment, type ExperimentCapabilityPort } from './experiment-capabilities';
+import {
+  executeExperiment,
+  REPRODUCE_SH,
+  type ExperimentCapabilityPort,
+} from './experiment-capabilities';
+import { resolveMlRuntime } from './ml-runtime';
 import type { ExperimentPlan } from './experiment-plan';
 import type { PinnedUnderstandingSource } from './understanding';
 
@@ -224,4 +229,67 @@ sandboxTest(
     ).rejects.toThrow('outside the approved plan');
   },
   600_000
+);
+
+test('reproduce.sh sandboxes variant code instead of exposing the host', () => {
+  expect(REPRODUCE_SH).not.toMatch(/--(ro-)?bind \/ \//u);
+  expect(REPRODUCE_SH).toContain('--clearenv');
+  expect(REPRODUCE_SH).toContain('--unshare-all');
+  expect(REPRODUCE_SH).not.toContain('data/holdout');
+  expect(REPRODUCE_SH).toContain('--ro-bind "$here/data/agent" /work/data');
+});
+
+sandboxTest(
+  'reproduce.sh hides held-out labels, the host filesystem and the environment',
+  async () => {
+    const runtime = await resolveMlRuntime();
+    const root = await mkdtemp(join(tmpdir(), 'anvil-reproduce-'));
+    const pkg = join(root, 'package');
+    const outside = join(root, 'outside-secret.txt');
+    await Promise.all([
+      mkdir(join(pkg, 'code'), { recursive: true }),
+      mkdir(join(pkg, 'data', 'agent'), { recursive: true }),
+      mkdir(join(pkg, 'data', 'holdout'), { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(join(pkg, 'reproduce.sh'), REPRODUCE_SH),
+      writeFile(outside, 'sentinel\n'),
+      writeFile(join(pkg, 'data', 'holdout', 'test_labels.csv'), 'id,target\n'),
+      writeFile(join(pkg, 'data', 'agent', 'train.csv'), 'id\n'),
+      writeFile(
+        join(pkg, 'code', 'train_variant.py'),
+        `import json, os, sys
+from pathlib import Path
+probes = {
+    'outside': ${JSON.stringify(outside)},
+    'holdout': ${JSON.stringify(join(pkg, 'data', 'holdout', 'test_labels.csv'))},
+    'home': ${JSON.stringify(join(process.env.HOME ?? '/root', '.bashrc'))},
+    'data': '/work/data/train.csv',
+}
+seen = {name: Path(path).exists() for name, path in probes.items()}
+seen['secret_env'] = 'ANVIL_REPRODUCE_SECRET' in os.environ
+Path('/work/out/predictions', sys.argv[2] + '.csv').write_text(json.dumps(seen))
+`
+      ),
+    ]);
+    const child = Bun.spawn(['sh', join(pkg, 'reproduce.sh'), 'probe', runtime.python], {
+      env: { ...process.env, ANVIL_REPRODUCE_SECRET: 'x' },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    expect({ code, stderr }).toMatchObject({ code: 0 });
+    expect(JSON.parse(await readFile(stdout.trim(), 'utf8'))).toEqual({
+      outside: false,
+      holdout: false,
+      home: false,
+      data: true,
+      secret_env: false,
+    });
+  },
+  120_000
 );
