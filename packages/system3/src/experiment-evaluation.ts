@@ -65,6 +65,8 @@ export const variantEvaluationSchema = z.discriminatedUnion('status', [
     metrics: metricValuesSchema,
     reportedTrainingMetrics: z.record(z.string(), z.unknown()),
     predictionsHash: z.string(),
+    /** Non-fatal problems, e.g. an unreadable reported-metrics file. */
+    warnings: z.array(z.string()).optional(),
   }),
   z.object({ status: z.literal('missing'), error: z.string() }),
   z.object({ status: z.literal('invalid_predictions'), error: z.string() }),

@@ -122,11 +122,19 @@ sandboxTest(
       writeFile(join(predictionsDir, 'inverted.csv'), inverted + '\n'),
       writeFile(join(predictionsDir, 'partial.csv'), perfect.split('\n').slice(0, 10).join('\n')),
       writeFile(join(reportedDir, 'oracle.json'), JSON.stringify({ cv_roc_auc: 0.99 })),
+      // Regression: an extra `target` column used to collide with the held-out labels in the merge.
+      writeFile(
+        join(predictionsDir, 'extra_target.csv'),
+        ['id,score,target', ...labels.map(([id, target]) => `${id},${target},0`)].join('\n') + '\n'
+      ),
+      // Regression: a corrupt reported file used to abort the evaluation of every variant.
+      writeFile(join(predictionsDir, 'corrupt_reported.csv'), perfect + '\n'),
+      writeFile(join(reportedDir, 'corrupt_reported.json'), '{not json'),
     ]);
 
     const evaluation = await evaluateExperimentPredictions({
       runtime,
-      variants: ['oracle', 'inverted', 'partial', 'absent'],
+      variants: ['oracle', 'inverted', 'partial', 'absent', 'extra_target', 'corrupt_reported'],
       holdoutDir: split.holdoutDir,
       predictionsDir,
       reportedDir,
@@ -145,6 +153,19 @@ sandboxTest(
     });
     expect(evaluation.variants.partial?.status).toBe('invalid_predictions');
     expect(evaluation.variants.absent?.status).toBe('missing');
+    expect(evaluation.variants.extra_target).toMatchObject({
+      status: 'verified',
+      metrics: { roc_auc: 1, accuracy: 1 },
+    });
+    const corrupt = evaluation.variants.corrupt_reported;
+    expect(corrupt).toMatchObject({
+      status: 'verified',
+      metrics: { roc_auc: 1 },
+      reportedTrainingMetrics: {},
+    });
+    expect(corrupt?.status === 'verified' ? corrupt.warnings?.[0] : undefined).toContain(
+      'unreadable reported metrics'
+    );
     expect(rankExperimentVariants({ protocol, evaluation }).suggested).toBe('oracle');
   },
   180_000

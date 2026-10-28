@@ -167,6 +167,9 @@ def evaluate_variant(variant: str, truth: pd.DataFrame) -> dict:
             'status': 'invalid_predictions',
             'error': 'Prediction ids must match the held-out test ids exactly once',
         }
+    # Only Anvil's columns are read; extra agent columns (even one named `target`) must not
+    # collide with the held-out labels in the merge.
+    predictions = predictions[[c for c in ('id', 'score', 'label') if c in predictions.columns]]
     merged = truth.merge(predictions, on='id', how='left')
     score = pd.to_numeric(merged['score'], errors='coerce').to_numpy(dtype=float)
     if np.isnan(score).any() or (score < 0).any() or (score > 1).any():
@@ -182,21 +185,37 @@ def evaluate_variant(variant: str, truth: pd.DataFrame) -> dict:
     # Agents only see training data, so their own numbers (e.g. cross-validation on train) are
     # informational. The held-out metrics above are the only verified ones.
     reported_path = DATA / 'reported' / f'{variant}.json'
-    reported = (
-        json.loads(reported_path.read_text(encoding='utf-8')) if reported_path.is_file() else {}
-    )
-    return {
+    reported: object = {}
+    warnings: list[str] = []
+    if reported_path.is_file():
+        try:
+            reported = json.loads(reported_path.read_text(encoding='utf-8'))
+        except (ValueError, UnicodeDecodeError) as error:
+            # Reported numbers are informational; a corrupt file must not cost the official metrics.
+            warnings.append(f'Ignored unreadable reported metrics: {error}')
+    result = {
         'status': 'verified',
         'metrics': computed,
         'reportedTrainingMetrics': reported if isinstance(reported, dict) else {},
         'predictionsHash': sha256(path),
     }
+    if warnings:
+        result['warnings'] = warnings
+    return result
 
 
 def evaluate() -> None:
     protocol = load_protocol()
     truth = pd.read_csv(DATA / 'holdout' / 'test_labels.csv', dtype={'id': str})
-    variants = {variant: evaluate_variant(variant, truth) for variant in protocol['variants']}
+    variants = {}
+    for variant in protocol['variants']:
+        try:
+            variants[variant] = evaluate_variant(variant, truth)
+        except Exception as error:  # noqa: BLE001 - one variant's bad input must not lose the others
+            variants[variant] = {
+                'status': 'invalid_predictions',
+                'error': f'Evaluation failed: {type(error).__name__}: {error}',
+            }
     result = {'testRows': int(len(truth)), 'variants': variants}
     (OUT / 'evaluation.json').write_text(json.dumps(result, indent=2) + '\n', encoding='utf-8')
     print(json.dumps({'variants': {name: value['status'] for name, value in variants.items()}}))
