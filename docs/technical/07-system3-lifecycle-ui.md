@@ -184,9 +184,14 @@ thay vì bị xóa.
 
 ## 8. Visual và motion
 
-- Dùng token brand Anvil trong `packages/web/src/index.css`; không tạo palette riêng trong feature.
-- Gradient xanh dương–cyan–teal chỉ dùng cho điểm nhấn nhận diện, progress và CTA quan trọng. Nội dung
-  dài vẫn dùng surface trung tính có độ tương phản cao.
+- System 3 có một surface riêng, chỉ trong `.system3-root` (đã ghi trong brand guide, mục "System 3
+  surface"): theme sáng nền ngà, tiêu đề/nhãn/số JetBrains Mono, nội dung Inter, màu nhấn xanh lá.
+  Token nằm trong `packages/web/src/features/system3/system3-theme.css` (`--s3-*`); theme tối giữ token
+  trong `system3.css`. Không hard-code màu ngoài các token này; thêm token mới thì cập nhật cả file
+  theme lẫn brand guide. Màu nền sáng được tô sẵn từ `index.html` (`data-surface="system3-light"`) để
+  trang không nháy nền tối trước khi chunk System 3 tải xong.
+- Màu nhấn chỉ dùng cho hành động chính, trạng thái đang chạy/đạt và điểm nhấn nhận diện. Nội dung dài
+  dùng surface trung tính có độ tương phản cao.
 - Chuyển động phải ngắn, có mục đích: phản hồi chọn activity, đổi phase, report mới và trạng thái đang
   chạy. Không dùng animation liên tục cho nội dung tĩnh.
 - Mọi animation và transition phải tắt hoặc rút xuống gần như tức thời trong
@@ -210,16 +215,29 @@ thay vì bị xóa.
 
 ## 10. Điều hướng cấp project
 
-Điểm vào `/` mở danh sách dự án; `/console` vẫn giữ cho công cụ runtime cũ. Đường sử dụng chính là
-**Workspace dự án** với một trạng thái, một hành động tiếp theo và kết quả model. Project Lifecycle
-vẫn đúng 6 phase/10 activity trong phần chi tiết. Các khu vực sau là lối phụ trong **Chi tiết khác**:
+Điểm vào `/` mở danh sách dự án; `/console` vẫn giữ cho công cụ runtime cũ. Trong một dự án, sidebar
+có **Pipeline** và 6 tab chi tiết theo thứ tự làm việc (nhóm "Chi tiết từng bước"); Project Lifecycle
+vẫn đúng 6 phase/10 activity trong **Chi tiết vòng đời** ở Pipeline:
 
-1. **Tổng quan** — trạng thái hiện tại và bước nên làm tiếp.
-2. **Vòng đời dự án** — 6 phase, 10 activity và resource xem tại chỗ.
-3. **Nguồn đầu vào** — Source Registry, OP-00 và OP-01.
-4. **Kết quả & Bằng chứng** — artifact và Evidence xuyên suốt project.
-5. **Quyết định & Phê duyệt** — Decision, Execution Plan và Approval Manifest.
-6. **Bàn giao** — yêu cầu bàn giao, manifest và package.
+1. **Pipeline** — nơi khởi chạy và theo dõi cả lượt: 6 bước xếp dọc (Nguồn dữ liệu → Bản hiểu → Kế
+   hoạch & duyệt → Lượt chạy → Kết quả → Bàn giao), mỗi bước có trạng thái, một dòng tóm tắt và
+   link **Chi tiết** sang tab của bước. Bước hiện tại tự mở và trang tự cuộn tới khi pipeline chuyển
+   bước; trong bước chỉ có phần cần thao tác (chấp nhận bản hiểu, phê duyệt và chạy, trace trực tiếp
+   và chọn cách chạy, bảng kết quả và chọn phương án, tải gói), không có danh sách đầu vào/kết quả
+   hay node kỹ thuật. Các bước khác mở tại chỗ khi bấm. Nguồn đổi thì có thông báo "Phân tích lại với
+   nguồn mới" ngay trên trang. Chi tiết vòng đời (chọn một activity để xem đầy đủ) và lịch sử/chạy lại
+   ở cuối trang.
+2. **Nguồn dữ liệu** — Source Registry, OP-00 và OP-01.
+3. **Bản hiểu** — TW-02: bản hiểu, câu hỏi cho người dùng và nút chấp nhận.
+4. **Kế hoạch & duyệt** — TW-03, OP-04, OP-05.
+5. **Lượt chạy** — TW-06: tiến trình (trace) theo giai đoạn, chọn phương án/cách chạy, và khối lỗi kèm
+   nút **Chạy lại** khi bước Xây dựng dừng.
+6. **Kết quả** — TW-07: bảng phương án, gợi ý theo metric chính, người dùng chọn.
+7. **Bàn giao** — OP-08/TW-09, phương án đã chọn và gói tải về.
+
+Nhãn trạng thái **Chờ bạn** dùng khi không có gì đang chạy và bước tiếp theo là của người dùng (chấp
+nhận bản hiểu, chọn cách chạy). Đổi tab không tải lại trang khi dự án đã có trong store. **Quyết định &
+Phê duyệt** và **Chi tiết kỹ thuật** nằm trong **Chi tiết khác**.
 
 Các URL cũ vẫn hoạt động để giữ bookmark và liên kết hiện có. Technical Console được đặt trong
 **Chi tiết khác** và đổi nhãn thành **Chi tiết kỹ thuật**. Nó phục vụ Workflow Run, node, event, log

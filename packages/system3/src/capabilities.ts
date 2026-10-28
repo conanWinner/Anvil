@@ -40,6 +40,7 @@ import {
 import { deriveExperimentPlan, hashExperimentPlan } from './experiment-plan';
 import { resolveMlRuntime } from './ml-runtime';
 import { executeExperiment, verifyExperiment } from './experiment-capabilities';
+import type { ExperimentProgressEvent } from './experiment-progress';
 
 function descriptor<const T extends string>(
   id: T,
@@ -166,6 +167,8 @@ export interface System3CapabilitySourcePort {
     signal: AbortSignal;
   }): Promise<unknown>;
   readArtifact(projectId: string, storageKey: string): Promise<Uint8Array>;
+  /** Live experiment trace sink; see `ExperimentCapabilityPort.recordProgress`. */
+  recordProgress?(runId: string, event: ExperimentProgressEvent): void;
 }
 
 type CapabilityHandler = (
@@ -646,10 +649,12 @@ export class System3CapabilityRegistry {
       const readArtifact = this.sourcePort?.readArtifact.bind(this.sourcePort);
       if (!readSourceVersion || !generateStructured || !readArtifact)
         throw new Error('Experiment execution needs pinned source reads and model access');
+      const recordProgress = this.sourcePort?.recordProgress?.bind(this.sourcePort);
       const executed = await executeExperiment(input, context, {
         readSourceVersion,
         generateStructured,
         readArtifact,
+        ...(recordProgress ? { recordProgress } : {}),
       });
       // Archive the self-contained package exactly like the baseline flow does.
       const archive = await baselineCapabilityHandlers['system3.baseline-artifact-packager'](

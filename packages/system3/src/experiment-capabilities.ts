@@ -18,6 +18,7 @@ import {
   type ExperimentEvaluation,
 } from './experiment-evaluation';
 import { experimentPlanSchema, hashExperimentPlan } from './experiment-plan';
+import { ExperimentProgress, type ExperimentProgressEvent } from './experiment-progress';
 import { reviewResponseSchema } from './experiment-builder';
 import { runExperimentVariants, type CarriedVariantResults } from './experiment-runner';
 import { experimentHostSlots } from './experiment-sandbox';
@@ -29,6 +30,13 @@ import type { PinnedUnderstandingSource } from './understanding';
  * Workflow actions for experiment mode (plan 13): TW-06 build + run + package and TW-07
  * independent re-scoring. Inputs are pinned by the approved plan; nothing reads "latest" sources.
  */
+
+/** Vietnamese names of the build stages, as the run trace shows them. */
+const BUILD_STAGE_LABELS = {
+  prepare: 'chuẩn bị dữ liệu',
+  variants: 'code phương án',
+  review: 'review code',
+} as const;
 
 export interface ExperimentCapabilityContext {
   runId: string;
@@ -50,6 +58,11 @@ export interface ExperimentCapabilityPort {
     signal: AbortSignal;
   }): Promise<unknown>;
   readArtifact(projectId: string, storageKey: string): Promise<Uint8Array>;
+  /**
+   * Stores one trace event for the workflow run as it happens. Must not throw: the trace is for
+   * people watching the run, and a failed write must not fail the experiment.
+   */
+  recordProgress?(runId: string, event: ExperimentProgressEvent): void;
 }
 
 const pinnedSourceSchema = z.object({
@@ -291,7 +304,8 @@ async function buildStage(
   input: ExecuteInput,
   root: string,
   context: ExperimentCapabilityContext,
-  port: ExperimentCapabilityPort
+  port: ExperimentCapabilityPort,
+  progress: ExperimentProgress
 ): Promise<BuiltExperiment> {
   const rawDir = join(root, 'raw');
   await mkdir(rawDir, { recursive: true });
@@ -322,14 +336,17 @@ async function buildStage(
     maxReviewRounds: input.config.maxReviewRounds,
     reportUnresolvedReview: input.run?.stage === 'build',
     signal: context.signal,
+    progress,
   });
   await writeJson(join(root, 'build.json'), build);
   if (build.status === 'needs_decision')
     throw new Error(
-      `Cần bạn quyết định trước khi tiếp tục (${build.stage}): ${build.question.slice(0, 2_000)}`
+      `Cần bạn quyết định trước khi tiếp tục (bước ${BUILD_STAGE_LABELS[build.stage]}): ${build.question.slice(0, 2_000)}`
     );
   if (build.status !== 'ready')
-    throw new Error(`Experiment build stopped at ${build.stage}: ${build.reason.slice(0, 2_000)}`);
+    throw new Error(
+      `Agent đã dùng hết số vòng sửa ở bước ${BUILD_STAGE_LABELS[build.stage]} mà code vẫn lỗi. Lỗi cuối:\n${build.reason.slice(0, 2_000)}`
+    );
   return {
     codeDir,
     agentDataDir: build.split.agentDataDir,
@@ -373,7 +390,8 @@ async function runStage(
     carryOver: CarriedVariantResults | null;
   },
   root: string,
-  context: ExperimentCapabilityContext
+  context: ExperimentCapabilityContext,
+  progress: ExperimentProgress
 ): Promise<ExecuteOutput> {
   const protocol = input.plan.protocol;
   if (protocol === null) throw new Error('Approved experiment plan has no evaluation protocol');
@@ -391,6 +409,7 @@ async function runStage(
     parallelism: options.parallelism,
     ...(options.carryOver ? { carryOver: options.carryOver } : {}),
     signal: context.signal,
+    progress,
   });
   // Report variants in the approved order, whether run now or carried over.
   const ran = new Set(run.runs.map(item => item.variant));
@@ -491,6 +510,14 @@ export async function executeExperiment(
   const root = join(context.artifactsDir, 'experiment');
   await mkdir(root, { recursive: true });
   const stage = input.run;
+  const record = port.recordProgress?.bind(port);
+  const progress = new ExperimentProgress(
+    record
+      ? (event): void => {
+          record(context.runId, event);
+        }
+      : undefined
+  );
 
   if (stage?.stage === 'run') {
     const outside = stage.variantIds.filter(id => !input.variantIds.includes(id));
@@ -527,18 +554,20 @@ export async function executeExperiment(
       built,
       { variantIds: stage.variantIds, parallelism: stage.parallelism, carryOver },
       root,
-      context
+      context,
+      progress
     );
   }
 
-  const built = await buildStage(input, root, context, port);
+  const built = await buildStage(input, root, context, port, progress);
   if (stage?.stage !== 'build')
     return runStage(
       input,
       built,
       { variantIds: input.variantIds, parallelism: 1, carryOver: null },
       root,
-      context
+      context,
+      progress
     );
 
   const packageDir = join(root, 'package', 'generated_project');

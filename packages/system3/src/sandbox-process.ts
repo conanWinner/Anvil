@@ -8,6 +8,12 @@ export const SYSTEMD_RUN = '/usr/bin/systemd-run';
 export const SYSTEMCTL = '/usr/bin/systemctl';
 export const BWRAP = '/usr/bin/bwrap';
 const STOP_DISCOVERY_MS = 2_000;
+/**
+ * A root server uses the system manager; any other user uses its own user manager. Asking the
+ * system manager as a normal user goes through polkit and runs the sandbox as root, whose mapped
+ * uid then cannot write the output directory the server owns.
+ */
+const MANAGER_SCOPE: readonly string[] = process.getuid?.() === 0 ? [] : ['--user'];
 
 export interface SandboxLimits {
   memoryMax: string;
@@ -34,12 +40,19 @@ export async function executable(path: string): Promise<void> {
 }
 
 export async function assertSystemdManager(): Promise<void> {
-  const process = Bun.spawn([SYSTEMCTL, 'show', '--property=Version', '--value'], {
-    stdout: 'ignore',
-    stderr: 'ignore',
-  });
-  if ((await process.exited) !== 0)
-    throw new Error('Python sandbox requires an available systemd system manager');
+  const manager = Bun.spawn(
+    [SYSTEMCTL, ...MANAGER_SCOPE, 'show', '--property=Version', '--value'],
+    {
+      stdout: 'ignore',
+      stderr: 'ignore',
+    }
+  );
+  if ((await manager.exited) !== 0)
+    throw new Error(
+      MANAGER_SCOPE.length === 0
+        ? 'Python sandbox requires an available systemd system manager'
+        : 'Python sandbox requires an available systemd user manager for the server user'
+    );
 }
 
 export function within(root: string, path: string): boolean {
@@ -95,10 +108,13 @@ async function captureCapped(
 async function stopUnit(unit: string, isRunning: () => boolean): Promise<void> {
   const deadline = Date.now() + STOP_DISCOVERY_MS;
   while (isRunning() && Date.now() < deadline) {
-    const status = Bun.spawn([SYSTEMCTL, 'show', '--property=LoadState', '--value', unit], {
-      stdout: 'pipe',
-      stderr: 'ignore',
-    });
+    const status = Bun.spawn(
+      [SYSTEMCTL, ...MANAGER_SCOPE, 'show', '--property=LoadState', '--value', unit],
+      {
+        stdout: 'pipe',
+        stderr: 'ignore',
+      }
+    );
     const [state, statusCode] = await Promise.all([
       new Response(status.stdout).text(),
       status.exited,
@@ -106,7 +122,10 @@ async function stopUnit(unit: string, isRunning: () => boolean): Promise<void> {
     if (statusCode !== 0) throw new Error('Could not inspect Python sandbox transient unit');
     if (!isRunning()) return;
     if (state.trim() !== 'not-found') {
-      const stop = Bun.spawn([SYSTEMCTL, 'stop', unit], { stdout: 'ignore', stderr: 'ignore' });
+      const stop = Bun.spawn([SYSTEMCTL, ...MANAGER_SCOPE, 'stop', unit], {
+        stdout: 'ignore',
+        stderr: 'ignore',
+      });
       if ((await stop.exited) !== 0 && isRunning())
         throw new Error('Could not stop Python sandbox transient unit');
       return;
@@ -136,6 +155,7 @@ export async function runSandboxProcess(input: {
   const unit = `anvil-python-${randomUUID()}.service`;
   const command = [
     SYSTEMD_RUN,
+    ...MANAGER_SCOPE,
     '--quiet',
     '--wait',
     '--pipe',

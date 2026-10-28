@@ -628,21 +628,47 @@ describe('TW-02 structural understanding', () => {
     expect(observedRss - rssBefore).toBeLessThan(256 * 1024 * 1024);
   });
 
-  test('fails instead of approximating unlabelled high-cardinality data', async () => {
-    const values = Array.from(
-      { length: SYSTEM3_CSV_LIMITS.maxDistinctValuesPerColumn + 1 },
-      (_, index) => `value-${index.toString()}`
+  test('labels a high-cardinality column as a lower bound instead of failing', async () => {
+    const rows = Array.from(
+      { length: SYSTEM3_CSV_LIMITS.maxDistinctValuesPerColumn + 10 },
+      (_, index) => `order-${index.toString()},${index % 2 === 0 ? 'yes' : 'no'}`
     );
-    await expect(
-      profileDatasetCsvStream({
-        filename: 'high-cardinality.csv',
-        sourceVersionId: 'dataset-high-cardinality',
-        chunks: (async function* (): AsyncGenerator<Uint8Array> {
-          yield new TextEncoder().encode(`value\n${values.join('\n')}\n`);
-        })(),
-        targetColumn: null,
-      })
-    ).rejects.toThrow('quá nhiều giá trị phân biệt');
+    const profile = await profileDatasetCsvStream({
+      filename: 'high-cardinality.csv',
+      sourceVersionId: 'dataset-high-cardinality',
+      chunks: (async function* (): AsyncGenerator<Uint8Array> {
+        yield new TextEncoder().encode(`order_id,label\n${rows.join('\n')}\n`);
+      })(),
+      targetColumn: 'label',
+    });
+    const [orderId, label] = profile.columns;
+    expect(profile.rowCount).toBe(rows.length);
+    expect(orderId?.distinctCountCapped).toBe(true);
+    expect(orderId?.distinctCount).toBe(SYSTEM3_CSV_LIMITS.maxDistinctValuesPerColumn);
+    expect(label).toMatchObject({ distinctCount: 2, distinctCountCapped: false });
+    expect(profile.targetDistribution).toEqual({ yes: 25_005, no: 25_005 });
+  });
+
+  test('caps columns once the total tracked distinct values reach the limit', async () => {
+    const perColumn = SYSTEM3_CSV_LIMITS.maxDistinctValuesPerColumn - 1;
+    const columnCount = Math.ceil(SYSTEM3_CSV_LIMITS.maxTrackedDistinctValues / perColumn) + 1;
+    const header = Array.from({ length: columnCount }, (_, column) => `c${column.toString()}`);
+    const lines = Array.from({ length: perColumn }, (_, row) =>
+      header.map(name => `${name}-${row.toString()}`).join(',')
+    );
+    const profile = await profileDatasetCsvStream({
+      filename: 'wide.csv',
+      sourceVersionId: 'dataset-wide',
+      chunks: (async function* (): AsyncGenerator<Uint8Array> {
+        yield new TextEncoder().encode(`${header.join(',')}\n${lines.join('\n')}\n`);
+      })(),
+      targetColumn: null,
+    });
+    const tracked = profile.columns
+      .filter(column => column.distinctCountCapped !== true)
+      .reduce((total, column) => total + column.distinctCount, 0);
+    expect(profile.columns.some(column => column.distinctCountCapped === true)).toBe(true);
+    expect(tracked).toBeLessThanOrEqual(SYSTEM3_CSV_LIMITS.maxTrackedDistinctValues);
   });
 
   test('uses an explicitly declared target column without guessing a default name', async () => {

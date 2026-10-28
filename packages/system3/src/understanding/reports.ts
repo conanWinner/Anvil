@@ -104,7 +104,9 @@ export function createUnderstandingReports(input: {
             column.name,
             column.inferredType,
             String(column.missingCount),
-            String(column.distinctCount),
+            column.distinctCountCapped === true
+              ? `≥ ${String(column.distinctCount)}`
+              : String(column.distinctCount),
           ])
         ),
       ].join('\n'),

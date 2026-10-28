@@ -1,0 +1,905 @@
+/* --------------------------------------------------------------------------
+ * System 3 light theme (warm ivory, monospace headings, green accent) and the
+ * sidebar + run-trace layout. Loaded after system3.css; scoped to System 3 only.
+ * Dark mode keeps the tokens defined in system3.css.
+ * ----------------------------------------------------------------------- */
+
+.system3-root:not(.s3-dark) {
+  --s3-bg: #f6f4ef;
+  --s3-surface: #fbfaf7;
+  --s3-surface-muted: #f3f0e9;
+  --s3-surface-soft: #eef5f0;
+  --s3-line: #e4dfd4;
+  --s3-line-strong: #d9d3c6;
+  --s3-text: #2b2a27;
+  --s3-muted: #5f5a51;
+  --s3-subtle: #6b665d;
+  --s3-brand: #1d6b4f;
+  --s3-brand-secondary: #2f7d63;
+  --s3-primary: #1d6b4f;
+  --s3-success: #1d6b4f;
+  --s3-running: #1d6b4f;
+  --s3-warning: #a15c07;
+  --s3-error: #a3321f;
+  --s3-shadow-sm: none;
+  --s3-shadow-md: 0 1px 0 #e4dfd4;
+  --s3-shadow-brand: none;
+  background: var(--s3-bg);
+}
+
+.system3-root {
+  --s3-mono: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+/* Typography: monospace for structure (titles, labels, navigation, numbers), Inter for prose. */
+.system3-root h1,
+.system3-root h2,
+.system3-root h3,
+.system3-root .s3-kicker,
+.system3-root .s3-brand,
+.system3-root .s3-nav,
+.system3-root .s3-button,
+.system3-root .s3-status-badge,
+.system3-root th,
+.system3-root .s3-phase-tabs,
+.system3-root .s3t-stats,
+.system3-root .s3t-stage-head,
+.system3-root .s3t-step-row {
+  font-family: var(--s3-mono);
+}
+.system3-root h1,
+.system3-root h2 {
+  letter-spacing: -0.01em;
+}
+.system3-root .s3-kicker {
+  color: var(--s3-brand);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+/* Squarer surfaces with hairline borders. */
+.system3-root:not(.s3-dark) .s3-card,
+.system3-root:not(.s3-dark) .s3-activity-workspace,
+.system3-root:not(.s3-dark) .s3-minimal-workspace .s3-activity-workspace,
+.system3-root:not(.s3-dark) .s3-dialog {
+  border-color: var(--s3-line);
+  border-radius: 4px;
+  background: var(--s3-surface);
+  box-shadow: none;
+}
+
+/* Buttons: solid green primary, outlined secondary. */
+.system3-root:not(.s3-dark) .s3-button {
+  border-radius: 2px;
+  background: var(--s3-brand);
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  box-shadow: none;
+}
+.system3-root:not(.s3-dark) .s3-button:hover {
+  background: #154f3a;
+}
+.system3-root:not(.s3-dark) .s3-button:disabled {
+  background: #a9bdb3;
+}
+.system3-root:not(.s3-dark) .s3-button-secondary {
+  border: 1px solid var(--s3-line-strong);
+  background: #ffffff;
+  color: var(--s3-text);
+}
+.system3-root:not(.s3-dark) .s3-button-secondary:hover {
+  background: var(--s3-surface-muted);
+}
+.system3-root button:focus-visible,
+.system3-root a:focus-visible,
+.system3-root input:focus-visible,
+.system3-root select:focus-visible,
+.system3-root textarea:focus-visible {
+  outline: 2px solid var(--s3-brand);
+  outline-offset: 2px;
+}
+
+/* Status badges as small boxed uppercase labels. */
+.system3-root .s3-status-badge {
+  border: 1px solid currentColor;
+  border-radius: 2px;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* Top bar */
+.system3-root:not(.s3-dark) .s3-topbar {
+  height: 60px;
+  border-color: var(--s3-line);
+  background: var(--s3-surface);
+  backdrop-filter: none;
+}
+.system3-root:not(.s3-dark) .s3-brand-mark {
+  border: 1px solid var(--s3-line-strong);
+  border-radius: 2px;
+  background: #ffffff;
+  color: var(--s3-brand);
+  box-shadow: none;
+}
+.system3-root .s3-theme-button {
+  border-radius: 2px;
+}
+
+/* Sidebar layout ---------------------------------------------------------- */
+.system3-root .s3-shell {
+  display: grid;
+  grid-template-columns: minmax(200px, 240px) minmax(0, 1fr);
+  min-height: calc(100vh - 60px);
+}
+.system3-root .s3-nav.s3-side {
+  position: sticky;
+  top: 60px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  flex-wrap: nowrap;
+  gap: 4px;
+  width: auto;
+  height: calc(100vh - 60px);
+  overflow-y: auto;
+  padding: 18px 10px;
+  border-right: 1px solid var(--s3-line);
+  border-bottom: 0;
+  background: var(--s3-surface);
+  backdrop-filter: none;
+}
+.system3-root .s3-side .s3-project-back {
+  padding: 4px 10px;
+  color: var(--s3-muted);
+  font-size: 12px;
+  text-decoration: none;
+}
+.system3-root .s3-side .s3-project-back:hover {
+  color: var(--s3-brand);
+}
+.s3-side-project {
+  margin: 0 0 10px;
+  padding: 0 10px 12px;
+  border-bottom: 1px solid var(--s3-line);
+  overflow: hidden;
+  color: var(--s3-text);
+  font-size: 14px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.s3-side-tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.system3-root .s3-side .s3-side-tabs a {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  margin: 0;
+  padding: 8px 12px;
+  border-left: 2px solid transparent;
+  border-radius: 0;
+  color: var(--s3-muted);
+  font-size: 13px;
+  text-decoration: none;
+  transform: none;
+}
+.system3-root .s3-side .s3-side-tabs a:hover {
+  background: var(--s3-surface-muted);
+  color: var(--s3-text);
+  transform: none;
+}
+.system3-root .s3-side .s3-side-tabs a.s3-active {
+  border-left-color: var(--s3-brand);
+  background: color-mix(in oklch, var(--s3-brand), transparent 90%);
+  color: var(--s3-brand);
+  font-weight: 700;
+}
+.s3-side-label {
+  flex: 1 1 auto;
+}
+.s3-side-marker {
+  width: 7px;
+  height: 7px;
+  border-radius: 7px;
+}
+.s3-side-marker.running {
+  background: var(--s3-running);
+  animation: s3t-pulse 1.4s ease-in-out infinite;
+}
+.s3-side-marker.attention {
+  background: var(--s3-warning);
+}
+.s3-side-marker.done {
+  background: color-mix(in oklch, var(--s3-success), transparent 55%);
+}
+.system3-root .s3-side .s3-nav-secondary {
+  margin: auto 0 0;
+  padding: 12px 10px 0;
+  border-top: 1px solid var(--s3-line);
+}
+.system3-root .s3-side .s3-nav-secondary summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+.system3-root .s3-side .s3-nav-secondary > div a {
+  padding: 7px 8px;
+  color: var(--s3-muted);
+  font-size: 12px;
+}
+.system3-root .s3-shell > .s3-main {
+  max-width: none;
+  margin: 0;
+  padding: 24px clamp(16px, 3vw, 40px) 48px;
+}
+@media (max-width: 900px) {
+  .system3-root .s3-shell {
+    display: block;
+  }
+  .system3-root .s3-nav.s3-side {
+    position: static;
+    height: auto;
+    padding: 10px 12px;
+    border-right: 0;
+    border-bottom: 1px solid var(--s3-line);
+  }
+  .s3-side-project {
+    margin: 0;
+    padding: 0 10px 8px;
+    border-bottom: 0;
+  }
+  .s3-side-tabs {
+    flex-direction: row;
+    overflow-x: auto;
+  }
+  .system3-root .s3-side .s3-side-tabs a {
+    border-bottom: 2px solid transparent;
+    border-left: 0;
+    white-space: nowrap;
+  }
+  .system3-root .s3-side .s3-side-tabs a.s3-active {
+    border-bottom-color: var(--s3-brand);
+  }
+  .system3-root .s3-side .s3-nav-secondary {
+    margin-top: 8px;
+  }
+}
+
+/* Phase pages -------------------------------------------------------------- */
+.s3-phase-page {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 16px;
+}
+.s3-phase-page-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 20px 22px;
+  border: 1px solid var(--s3-line);
+  border-top: 2px solid var(--s3-brand);
+  background: var(--s3-surface);
+}
+.s3-phase-page-head h2 {
+  margin: 0;
+  font-size: 20px;
+}
+.s3-phase-page-head p:not(.s3-kicker) {
+  max-width: 80ch;
+  margin: 6px 0 0;
+  color: var(--s3-muted);
+  font-size: 14px;
+}
+.s3-phase-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.s3-phase-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 8px 14px;
+  border: 1px solid var(--s3-line);
+  background: var(--s3-surface);
+  color: var(--s3-muted);
+  cursor: pointer;
+  font-size: 12px;
+}
+.s3-phase-tabs button span {
+  color: var(--s3-subtle);
+  font-size: 11px;
+}
+.s3-phase-tabs button.selected {
+  border-color: var(--s3-brand);
+  background: color-mix(in oklch, var(--s3-brand), transparent 90%);
+  color: var(--s3-brand);
+}
+
+/* Run trace ------------------------------------------------------------------ */
+@keyframes s3t-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+@keyframes s3t-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.s3t {
+  border: 1px solid var(--s3-line);
+  background: var(--s3-surface);
+}
+.s3t-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px 22px;
+  border-bottom: 1px solid var(--s3-line);
+}
+.s3t-head h2 {
+  margin: 0;
+  font-size: 15px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.s3t-head p {
+  margin: 4px 0 0;
+  color: var(--s3-muted);
+  font-size: 13px;
+}
+.s3t-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border: 1px solid currentColor;
+  font-family: var(--s3-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.s3t-badge.running,
+.s3t-badge.passed {
+  color: var(--s3-success);
+}
+.s3t-badge.failed {
+  color: var(--s3-error);
+}
+.s3t-pulse {
+  width: 6px;
+  height: 6px;
+  background: currentColor;
+  animation: s3t-pulse 1.4s ease-in-out infinite;
+}
+.s3t-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 0;
+  margin: 0;
+  border-bottom: 1px solid var(--s3-line);
+}
+.s3t-stats > div {
+  padding: 14px 22px;
+  border-right: 1px solid var(--s3-line);
+}
+.s3t-stats > div:last-child {
+  border-right: 0;
+}
+.s3t-stats dt {
+  color: var(--s3-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.s3t-stats dd {
+  margin: 4px 0 0;
+  color: var(--s3-text);
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.s3t-stats dd small {
+  color: var(--s3-error);
+  font-size: 12px;
+}
+.s3t-question {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 12px 22px;
+  border-bottom: 1px solid var(--s3-line);
+  background: color-mix(in oklch, var(--s3-warning), transparent 90%);
+  color: var(--s3-warning);
+  font-size: 13px;
+  font-weight: 600;
+}
+.s3t-empty {
+  padding: 18px 22px;
+}
+.s3t-muted {
+  margin: 0;
+  color: var(--s3-muted);
+  font-size: 13px;
+}
+.s3t-stage {
+  border-bottom: 1px solid var(--s3-line);
+}
+.s3t-stage:last-child {
+  border-bottom: 0;
+}
+.s3t-stage-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  min-height: 48px;
+  padding: 12px 22px;
+  border: 0;
+  background: transparent;
+  color: var(--s3-text);
+  cursor: pointer;
+  text-align: left;
+}
+.s3t-stage-head:disabled {
+  cursor: default;
+}
+.s3t-stage-head strong {
+  flex: 1 1 auto;
+  font-size: 14px;
+}
+.s3t-stage-meta {
+  color: var(--s3-muted);
+  font-size: 12px;
+}
+.s3t-stage-index {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--s3-line-strong);
+  background: #ffffff;
+  color: var(--s3-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+.s3t-stage-index.passed {
+  border-color: color-mix(in oklch, var(--s3-success), transparent 60%);
+  background: color-mix(in oklch, var(--s3-success), transparent 88%);
+  color: var(--s3-success);
+}
+.s3t-stage-index.running {
+  border-color: var(--s3-running);
+  background: var(--s3-running);
+  color: #ffffff;
+}
+.s3t-stage-index.failed {
+  border-color: var(--s3-error);
+  color: var(--s3-error);
+}
+.s3t-steps {
+  margin: 0;
+  padding: 0 22px 14px 58px;
+  list-style: none;
+}
+.s3t-step {
+  border-left: 1px solid var(--s3-line-strong);
+}
+.s3t-step-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  width: 100%;
+  min-height: 44px;
+  padding: 8px 10px 8px 14px;
+  border: 0;
+  background: transparent;
+  color: var(--s3-text);
+  cursor: pointer;
+  text-align: left;
+}
+.s3t-step-row:hover,
+.s3t-step-row[aria-expanded='true'] {
+  background: var(--s3-surface-muted);
+}
+.s3t-step-title {
+  display: flex;
+  flex: 1 1 260px;
+  flex-direction: column;
+  gap: 1px;
+  font-size: 13px;
+}
+.s3t-step-title small {
+  color: var(--s3-muted);
+  font-size: 11px;
+}
+.s3t-step-status {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.s3t-step-status.running,
+.s3t-step-status.passed {
+  color: var(--s3-success);
+}
+.s3t-step-status.failed,
+.s3t-step-status.interrupted {
+  color: var(--s3-error);
+}
+.s3t-step.question .s3t-step-status {
+  color: var(--s3-warning);
+}
+.s3t-step-time {
+  width: 64px;
+  color: var(--s3-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.s3t-mark {
+  flex: none;
+}
+.s3t-mark.passed {
+  color: var(--s3-success);
+}
+.s3t-mark.failed {
+  color: var(--s3-error);
+}
+.s3t-mark.running {
+  color: var(--s3-running);
+}
+.s3t-mark.waiting {
+  color: var(--s3-line-strong);
+}
+.s3t-spin {
+  animation: s3t-spin 1s linear infinite;
+}
+.s3t-step-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 2px 0 12px 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--s3-line);
+  background: #ffffff;
+}
+.s3t-step-detail dl {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 24px;
+  margin: 0;
+  font-size: 12px;
+}
+.s3t-step-detail dt {
+  display: inline;
+  color: var(--s3-muted);
+  font-family: var(--s3-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.s3t-step-detail dd {
+  display: inline;
+  margin: 0 0 0 6px;
+  font-weight: 600;
+}
+.s3t-step-detail > div {
+  display: flex;
+}
+.s3t-log {
+  max-height: 360px;
+  margin: 0;
+  padding: 12px 14px;
+  overflow: auto;
+  border: 1px solid var(--s3-line);
+  background: var(--s3-surface-muted);
+  color: var(--s3-text);
+  font-family: var(--s3-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.s3-dark .s3t-step-detail,
+.s3-dark .s3t-stage-index {
+  background: var(--s3-surface-muted);
+}
+@media (max-width: 640px) {
+  .s3t-steps {
+    padding-left: 22px;
+  }
+  .s3t-stats > div {
+    border-right: 0;
+    border-bottom: 1px solid var(--s3-line);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .s3t-spin,
+  .s3t-pulse,
+  .s3-side-marker.running {
+    animation: none;
+  }
+}
+
+/* Failed build: why it stopped and the re-run, on the run page itself. */
+.s3-build-retry {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in oklch, var(--s3-error), var(--s3-surface) 70%);
+  background: color-mix(in oklch, var(--s3-error), var(--s3-surface) 94%);
+  color: var(--s3-error);
+}
+.s3-build-retry strong {
+  color: var(--s3-text);
+}
+.s3-build-retry pre {
+  margin: 8px 0 0;
+  max-height: 160px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--s3-mono);
+  font-size: 0.72rem;
+  color: var(--s3-text);
+}
+.s3-build-retry p {
+  margin: 8px 0 0;
+  color: var(--s3-muted);
+  font-size: 0.8rem;
+}
+.s3-build-retry p.s3-build-retry-error {
+  color: var(--s3-error);
+}
+@media (max-width: 640px) {
+  .s3-build-retry {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+  .s3-build-retry > .s3-button {
+    grid-column: 1 / -1;
+  }
+}
+
+/* Sidebar group label: the pipeline first, then each step's own detail tab. */
+.s3-side-heading {
+  margin: 12px 12px 4px;
+  color: var(--s3-subtle);
+  font-family: var(--s3-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+@media (max-width: 900px) {
+  .s3-side-heading {
+    display: none;
+  }
+}
+
+/* Pipeline: every step of a run on one page; the current step is open, others open on demand. */
+.s3-pipeline {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin: 16px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.s3-pipeline-step {
+  position: relative;
+  padding: 0 0 14px 40px;
+}
+/* The connecting line between step markers. */
+.s3-pipeline-step::before {
+  position: absolute;
+  top: 28px;
+  bottom: 0;
+  left: 13px;
+  width: 2px;
+  background: var(--s3-line);
+  content: '';
+}
+.s3-pipeline-step:last-child::before {
+  display: none;
+}
+.s3-pipeline-step.completed::before {
+  background: color-mix(in oklch, var(--s3-success), var(--s3-surface) 55%);
+}
+.s3-pipeline-marker {
+  position: absolute;
+  top: 2px;
+  left: 0;
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border: 2px solid var(--s3-line-strong);
+  background: var(--s3-surface);
+  color: var(--s3-muted);
+  font-family: var(--s3-mono);
+  font-size: 12px;
+  font-weight: 700;
+}
+.s3-pipeline-marker.completed {
+  border-color: var(--s3-success);
+  background: var(--s3-success);
+  color: var(--s3-surface);
+}
+.s3-pipeline-marker.active,
+.s3-pipeline-marker.ready {
+  border-color: var(--s3-brand);
+  color: var(--s3-brand);
+}
+.s3-pipeline-marker.blocked,
+.s3-pipeline-marker.stale {
+  border-color: var(--s3-error);
+  color: var(--s3-error);
+}
+.s3-pipeline-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  min-height: 32px;
+}
+.s3-pipeline-toggle {
+  display: grid;
+  flex: 1 1 280px;
+  gap: 2px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--s3-text);
+  text-align: left;
+  cursor: pointer;
+}
+.s3-pipeline-toggle:disabled {
+  cursor: default;
+}
+.s3-pipeline-toggle strong {
+  font-family: var(--s3-mono);
+  font-size: 15px;
+}
+.s3-pipeline-toggle span {
+  overflow: hidden;
+  color: var(--s3-muted);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.s3-pipeline-step.current .s3-pipeline-toggle span {
+  white-space: normal;
+}
+.s3-pipeline-toggle:focus-visible {
+  outline: 2px solid var(--s3-brand);
+  outline-offset: 3px;
+}
+.s3-pipeline-detail {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--s3-primary);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.s3-pipeline-step.waiting .s3-pipeline-toggle strong,
+.s3-pipeline-step.not_started .s3-pipeline-toggle strong {
+  color: var(--s3-muted);
+}
+.s3-pipeline-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+}
+.s3-pipeline-body > .s3-button {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Compact activity: only the step's action and its own content, inside a pipeline step. */
+.s3-activity-workspace.compact {
+  padding: 14px 16px;
+}
+.s3-activity-workspace.compact .s3-activity-workspace-header {
+  justify-content: flex-start;
+  margin: 0;
+}
+.s3-activity-workspace.compact
+  .s3-activity-workspace-header:has(.s3-activity-workspace-actions:empty) {
+  display: none;
+}
+@media (max-width: 640px) {
+  .s3-pipeline-step {
+    padding-left: 34px;
+  }
+  .s3-pipeline-marker {
+    width: 24px;
+    height: 24px;
+  }
+  .s3-pipeline-step::before {
+    left: 11px;
+    top: 24px;
+  }
+}
+
+/* Operation hero (Sources page): flat ivory card with the green accent rule, like the rest. */
+.system3-root:not(.s3-dark) .s3-op-hero {
+  border-color: var(--s3-line);
+  border-radius: 12px;
+  background: var(--s3-surface);
+  box-shadow: none;
+}
+.system3-root:not(.s3-dark) .s3-op-hero::before {
+  background: var(--s3-brand);
+}
+
+/* Scrollbars inside System 3 follow its light surface, not the console's dark track. */
+.system3-root:not(.s3-dark) ::-webkit-scrollbar-track {
+  background: var(--s3-surface-muted);
+}
+.system3-root:not(.s3-dark) ::-webkit-scrollbar-thumb {
+  background: var(--s3-line-strong);
+}
+
+/* Pipeline notice when a new source version makes the current understanding stale. */
+.s3-stale-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 14px 16px;
+  border: 1px solid color-mix(in oklch, var(--s3-warning), var(--s3-surface) 60%);
+  background: color-mix(in oklch, var(--s3-warning), var(--s3-surface) 93%);
+}
+.s3-stale-notice strong {
+  color: var(--s3-text);
+}
+.s3-stale-notice p {
+  margin: 4px 0 0;
+  color: var(--s3-muted);
+  font-size: 0.85rem;
+}
+.s3-stale-notice > .s3-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}

@@ -8,14 +8,35 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
     <style>
       body {
         background-color: #0f1117;
       }
+      /* System 3 light surface (mirrors --s3-bg / --s3-text in system3-theme.css). */
+      html[data-surface='system3-light'] body {
+        background-color: #f6f4ef;
+        color: #2b2a27;
+      }
     </style>
+    <script>
+      // System 3 pages default to a light surface; mark it before the app chunk loads so the first
+      // frame does not flash the console's dark background. System 3's Shell keeps it in step.
+      (function () {
+        var path = window.location.pathname;
+        var system3 = path === '/' || path.indexOf('/console/projects') === 0;
+        var dark = false;
+        try {
+          dark = window.localStorage.getItem('anvil.system3.theme') === 'dark';
+        } catch (error) {
+          dark = false;
+        }
+        if (system3 && !dark)
+          document.documentElement.setAttribute('data-surface', 'system3-light');
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

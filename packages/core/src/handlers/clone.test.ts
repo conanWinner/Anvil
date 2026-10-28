@@ -81,6 +81,8 @@ import { cloneRepository, createRepository, registerRepository } from './clone';
 // ── Spies for fs/promises and @anvil/git ──────────────────────────────────
 let spyFsAccess: ReturnType<typeof spyOn>;
 let spyFsRm: ReturnType<typeof spyOn>;
+let spyFsMkdir: ReturnType<typeof spyOn>;
+let spyFsWriteFile: ReturnType<typeof spyOn>;
 let spyExecFileAsync: ReturnType<typeof spyOn>;
 
 function setupSpies(): void {
@@ -89,6 +91,8 @@ function setupSpies(): void {
     Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
   );
   spyFsRm = spyOn(fsPromises, 'rm').mockResolvedValue(undefined);
+  spyFsMkdir = spyOn(fsPromises, 'mkdir').mockResolvedValue(undefined);
+  spyFsWriteFile = spyOn(fsPromises, 'writeFile').mockResolvedValue(undefined);
   spyExecFileAsync = spyOn(gitUtils, 'execFileAsync').mockResolvedValue({
     stdout: '',
     stderr: '',
@@ -98,6 +102,8 @@ function setupSpies(): void {
 function restoreSpies(): void {
   spyFsAccess?.mockRestore();
   spyFsRm?.mockRestore();
+  spyFsMkdir?.mockRestore();
+  spyFsWriteFile?.mockRestore();
   spyExecFileAsync?.mockRestore();
 }
 
@@ -865,9 +871,19 @@ describe('createRepository', () => {
       ['init', '-b', 'main', '/home/test/.anvil/workspaces/_local/new-project/source'],
       { timeout: 10_000 }
     );
+    // The managed repo has no remote, so its base branch is recorded in the first commit.
+    expect(spyFsWriteFile).toHaveBeenCalledWith(
+      '/home/test/.anvil/workspaces/_local/new-project/source/.anvil/config.yaml',
+      'worktree:\n  baseBranch: main\n'
+    );
     expect(spyExecFileAsync).toHaveBeenCalledWith(
       'git',
-      expect.arrayContaining(['commit', '--allow-empty', '-m', 'Initialize project']),
+      ['-C', '/home/test/.anvil/workspaces/_local/new-project/source', 'add', '.anvil/config.yaml'],
+      { timeout: 10_000 }
+    );
+    expect(spyExecFileAsync).toHaveBeenCalledWith(
+      'git',
+      expect.arrayContaining(['commit', '-m', 'Initialize project']),
       { timeout: 10_000 }
     );
     expect(mockCreateCodebase).toHaveBeenCalledWith(

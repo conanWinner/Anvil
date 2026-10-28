@@ -352,6 +352,7 @@ describe('buildLifecycleView', () => {
     });
     const activities = buildLifecycleView(project).flatMap(item => item.activities);
     expect(activities.find(item => item.id === 'TW-06')?.status).toBe('ready');
+    expect(activities.find(item => item.id === 'TW-06')?.awaitingUser).toBe(true);
     expect(activities.find(item => item.id === 'TW-07')?.status).toBe('waiting');
     expect(selectSuggestedLifecycleActivity(project)).toEqual({
       activityId: 'TW-06',
@@ -415,5 +416,60 @@ describe('buildLifecycleView', () => {
     const understanding = buildLifecycleView(project).find(phase => phase.id === 'understanding');
     expect(understanding?.activities[0]?.status).toBe('active');
     expect(understanding?.activities[0]?.statusDetail).toContain('chấp nhận');
+    // Nothing runs while the draft waits for the user, so it must not read as running.
+    expect(understanding?.activities[0]?.awaitingUser).toBe(true);
+    expect(understanding?.awaitingUser).toBe(true);
+  });
+
+  test('summarises a stopped build in one line: a question or the first error line', () => {
+    const detail = (error: string): string | undefined =>
+      buildLifecycleView(
+        projectFixture({
+          manifestApproved: true,
+          execution: { id: 'execution-1', workflowRunId: 'run-1', status: 'failed', error },
+        })
+      )
+        .find(phase => phase.id === 'build')
+        ?.activities.find(activity => activity.id === 'TW-06')?.statusDetail;
+    expect(detail('Cần bạn quyết định trước khi tiếp tục (bước review): FR-03 …')).toBe(
+      'Agent dừng lại hỏi bạn về một điểm trong blueprint.'
+    );
+    expect(detail('Agent đã dùng hết số vòng sửa.\nTraceback …')).toBe(
+      'Agent đã dùng hết số vòng sửa.'
+    );
+  });
+
+  test('a re-analysis puts the understanding first and later steps back to waiting', () => {
+    // A new blueprint version was analysed: the old snapshot, plan and failed build still exist.
+    const project = projectFixture({
+      stage: 'understanding',
+      intakeGate: {
+        ready: true,
+        blueprintReady: true,
+        activeSourceCount: 2,
+        changeDetection: [],
+        recoveries: [],
+        blockingReasons: [],
+      },
+      planCompiled: true,
+      manifestApproved: true,
+      execution: { id: 'execution-1', workflowRunId: 'run-1', status: 'failed', error: 'boom' },
+    });
+    const lifecycle = buildLifecycleView(project);
+    const activities = lifecycle.flatMap(phase => phase.activities);
+    expect(activities.find(item => item.id === 'TW-02')?.awaitingUser).toBe(true);
+    for (const id of ['OP-05', 'TW-06', 'TW-07', 'TW-09'])
+      expect(activities.find(item => item.id === id)?.status).toBe('waiting');
+    expect(selectSuggestedLifecycleActivity(project, lifecycle).activityId).toBe('TW-02');
+  });
+
+  test('a running analysis is not awaiting the user', () => {
+    const project = projectFixture({
+      stage: 'understanding',
+      operation: { id: 'op', type: 'analyze', status: 'running' } as System3Project['operation'],
+    });
+    const understanding = buildLifecycleView(project).find(phase => phase.id === 'understanding');
+    expect(understanding?.activities[0]?.awaitingUser).toBe(false);
+    expect(understanding?.awaitingUser).toBe(false);
   });
 });

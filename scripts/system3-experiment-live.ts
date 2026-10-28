@@ -19,6 +19,7 @@ import {
 import {
   buildExperimentCodebase,
   deriveExperimentPlan,
+  ExperimentProgress,
   resolveMlRuntime,
   runExperimentVariants,
   understandProjectSources,
@@ -120,10 +121,12 @@ const build = await buildExperimentCodebase({
   maxFixRounds: 4,
   maxReviewRounds: 3,
   signal,
-  onEvent: event =>
-    void log(
-      `${event.stage} #${event.round.toString()} ${event.kind}: ${event.detail.slice(0, 300)}`
-    ),
+  progress: new ExperimentProgress(event => {
+    if (event.status !== 'running')
+      void log(
+        `${event.stage} #${event.round.toString()} ${event.action} ${event.status}: ${event.detail.slice(0, 300)}`
+      );
+  }),
 });
 await writeFile(join(work, 'build.json'), JSON.stringify(build, null, 2));
 if (build.status === 'needs_decision') {

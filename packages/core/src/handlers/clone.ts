@@ -2,7 +2,7 @@
  * Standalone repository clone/register logic.
  * Extracted from command-handler.ts for reuse by REST endpoints.
  */
-import { access, rm } from 'fs/promises';
+import { access, mkdir, rm, writeFile } from 'fs/promises';
 import { join, basename, resolve } from 'path';
 import * as codebaseDb from '../db/codebases';
 import { sanitizeError } from '../utils/credential-sanitizer';
@@ -511,6 +511,13 @@ export async function createRepository(projectName: string): Promise<RegisterRes
 
   try {
     await execFileAsync('git', ['init', '-b', 'main', targetPath], { timeout: 10_000 });
+    // A managed project has no remote, so its default branch cannot be detected from origin;
+    // record the branch Anvil just created so workflows and worktrees do not warn on every run.
+    await mkdir(join(targetPath, '.anvil'), { recursive: true });
+    await writeFile(join(targetPath, '.anvil', 'config.yaml'), 'worktree:\n  baseBranch: main\n');
+    await execFileAsync('git', ['-C', targetPath, 'add', '.anvil/config.yaml'], {
+      timeout: 10_000,
+    });
     await execFileAsync(
       'git',
       [
@@ -521,7 +528,6 @@ export async function createRepository(projectName: string): Promise<RegisterRes
         '-c',
         'user.email=anvil@local',
         'commit',
-        '--allow-empty',
         '-m',
         'Initialize project',
       ],

@@ -6,7 +6,6 @@ import {
   assertSystem3CsvRowLimit,
   SYSTEM3_CSV_LIMITS,
   SYSTEM3_CSV_PARSE_OPTIONS,
-  System3CsvContractError,
   validateSystem3CsvHeaders,
 } from '../csv-contract';
 
@@ -60,7 +59,9 @@ export async function profileDatasetCsvStream(input: {
   const rowHashes = new Set<string>();
   const inferred: InferredType[] = [];
   const missing: number[] = [];
-  const distinct: Set<string>[] = [];
+  // A column whose set is dropped (null) reached a tracking limit; its count is a lower bound.
+  const distinct: (Set<string> | null)[] = [];
+  const cappedDistinctCounts: number[] = [];
   const targetCounts = new Map<string, number>();
   const orderedRowHasher = createHash('sha256');
   let trackedDistinctValues = 0;
@@ -78,6 +79,7 @@ export async function profileDatasetCsvStream(input: {
       inferred.push(...headers.map(() => 'empty' as const));
       missing.push(...headers.map(() => 0));
       distinct.push(...headers.map(() => new Set<string>()));
+      cappedDistinctCounts.push(...headers.map(() => 0));
       continue;
     }
     rowCount += 1;
@@ -97,13 +99,15 @@ export async function profileDatasetCsvStream(input: {
             columnDistinct.size >= SYSTEM3_CSV_LIMITS.maxDistinctValuesPerColumn ||
             trackedDistinctValues >= SYSTEM3_CSV_LIMITS.maxTrackedDistinctValues
           ) {
-            throw new System3CsvContractError(
-              'too_many_distinct_values',
-              `CSV có quá nhiều giá trị phân biệt để lập profile chính xác tại cột ${headers[index] ?? String(index + 1)}`
-            );
+            // Stop counting this column (typically an ID) and release its memory; the profile
+            // reports the count as a lower bound via `distinctCountCapped`, never as exact.
+            cappedDistinctCounts[index] = columnDistinct.size;
+            trackedDistinctValues -= columnDistinct.size;
+            distinct[index] = null;
+          } else {
+            columnDistinct.add(value);
+            trackedDistinctValues += 1;
           }
-          columnDistinct.add(value);
-          trackedDistinctValues += 1;
         }
         inferred[index] = mergeType(inferred[index] ?? 'empty', value);
       }
@@ -132,12 +136,16 @@ export async function profileDatasetCsvStream(input: {
     sourceVersionId: input.sourceVersionId,
     rowCount,
     columnCount: headers.length,
-    columns: headers.map((name, index) => ({
-      name,
-      inferredType: inferred[index] ?? 'empty',
-      missingCount: missing[index] ?? 0,
-      distinctCount: distinct[index]?.size ?? 0,
-    })),
+    columns: headers.map((name, index) => {
+      const columnDistinct = distinct[index];
+      return {
+        name,
+        inferredType: inferred[index] ?? 'empty',
+        missingCount: missing[index] ?? 0,
+        distinctCount: columnDistinct ? columnDistinct.size : (cappedDistinctCounts[index] ?? 0),
+        distinctCountCapped: columnDistinct === null,
+      };
+    }),
     targetColumn: targetIndex >= 0 ? input.targetColumn : null,
     targetExists: targetIndex >= 0,
     targetDistribution: Object.fromEntries(visibleTargets),

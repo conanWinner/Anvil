@@ -12,6 +12,20 @@ import {
   type System3LifecycleAttemptPreview,
 } from '@/lib/api';
 
+/** Short Vietnamese names, so a re-run preview does not read as a list of internal codes. */
+const ACTIVITY_NAMES: Record<System3LifecycleAttemptActivity, string> = {
+  'OP-00': 'Tiếp nhận nguồn',
+  'OP-01': 'Phát hiện thay đổi',
+  'TW-02': 'Hiểu dự án',
+  'TW-03': 'Kiểm tra sẵn sàng',
+  'OP-04': 'Chuẩn bị kế hoạch',
+  'OP-05': 'Phê duyệt',
+  'TW-06': 'Xây dựng và chạy',
+  'TW-07': 'Xác minh',
+  'OP-08': 'Yêu cầu bàn giao',
+  'TW-09': 'Tạo gói bàn giao',
+};
+
 function attemptStatusLabel(status: System3LifecycleAttempt['runStatus']): string {
   if (status === 'preparing') return 'Đang tạo môi trường';
   if (status === 'running') return 'Đang chạy';
@@ -27,14 +41,15 @@ export function LifecycleAttemptBar({
   selectedActivityId,
   onSelectActivity,
   onRunActivity,
-  hasExecution = false,
+  executionStatus,
 }: {
   projectId: string;
   projectVersion: number;
   selectedActivityId: string;
   onSelectActivity: (activityId: string) => void;
   onRunActivity: (activityId: System3LifecycleAttemptActivity) => Promise<void>;
-  hasExecution?: boolean;
+  /** Status of the project's latest execution, if any. */
+  executionStatus?: 'accepted' | 'running' | 'completed' | 'failed';
 }): ReactElement {
   const [attempts, setAttempts] = useState<System3LifecycleAttempt[]>([]);
   const [open, setOpen] = useState(false);
@@ -77,6 +92,12 @@ export function LifecycleAttemptBar({
       window.removeEventListener('keydown', closeOnEscape);
     };
   }, [closeDialog, open]);
+
+  // An in-page confirmation: native confirm() dialogs are suppressed in embedded browsers.
+  const [confirmCleanup, setConfirmCleanup] = useState<{
+    message: string;
+    run: () => void;
+  } | null>(null);
 
   const active =
     attempts.find(attempt => attempt.lifecycleStatus === 'active') ?? attempts[0] ?? null;
@@ -140,12 +161,15 @@ export function LifecycleAttemptBar({
       setError('Chỉ có thể dọn lượt chạy đã hoàn tất hoặc đã thất bại.');
       return;
     }
-    if (
-      !window.confirm(
-        `Dọn payload artifact, worktree và local branch của Lượt #${attempt.sequence.toString()}? Nguồn đầu vào và lịch sử kiểm toán vẫn được giữ lại.`
-      )
-    )
-      return;
+    setConfirmCleanup({
+      message: `Dọn payload artifact, worktree và local branch của Lượt #${attempt.sequence.toString()}? Nguồn đầu vào và lịch sử kiểm toán vẫn được giữ lại.`,
+      run: () => {
+        runCleanup(attempt);
+      },
+    });
+  };
+
+  const runCleanup = (attempt: System3LifecycleAttempt): void => {
     setLoading(true);
     setError(null);
     void cleanupSystem3LifecycleAttempt(projectId, attempt.id, {
@@ -203,7 +227,7 @@ export function LifecycleAttemptBar({
     void onRunActivity(active.nextActivityId)
       .then(reload)
       .catch(value => {
-        setError(value instanceof Error ? value.message : 'Không thể chạy activity');
+        setError(value instanceof Error ? value.message : 'Không thể chạy bước này');
       })
       .finally(() => {
         setLoading(false);
@@ -212,12 +236,14 @@ export function LifecycleAttemptBar({
 
   const cleanupAllAttempts = (): void => {
     if (!attempts.some(attempt => ['completed', 'failed'].includes(attempt.runStatus))) return;
-    if (
-      !window.confirm(
-        'Dọn toàn bộ payload artifact, worktree và local branch của các lượt chạy đã kết thúc? Source Version và lịch sử kiểm toán vẫn được giữ.'
-      )
-    )
-      return;
+    setConfirmCleanup({
+      message:
+        'Dọn toàn bộ payload artifact, worktree và local branch của các lượt chạy đã kết thúc? Nguồn đầu vào và lịch sử kiểm toán vẫn được giữ.',
+      run: runCleanupAll,
+    });
+  };
+
+  const runCleanupAll = (): void => {
     setLoading(true);
     setError(null);
     void cleanupAllSystem3LifecycleAttempts(projectId, {
@@ -243,7 +269,13 @@ export function LifecycleAttemptBar({
             Lượt #{active.sequence.toString()} · {attemptStatusLabel(active.runStatus)}
           </strong>
         ) : (
-          <strong>{hasExecution ? 'Có lần thực thi' : 'Chưa có lượt chạy'}</strong>
+          <strong>
+            {executionStatus === 'failed'
+              ? 'Lần thực thi gần nhất bị lỗi'
+              : executionStatus
+                ? 'Có lần thực thi'
+                : 'Chưa có lượt chạy'}
+          </strong>
         )}
         {active?.branchName ? (
           <small>
@@ -258,10 +290,10 @@ export function LifecycleAttemptBar({
             {active.nextActivityId === 'OP-00' ||
             active.nextActivityId === 'OP-01' ||
             active.nextActivityId === 'OP-08'
-              ? `Tiếp tục: ${active.nextActivityId}`
+              ? `Tiếp tục: ${ACTIVITY_NAMES[active.nextActivityId]}`
               : active.nextActivityId === 'TW-02'
-                ? `Mở bước: ${active.nextActivityId}`
-                : `Chạy bước: ${active.nextActivityId}`}
+                ? `Mở bước: ${ACTIVITY_NAMES[active.nextActivityId]}`
+                : `Chạy bước: ${ACTIVITY_NAMES[active.nextActivityId]}`}
           </button>
         ) : null}
       </div>
@@ -309,6 +341,38 @@ export function LifecycleAttemptBar({
             <Play size={15} /> Chạy lại toàn bộ
           </button>
         </div>
+        {confirmCleanup ? (
+          <div
+            className="s3-attempt-confirm"
+            role="alertdialog"
+            aria-label="Xác nhận dọn lượt chạy"
+          >
+            <p>{confirmCleanup.message}</p>
+            <div className="s3-attempt-actions">
+              <button
+                type="button"
+                className="s3-button"
+                disabled={loading}
+                onClick={() => {
+                  const { run } = confirmCleanup;
+                  setConfirmCleanup(null);
+                  run();
+                }}
+              >
+                <Trash2 size={15} /> Dọn
+              </button>
+              <button
+                type="button"
+                className="s3-button s3-button-secondary"
+                onClick={() => {
+                  setConfirmCleanup(null);
+                }}
+              >
+                Hủy
+              </button>
+            </div>
+          </div>
+        ) : null}
         {showHistory ? (
           <div className="s3-attempt-history" aria-live="polite">
             {attempts.length === 0 ? <p>Chưa có lượt chạy nào.</p> : null}
@@ -323,7 +387,7 @@ export function LifecycleAttemptBar({
                   {attempt.scope === 'full'
                     ? 'Toàn bộ'
                     : attempt.scope === 'activity'
-                      ? 'Một activity'
+                      ? 'Một bước'
                       : 'Từ đây đến cuối'}
                 </small>
                 {attempt.branchName ? (
@@ -371,7 +435,7 @@ export function LifecycleAttemptBar({
               <div>
                 <p className="s3-kicker">Lượt chạy mới</p>
                 <h2 id="attempt-dialog-title">Xem trước trước khi chạy lại</h2>
-                <p>Mỗi lượt tạo một branch và worktree riêng; nguồn gốc vẫn được giữ nguyên.</p>
+                <p>Mỗi lượt chạy trong một bản làm việc riêng; các lượt cũ vẫn được giữ nguyên.</p>
               </div>
               <button
                 type="button"
@@ -388,7 +452,7 @@ export function LifecycleAttemptBar({
               {(
                 [
                   ['full', 'Toàn bộ từ Tiếp nhận'],
-                  ['activity', 'Chỉ activity này'],
+                  ['activity', 'Chỉ bước này'],
                   ['downstream', 'Từ đây đến cuối'],
                 ] as const
               ).map(([value, label]) => (
@@ -407,14 +471,21 @@ export function LifecycleAttemptBar({
             <div className="s3-attempt-scope" role="group" aria-label="Đầu vào cho lượt chạy lại">
               {(
                 [
-                  ['replay', 'Dùng đầu vào đã ghim'],
-                  ['current', 'Dùng Source Version hiện hành'],
+                  ['replay', 'Dữ liệu của lượt trước'],
+                  ['current', 'Dữ liệu hiện tại'],
                 ] as const
               ).map(([value, label]) => (
                 <button
                   key={value}
                   type="button"
                   className={inputMode === value ? 'selected' : ''}
+                  // Replay needs an earlier attempt to copy its pinned inputs from.
+                  disabled={value === 'replay' && active === null}
+                  title={
+                    value === 'replay' && active === null
+                      ? 'Chưa có lượt chạy trước để dùng lại dữ liệu'
+                      : undefined
+                  }
                   onClick={() => {
                     openPreview(scope, value);
                   }}
@@ -425,12 +496,12 @@ export function LifecycleAttemptBar({
             </div>
             <p className="s3-note">
               {inputMode === 'replay'
-                ? 'Replay dùng lại đúng Source Version của lượt nền; phù hợp để tái lập kết quả.'
-                : 'Hiện hành tạo Input Snapshot mới từ Source Version đang hoạt động; lịch sử cũ không bị thay đổi.'}
+                ? 'Dùng lại đúng các phiên bản dữ liệu của lượt trước; phù hợp để tái lập kết quả.'
+                : 'Ghim lại các phiên bản dữ liệu đang dùng; lịch sử cũ không bị thay đổi.'}
             </p>
             {loading ? (
               <p className="s3-resource-loading" role="status">
-                Đang kiểm tra đầu vào đã ghim…
+                Đang kiểm tra dữ liệu cho lượt chạy…
               </p>
             ) : null}
             {error ? (
@@ -441,15 +512,21 @@ export function LifecycleAttemptBar({
             {preview ? (
               <div className="s3-attempt-preview">
                 <p>
-                  <GitBranch size={15} /> Branch dự kiến: <strong>{preview.branchHint}</strong>
+                  <GitBranch size={15} /> Nhánh làm việc: <strong>{preview.branchHint}</strong>
                 </p>
                 <p>
-                  <History size={15} /> {preview.basis.sourceVersionIds.length.toString()} Source
-                  Version sẽ được ghim lại.
+                  <History size={15} /> {preview.basis.sourceVersionIds.length.toString()} phiên bản
+                  dữ liệu sẽ được ghim lại.
                 </p>
-                <p>Các activity: {preview.activities.join(' · ')}</p>
+                <p>
+                  Các bước sẽ chạy:{' '}
+                  {preview.activities.map(activity => ACTIVITY_NAMES[activity]).join(' · ')}
+                </p>
                 {preview.checkpoints.length > 0 ? (
-                  <p>Hệ thống sẽ dừng để bạn xác nhận tại: {preview.checkpoints.join(', ')}.</p>
+                  <p>
+                    Hệ thống sẽ dừng để bạn xác nhận tại:{' '}
+                    {preview.checkpoints.map(activity => ACTIVITY_NAMES[activity]).join(', ')}.
+                  </p>
                 ) : null}
                 {preview.warnings.map(warning => (
                   <p key={warning} className="s3-note">

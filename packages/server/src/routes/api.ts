@@ -8,6 +8,11 @@ import { cors } from 'hono/cors';
 import type { WebAdapter } from '../adapters/web';
 import { resolvePinnedUnderstandingAnalysis } from './system3-understanding-resolution';
 import { resolveSystem3LifecycleAttemptSources } from './system3-attempt-sources';
+import {
+  listSystem3OperationTrace,
+  system3WorkflowFailureMessage,
+  type System3TraceReader,
+} from './system3-operation-trace';
 import { rm, readFile, writeFile, unlink, mkdir, readdir, stat } from 'fs/promises';
 import { readFileSync } from 'fs';
 import { normalize, join, sep, basename } from 'path';
@@ -107,6 +112,7 @@ import {
   system3ReadinessContractBodySchema,
   modelComparisonConfigSchema,
   EXPERIMENT_CONFIG_FILENAME,
+  EXPERIMENT_PROGRESS_EVENT_TYPE,
   deriveExperimentPlan,
   experimentConfigSchema,
   experimentHostSlots,
@@ -401,7 +407,7 @@ async function previewSystem3LifecycleAttempt(input: {
   const active = await store.getActiveLifecycleAttempt(input.projectId);
   const blockingReasons: string[] = [];
   if (input.inputMode === 'replay' && !replayBasis) {
-    blockingReasons.push('Không có lượt nền để dùng lại đầu vào đã ghim.');
+    blockingReasons.push('Chưa có lượt chạy trước để dùng lại dữ liệu.');
   }
   if (input.inputMode === 'replay' && replayBasis) {
     const activeSourceIds = new Set(sources.map(source => source.id));
@@ -410,7 +416,7 @@ async function previewSystem3LifecycleAttempt(input: {
       replayBasis.sourceVersionIds.some(sourceVersionId => !activeSourceIds.has(sourceVersionId))
     ) {
       blockingReasons.push(
-        'Source Version của lượt nền không còn là đầu vào hiện hành. Chế độ tái lập lịch sử chưa được phép thay đổi project truth; hãy chọn Source Version hiện hành.'
+        'Dữ liệu của lượt trước không còn là dữ liệu hiện tại của dự án; hãy chọn dữ liệu hiện tại.'
       );
     }
     if (
@@ -418,7 +424,7 @@ async function previewSystem3LifecycleAttempt(input: {
       replayBasis.knowledgeSnapshotId !== project.activeKnowledgeSnapshotId
     ) {
       blockingReasons.push(
-        'Bản hiểu dự án của lượt nền không còn active. Hãy chạy lại từ TW-02 hoặc dùng trạng thái hiện hành.'
+        'Bản hiểu dự án của lượt trước không còn được dùng; hãy chạy lại từ bước Hiểu dự án hoặc dùng dữ liệu hiện tại.'
       );
     }
   }
@@ -440,18 +446,23 @@ async function previewSystem3LifecycleAttempt(input: {
       }
     }
   } else if (!baseCommitSha) {
-    blockingReasons.push(
-      'Lượt nền không có commit Git đã ghim; hãy chọn Source Version hiện hành để tạo nền tái lập mới.'
-    );
+    blockingReasons.push('Lượt trước không ghim commit Git; hãy chọn dữ liệu hiện tại.');
   }
   if (project.version !== input.expectedVersion) {
-    blockingReasons.push('Project đã thay đổi; hãy xem trước lại trước khi chạy.');
+    blockingReasons.push('Dự án vừa thay đổi; hãy xem trước lại trước khi chạy.');
   }
   if (active && ['preparing', 'running', 'waiting', 'unknown'].includes(active.runStatus)) {
     blockingReasons.push('Lượt chạy hiện tại chưa kết thúc hoặc cần người dùng xử lý.');
   }
   if (sourceVersionIds.length === 0) {
-    blockingReasons.push('Chưa có Source Version nào để ghim cho lượt chạy.');
+    blockingReasons.push('Chưa có phiên bản dữ liệu nào để ghim cho lượt chạy.');
+  }
+  // Execution only starts from an approved plan (a failed build returns there; a verified or
+  // delivered project does not), so say so here instead of failing after the attempt is created.
+  if (activities[0] === 'TW-06' && project.stage !== 'approved') {
+    blockingReasons.push(
+      'Bước Xây dựng chỉ chạy lại được khi kế hoạch đang chờ chạy; hãy chạy lại từ bước Phê duyệt hoặc chạy lại toàn bộ.'
+    );
   }
   const basis: System3LifecycleAttemptBasis = {
     schemaVersion: 1,
@@ -490,7 +501,7 @@ async function previewSystem3LifecycleAttempt(input: {
     checkpoints: activities.filter(activity => system3LifecycleAttemptCheckpoints.has(activity)),
     warnings:
       input.inputMode === 'current'
-        ? ['Lượt chạy sử dụng Source Version đang active thay vì đầu vào của lượt trước.']
+        ? ['Lượt chạy dùng dữ liệu hiện tại thay vì dữ liệu của lượt trước.']
         : [],
     blockingReasons,
     canStart: blockingReasons.length === 0,
@@ -673,7 +684,9 @@ async function resolveSystem3WorkflowExecutionContext(input: {
   attemptId: string | null;
 }> {
   const attempt = await getSystem3Store().getActiveLifecycleAttempt(input.projectId);
-  if (attempt?.lifecycleStatus === 'active') {
+  // A completed attempt has run every activity it planned; later activities continue on the
+  // project's own line instead of being blocked forever by an attempt with no next activity.
+  if (attempt?.lifecycleStatus === 'active' && attempt.runStatus !== 'completed') {
     if (attempt.runStatus === 'preparing') {
       throw new System3ConflictError('Lượt chạy đang tạo worktree; hãy chờ trạng thái sẵn sàng');
     }
@@ -726,12 +739,25 @@ async function resolveSystem3WorkflowExecutionContext(input: {
   };
 }
 
+/**
+ * Resolving the run context marks an active attempt running before the operation begins; when the
+ * begin is refused (stale approval, version conflict) nothing runs, so the attempt waits again
+ * instead of staying "running" with no work behind it.
+ */
+async function releaseSystem3AttemptClaim(
+  projectId: string,
+  attemptId: string | null
+): Promise<void> {
+  if (attemptId === null) return;
+  await getSystem3Store().updateLifecycleAttempt(projectId, attemptId, { runStatus: 'waiting' });
+}
+
 async function assertSystem3LifecycleAttemptNextActivity(
   projectId: string,
   activityId: (typeof system3LifecycleAttemptActivities)[number]
 ): Promise<void> {
   const attempt = await getSystem3Store().getActiveLifecycleAttempt(projectId);
-  if (attempt?.lifecycleStatus !== 'active') return;
+  if (attempt?.lifecycleStatus !== 'active' || attempt.runStatus === 'completed') return;
   if (attempt.runStatus !== 'waiting' || attempt.nextActivityId !== activityId) {
     throw new System3ConflictError(
       `Lượt chạy đang chờ ${attempt.nextActivityId ?? 'một bước khác'}; không thể chạy ${activityId} lúc này`
@@ -1069,9 +1095,24 @@ function getSystem3CapabilityRegistry(): System3CapabilityRegistry {
       getSystem3ArtifactsRoot(projectId).then(artifactsRoot =>
         readSystem3Artifact({ artifactsRoot, storageKey })
       ),
+    recordProgress: (runId, event): void => {
+      // createWorkflowEvent never throws (it logs); a lost trace row must not fail the run.
+      void workflowEventDb.createWorkflowEvent({
+        workflow_run_id: runId,
+        event_type: EXPERIMENT_PROGRESS_EVENT_TYPE,
+        step_index: event.seq,
+        step_name: event.step,
+        data: event,
+      });
+    },
   });
   return cachedSystem3CapabilityRegistry;
 }
+
+const system3TraceReader: System3TraceReader = {
+  listChildWorkflowRuns: id => workflowDb.listChildWorkflowRuns(id),
+  listWorkflowEvents: id => workflowEventDb.listWorkflowEvents(id),
+};
 
 /**
  * Mirror the executor's artifact-path precedence for API reads:
@@ -1253,6 +1294,7 @@ import {
   getSystem3PhaseRoute,
   getSystem3TraceabilityRoute,
   getSystem3OperationRoute,
+  getSystem3OperationTraceRoute,
   streamSystem3OperationRoute,
   getSystem3ProjectFlowRoute,
   listSystem3ProjectsRoute,
@@ -7549,7 +7591,14 @@ export function registerApiRoutes(
               runtimeContext.conversation.id,
               { codebaseId: project.codebaseId, userId, source: 'bundled' }
             );
-            if (!execution.success) throw new Error(execution.error);
+            if (!execution.success)
+              throw new Error(
+                await system3WorkflowFailureMessage(
+                  system3TraceReader,
+                  execution.workflowRunId,
+                  execution.error
+                )
+              );
             if ('paused' in execution)
               throw new Error('Understanding workflow paused unexpectedly');
             if (execution.summary === undefined)
@@ -8021,7 +8070,14 @@ export function registerApiRoutes(
             runtimeContext.conversation.id,
             { codebaseId: project.codebaseId, userId, source: 'bundled' }
           );
-          if (!execution.success) throw new Error(execution.error);
+          if (!execution.success)
+            throw new Error(
+              await system3WorkflowFailureMessage(
+                system3TraceReader,
+                execution.workflowRunId,
+                execution.error
+              )
+            );
           if ('paused' in execution || execution.summary === undefined) {
             throw new Error('Readiness workflow completed without a contract output');
           }
@@ -8752,21 +8808,26 @@ export function registerApiRoutes(
       webAdapter.setConversationDbId(conversationId, conversation.id);
       const begun = executionReplay
         ? { ...executionReplay, existing: true }
-        : await store.beginExecution({
-            executionId,
-            projectId,
-            approvalId: approval.id,
-            definitionHash: compilation.definitionHash,
-            bundleSnapshotId: approvedExecutionBundle.bundle.id,
-            bundleHash: approvedExecutionBundle.bundle.definitionHash,
-            runtimeBindings: executionBindings,
-            expectedVersion: executionExpectedVersion,
-            idempotencyKey,
-            conversationId: conversation.id,
-            codebaseId: project.codebaseId,
-            userId,
-            workingPath,
-          });
+        : await store
+            .beginExecution({
+              executionId,
+              projectId,
+              approvalId: approval.id,
+              definitionHash: compilation.definitionHash,
+              bundleSnapshotId: approvedExecutionBundle.bundle.id,
+              bundleHash: approvedExecutionBundle.bundle.definitionHash,
+              runtimeBindings: executionBindings,
+              expectedVersion: executionExpectedVersion,
+              idempotencyKey,
+              conversationId: conversation.id,
+              codebaseId: project.codebaseId,
+              userId,
+              workingPath,
+            })
+            .catch(async (error: unknown) => {
+              await releaseSystem3AttemptClaim(projectId, runtimeContext.attemptId);
+              throw error;
+            });
       if (!begun.existing || begun.operation.status === 'accepted') {
         activeSystem3Operations.add(begun.operation.id);
         void (async (): Promise<void> => {
@@ -8820,7 +8881,14 @@ export function registerApiRoutes(
                 ),
               }
             );
-            if (!execution.success) throw new Error(execution.error);
+            if (!execution.success)
+              throw new Error(
+                await system3WorkflowFailureMessage(
+                  system3TraceReader,
+                  execution.workflowRunId,
+                  execution.error
+                )
+              );
             if ('paused' in execution) throw new Error('System 3 execution paused unexpectedly');
             if (!execution.summary) throw new Error('Execution completed without baseline output');
             const summary = JSON.parse(execution.summary) as unknown;
@@ -8874,12 +8942,13 @@ export function registerApiRoutes(
               activeAttempt?.workingPath === workingPath &&
               !plannedSystem3LifecycleAttemptActivities(activeAttempt).includes('TW-07')
             ) {
+              // The attempt ends at TW-06, but completing the execution already moved the project to
+              // verifying: verify automatically as on the main line, or the project waits forever.
               await advanceSystem3LifecycleAttemptActivity({
                 projectId,
                 attemptId: activeAttempt.id,
                 completedActivityId: 'TW-06',
               });
-              return;
             }
             const verificationProject = await store.getProject(projectId);
             if (!verificationProject) throw new Error('Project disappeared before verification');
@@ -9032,7 +9101,10 @@ export function registerApiRoutes(
                 evidence: [...checkEvidence, ...requirementEvidence],
               });
               const activeAttempt = await store.getActiveLifecycleAttempt(projectId);
-              if (activeAttempt?.workingPath === workingPath) {
+              if (
+                activeAttempt?.workingPath === workingPath &&
+                plannedSystem3LifecycleAttemptActivities(activeAttempt).includes('TW-07')
+              ) {
                 await advanceSystem3LifecycleAttemptActivity({
                   projectId,
                   attemptId: activeAttempt.id,
@@ -9162,22 +9234,27 @@ export function registerApiRoutes(
       const conversationId = runtimeContext.externalConversationId;
       const conversation = runtimeContext.conversation;
       const workingPath = runtimeContext.workingPath;
-      const begun = await store.beginVerification({
-        verificationId: randomUUID(),
-        projectId,
-        executionId,
-        inputArtifactId: artifact.id,
-        basisHash: artifact.contentHash,
-        bundleSnapshotId: approvedVerificationBundle.bundle.id,
-        bundleHash: approvedVerificationBundle.bundle.definitionHash,
-        runtimeBindings: verificationRuntimeBindings,
-        expectedVersion: body.expectedVersion,
-        idempotencyKey,
-        conversationId: conversation.id,
-        codebaseId: project.codebaseId,
-        userId,
-        workingPath,
-      });
+      const begun = await store
+        .beginVerification({
+          verificationId: randomUUID(),
+          projectId,
+          executionId,
+          inputArtifactId: artifact.id,
+          basisHash: artifact.contentHash,
+          bundleSnapshotId: approvedVerificationBundle.bundle.id,
+          bundleHash: approvedVerificationBundle.bundle.definitionHash,
+          runtimeBindings: verificationRuntimeBindings,
+          expectedVersion: body.expectedVersion,
+          idempotencyKey,
+          conversationId: conversation.id,
+          codebaseId: project.codebaseId,
+          userId,
+          workingPath,
+        })
+        .catch(async (error: unknown) => {
+          await releaseSystem3AttemptClaim(projectId, runtimeContext.attemptId);
+          throw error;
+        });
       if (!begun.existing) {
         activeSystem3Operations.add(begun.operation.id);
         void (async (): Promise<void> => {
@@ -9287,7 +9364,10 @@ export function registerApiRoutes(
               evidence: [...checkEvidence, ...requirementEvidence],
             });
             const activeAttempt = await store.getActiveLifecycleAttempt(projectId);
-            if (activeAttempt?.workingPath === workingPath) {
+            if (
+              activeAttempt?.workingPath === workingPath &&
+              plannedSystem3LifecycleAttemptActivities(activeAttempt).includes('TW-07')
+            ) {
               await advanceSystem3LifecycleAttemptActivity({
                 projectId,
                 attemptId: activeAttempt.id,
@@ -9412,21 +9492,26 @@ export function registerApiRoutes(
       const conversation = runtimeContext.conversation;
       const workingPath = runtimeContext.workingPath;
       const deliveryId = randomUUID();
-      const begun = await store.beginDelivery({
-        deliveryId,
-        projectId,
-        executionId: execution.id,
-        verificationId,
-        bundleSnapshotId: approvedDeliveryBundle.bundle.id,
-        bundleHash: approvedDeliveryBundle.bundle.definitionHash,
-        runtimeBindings: deliveryRuntimeBindings,
-        expectedVersion: body.expectedVersion,
-        idempotencyKey,
-        conversationId: conversation.id,
-        codebaseId: project.codebaseId,
-        userId,
-        workingPath,
-      });
+      const begun = await store
+        .beginDelivery({
+          deliveryId,
+          projectId,
+          executionId: execution.id,
+          verificationId,
+          bundleSnapshotId: approvedDeliveryBundle.bundle.id,
+          bundleHash: approvedDeliveryBundle.bundle.definitionHash,
+          runtimeBindings: deliveryRuntimeBindings,
+          expectedVersion: body.expectedVersion,
+          idempotencyKey,
+          conversationId: conversation.id,
+          codebaseId: project.codebaseId,
+          userId,
+          workingPath,
+        })
+        .catch(async (error: unknown) => {
+          await releaseSystem3AttemptClaim(projectId, runtimeContext.attemptId);
+          throw error;
+        });
       if (!begun.existing) {
         activeSystem3Operations.add(begun.operation.id);
         void (async (): Promise<void> => {
@@ -9554,14 +9639,38 @@ export function registerApiRoutes(
     }
   });
 
+  registerOpenApiRoute(getSystem3OperationTraceRoute, async c => {
+    const operationId = c.req.param('operationId') ?? '';
+    try {
+      const projection = await getSystem3OperationProjection(operationId);
+      if (!projection) return apiError(c, 404, 'System 3 operation not found');
+      return c.json({
+        operationId,
+        events: await listSystem3OperationTrace(system3TraceReader, projection.workflowRunId),
+      });
+    } catch (error) {
+      getLog().error({ err: error, operationId }, 'system3.operation_trace_get_failed');
+      return apiError(c, 500, 'Failed to get System 3 operation trace');
+    }
+  });
+
   registerOpenApiRoute(streamSystem3OperationRoute, async c =>
     streamSSE(c, async stream => {
       const operationId = c.req.param('operationId') ?? '';
+      // Trace events already sent, by `step:status`; each tick sends only what is new.
+      const sentTrace = new Set<string>();
       for (;;) {
         const projection = await getSystem3OperationProjection(operationId);
         if (!projection) {
           await stream.writeSSE({ event: 'error', data: JSON.stringify({ error: 'not_found' }) });
           return;
+        }
+        const fresh = (
+          await listSystem3OperationTrace(system3TraceReader, projection.workflowRunId)
+        ).filter(event => !sentTrace.has(`${event.step}:${event.status}`));
+        if (fresh.length > 0) {
+          for (const event of fresh) sentTrace.add(`${event.step}:${event.status}`);
+          await stream.writeSSE({ event: 'trace', data: JSON.stringify(fresh) });
         }
         await stream.writeSSE({
           event: 'operation',

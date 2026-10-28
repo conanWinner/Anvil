@@ -149,18 +149,25 @@ sandboxTest(
 
     expect(result.status).toBe('ready');
     if (result.status !== 'ready') return;
-    expect(result.events.map(event => `${event.stage}:${event.kind}`)).toEqual([
-      'prepare:generated',
-      'prepare:check_failed',
-      'prepare:generated',
-      'prepare:check_passed',
-      'variants:generated',
-      'variants:check_passed',
-      'review:review',
-      'variants:generated',
-      'variants:check_passed',
-      'review:review',
+    const finished = result.events.filter(event => event.status !== 'running');
+    expect(finished.map(event => `${event.stage}:${event.action}:${event.status}`)).toEqual([
+      'prepare:sandbox_check:passed',
+      'prepare:generate:passed',
+      'prepare:prepare_data:passed',
+      'prepare:split:failed',
+      'prepare:generate:passed',
+      'prepare:prepare_data:passed',
+      'prepare:split:passed',
+      'variants:generate:passed',
+      'variants:smoke:passed',
+      'review:review:failed',
+      'variants:generate:passed',
+      'variants:smoke:passed',
+      'review:review:passed',
     ]);
+    // Every step is announced as running before its outcome, in order.
+    expect(result.events.filter(event => event.status === 'running')).toHaveLength(finished.length);
+    expect(result.events.map(event => event.seq)).toEqual(result.events.map((_, index) => index));
     // Sandbox and review feedback reach the builder verbatim.
     expect(prompts[1]?.prompt).toContain("no column 'target'");
     expect(prompts.find(item => item.prompt.includes('reviewer found blocking'))?.prompt).toContain(
@@ -252,6 +259,57 @@ sandboxTest(
     const reported = await build(true);
     expect(reported.status).toBe('ready');
     if (reported.status === 'ready') expect(reported.review.findings).toEqual([finding]);
+  },
+  300_000
+);
+
+sandboxTest(
+  'a reviewer concern about a blueprint requirement stops the build with a question',
+  async () => {
+    const runtime = await resolveMlRuntime();
+    const root = await mkdtemp(join(tmpdir(), 'anvil-experiment-question-'));
+    const rawDataDir = join(root, 'raw');
+    await mkdir(rawDataDir);
+    const rows = Array.from({ length: 200 }, (_, index) => {
+      const churned = index % 3 === 0 ? 1 : 0;
+      return `c${index.toString()},${(churned ? 1 : 5).toString()},${(churned ? 10 : 80 + index).toString()},${churned.toString()}`;
+    });
+    await writeFile(
+      join(rawDataDir, 'customers.csv'),
+      ['customer,visits,spend,churned', ...rows].join('\n') + '\n'
+    );
+    let builderCalls = 0;
+    const question = 'FR-03 yêu cầu feature spend nhưng nó có thể rò rỉ; giữ hay bỏ?';
+    const generate: ExperimentGenerate = ({ role, prompt }) => {
+      if (role === 'builder') builderCalls += 1;
+      return Promise.resolve(
+        role === 'reviewer'
+          ? { verdict: 'changes_required', summary: 'Requirement risk', findings: [], question }
+          : {
+              files: prompt.includes('DATA PREPARATION')
+                ? [{ path: 'prepare_data.py', content: prepare }]
+                : [{ path: 'train_variant.py', content: trainVariant }],
+              notes: 'ok',
+              question: null,
+            }
+      );
+    };
+    const result = await buildExperimentCodebase({
+      blueprint: '# Churn blueprint',
+      plan,
+      variantIds: ['logistic_regression'],
+      rawDataDir,
+      projectDir: join(root, 'project'),
+      workDir: join(root, 'work'),
+      runtime,
+      generate,
+      maxFixRounds: 1,
+      maxReviewRounds: 2,
+      signal: new AbortController().signal,
+    });
+    expect(result).toMatchObject({ status: 'needs_decision', stage: 'review', question });
+    // The question goes to the user; the builder is not asked to code around the requirement.
+    expect(builderCalls).toBe(2);
   },
   300_000
 );

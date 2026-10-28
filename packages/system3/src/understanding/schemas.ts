@@ -125,6 +125,8 @@ export const datasetColumnProfileSchema = z.object({
   inferredType: z.enum(['empty', 'boolean', 'integer', 'number', 'datetime', 'string']),
   missingCount: z.number().int().nonnegative(),
   distinctCount: z.number().int().nonnegative(),
+  /** True when tracking stopped at a limit: `distinctCount` is a lower bound, not exact. */
+  distinctCountCapped: z.boolean().optional(),
 });
 export type DatasetColumnProfile = z.infer<typeof datasetColumnProfileSchema>;
 

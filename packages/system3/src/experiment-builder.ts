@@ -6,6 +6,7 @@ import { dirname, isAbsolute, join, normalize } from 'node:path';
 import { createInterface } from 'node:readline';
 import { sampleAgentData, splitModelingTable, type SplitSummary } from './experiment-evaluation';
 import { MODELING_TABLE_COLUMNS, type ExperimentPlan } from './experiment-plan';
+import { ExperimentProgress, type ExperimentProgressEvent } from './experiment-progress';
 import { runExperimentSandbox, type ExperimentSandboxResult } from './experiment-sandbox';
 import type { MlRuntime } from './ml-runtime';
 
@@ -47,6 +48,8 @@ export const reviewResponseSchema = z.object({
   verdict: z.enum(['pass', 'changes_required']),
   summary: z.string().max(4_000),
   findings: z.array(reviewFindingSchema).max(50),
+  /** Set when a concern is about something the blueprint requires: the user decides, not the code. */
+  question: z.string().max(4_000).nullable().default(null),
 });
 export type ReviewResponse = z.infer<typeof reviewResponseSchema>;
 
@@ -74,10 +77,11 @@ export const BUILDER_OUTPUT_JSON_SCHEMA = {
 export const REVIEW_OUTPUT_JSON_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['verdict', 'summary', 'findings'],
+  required: ['verdict', 'summary', 'findings', 'question'],
   properties: {
     verdict: { type: 'string', enum: ['pass', 'changes_required'] },
     summary: { type: 'string' },
+    question: { type: ['string', 'null'] },
     findings: {
       type: 'array',
       items: {
@@ -101,12 +105,7 @@ export type ExperimentGenerate = (input: {
   signal: AbortSignal;
 }) => Promise<unknown>;
 
-export interface BuildEvent {
-  stage: 'prepare' | 'variants' | 'review';
-  round: number;
-  kind: 'generated' | 'check_passed' | 'check_failed' | 'review';
-  detail: string;
-}
+type BuildStage = 'prepare' | 'variants' | 'review';
 
 export interface ExperimentBuildInput {
   /** Raw System 2 blueprint text (Markdown or JSON export) given to both models. */
@@ -127,7 +126,8 @@ export interface ExperimentBuildInput {
   /** Return a ready build with the last review's blocking findings instead of failing. */
   reportUnresolvedReview?: boolean;
   signal: AbortSignal;
-  onEvent?: (event: BuildEvent) => void;
+  /** Receives every step as it starts and finishes; a private trace is kept when omitted. */
+  progress?: ExperimentProgress;
 }
 
 export type ExperimentBuildResult =
@@ -136,16 +136,45 @@ export type ExperimentBuildResult =
       split: { agentDataDir: string; holdoutDir: string; summary: SplitSummary };
       review: ReviewResponse;
       files: Record<string, string>;
-      events: BuildEvent[];
+      events: ExperimentProgressEvent[];
     }
-  | { status: 'failed'; stage: BuildEvent['stage']; reason: string; events: BuildEvent[] }
+  | { status: 'failed'; stage: BuildStage; reason: string; events: ExperimentProgressEvent[] }
   | {
       /** The builder could not follow the blueprint as written; a person must decide. */
       status: 'needs_decision';
-      stage: BuildEvent['stage'];
+      stage: BuildStage;
       question: string;
-      events: BuildEvent[];
+      events: ExperimentProgressEvent[];
     };
+
+function describeSplit(summary: SplitSummary): string {
+  const percent = (rate: number): string => `${(rate * 100).toFixed(1)}%`;
+  return [
+    `${summary.rows.toString()} dòng → ${summary.trainRows.toString()} train / ${summary.testRows.toString()} kiểm tra`,
+    `lớp dương ${percent(summary.trainPositiveRate)} / ${percent(summary.testPositiveRate)}`,
+    ...summary.warnings,
+  ].join('\n');
+}
+
+function describeFiles(notes: string, files: BuilderResponse['files']): string {
+  const listed = files.map(
+    file => `- ${file.path} (${file.content.split('\n').length.toString()} dòng)`
+  );
+  return [notes.trim(), '', ...listed].join('\n').trim();
+}
+
+function describeReview(review: ReviewResponse): string {
+  return [
+    review.summary.trim(),
+    ...review.findings.map(
+      finding =>
+        `- [${finding.severity}] ${finding.file ? `${finding.file}: ` : ''}${finding.message}`
+    ),
+    ...(review.question ? [`Câu hỏi cho bạn: ${review.question}`] : []),
+  ]
+    .join('\n')
+    .trim();
+}
 
 function clip(text: string, limit = FEEDBACK_LIMIT): string {
   return text.length <= limit ? text : `…${text.slice(text.length - limit)}`;
@@ -230,6 +259,9 @@ const SANDBOX_RULES = `Runtime rules (enforced by the sandbox):
 Scope rules (the user owns these decisions):
 - Never change the blueprint's target definition, positive class, entity population, time window or evaluation metric, even if the data makes them hard (e.g. extreme class imbalance).
 - If the blueprint's problem definition is contradictory or impossible with the given data, return no files and put a short, specific question for the user in \`question\` (what is wrong, with numbers, and the options you see). Otherwise set \`question\` to null.
+- Never remove or weaken a feature, step or model the blueprint explicitly requires just to satisfy review or sandbox feedback. If feedback conflicts with a blueprint requirement, return no files and ask in \`question\` (name the requirement ID and the conflict).
+
+Language: the user reads your \`notes\`, review \`summary\`, findings and \`question\` in a Vietnamese interface, so write them in Vietnamese (never another language). Keep code, identifiers and code comments in English.
 
 How this works: you cannot run code or open files yourself. The headers and sample rows above are what the data looks like; Anvil runs your code in the sandbox and sends back any error or contract violation for you to fix. So never ask about file access, verification or permission — write the best code you can and let Anvil's run check it. Reasonable implementation choices the blueprint leaves open (e.g. how to aggregate several payments per order) are yours to make; mention them in \`notes\`.`;
 
@@ -328,7 +360,7 @@ Evaluation contract fixed by Anvil (do NOT ask the code to change it):
 - Blueprint sentences such as "report metrics on the test set" are satisfied by Anvil's evaluation.
 Only flag leakage with concrete evidence (a specific column or step that uses information created after the label).
 Every blocking finding must name the concrete line, column or step that is wrong; if you cannot point to one, it is not a finding.
-Never block on something the blueprint explicitly requires (a listed feature, target rule or model). If you believe a blueprint requirement itself is risky, report a WARNING that names the requirement ID — the user decides on blueprint changes, not the code. Order-time attributes such as prices, freight, payment type, installments or product attributes are known at purchase time.
+Never block on something the blueprint explicitly requires (a listed feature, target rule or model). If you believe a blueprint requirement itself is risky (for example a required feature that may leak), do not report it as blocking: put one short question for the user in \`question\` naming the requirement ID, the risk and the options — the user decides on blueprint changes, not the code. Otherwise set \`question\` to null. Order-time attributes such as prices, freight, payment type, installments or product attributes are known at purchase time.
 
 Variants requested:
 ${variantList(input.plan, input.variantIds)}
@@ -345,6 +377,14 @@ ${input.blueprint}
 ${filesBlock(files)}`;
 }
 
+/** Reads the pinned data mount and writes the output mount, as every generated script must. */
+const SANDBOX_CHECK_SCRIPT = `import os
+names = os.listdir('/work/data')
+assert names, 'the pinned data mount is empty'
+with open('/work/out/check.txt', 'w') as handle:
+    handle.write(','.join(sorted(names)))
+`;
+
 async function runChecked(run: () => Promise<ExperimentSandboxResult>): Promise<string | null> {
   const result = await run();
   if (result.exitCode === 0) return null;
@@ -356,11 +396,8 @@ async function runChecked(run: () => Promise<ExperimentSandboxResult>): Promise<
 export async function buildExperimentCodebase(
   input: ExperimentBuildInput
 ): Promise<ExperimentBuildResult> {
-  const events: BuildEvent[] = [];
-  const emit = (event: BuildEvent): void => {
-    events.push(event);
-    input.onEvent?.(event);
-  };
+  const progress = input.progress ?? new ExperimentProgress();
+  const events = progress.events;
   if (input.plan.protocol === null) throw new Error('Experiment plan has no evaluation protocol');
   const protocol = input.plan.protocol;
   const unknown = input.variantIds.filter(id => !input.plan.variants.some(item => item.id === id));
@@ -371,12 +408,35 @@ export async function buildExperimentCodebase(
 
   class NeedsDecision extends Error {
     constructor(
-      readonly stage: BuildEvent['stage'],
+      readonly stage: BuildStage,
       readonly question: string
     ) {
       super(question);
     }
   }
+  /** One builder call as a traced step: the notes and written files are its outcome. */
+  const buildRound = async (
+    stage: 'prepare' | 'variants',
+    round: number,
+    prompt: string
+  ): Promise<void> => {
+    const finish = progress.start({ stage, action: 'generate', round });
+    try {
+      const response = (await generate('builder', prompt)) as BuilderResponse;
+      await writeGeneratedFiles(input.projectDir, response.files);
+      finish('passed', describeFiles(response.notes, response.files));
+    } catch (error) {
+      finish(
+        error instanceof NeedsDecision ? 'passed' : 'failed',
+        error instanceof NeedsDecision
+          ? 'Agent trả về câu hỏi thay vì viết code.'
+          : error instanceof Error
+            ? error.message
+            : String(error)
+      );
+      throw error;
+    }
+  };
   const generate = async (
     role: 'builder' | 'reviewer',
     prompt: string
@@ -420,25 +480,75 @@ export async function buildExperimentCodebase(
     return response;
   };
 
+  // A sandbox that cannot run at all (no systemd manager, unwritable output) is an environment
+  // problem, not a code bug: stop before the first builder call instead of spending fix rounds.
+  const checkSandbox = async (): Promise<void> => {
+    const checkDir = join(input.workDir, 'sandbox-check');
+    const projectDir = join(checkDir, 'project');
+    await rm(checkDir, { recursive: true, force: true });
+    await mkdir(projectDir, { recursive: true });
+    await writeFile(join(projectDir, 'check.py'), SANDBOX_CHECK_SCRIPT);
+    const finish = progress.start({ stage: 'prepare', action: 'sandbox_check' });
+    let failure: string | null;
+    try {
+      failure = await runChecked(() =>
+        runExperimentSandbox({
+          profile: 'check',
+          runtime: input.runtime,
+          projectDir,
+          dataDir: input.rawDataDir,
+          outputDir: join(checkDir, 'out'),
+          script: 'check.py',
+          timeoutMs: 60_000,
+          signal: input.signal,
+        })
+      );
+    } catch (error) {
+      finish('failed', error instanceof Error ? error.message : String(error));
+      throw error;
+    }
+    if (failure !== null) {
+      finish('failed', failure);
+      throw new Error(
+        `Sandbox không chạy được trên máy này nên Anvil dừng trước khi gọi agent. Kiểm tra systemd, bubblewrap và quyền thư mục ANVIL_HOME rồi chạy lại.\n${failure}`
+      );
+    }
+    finish('passed', 'Sandbox đọc được dữ liệu đã ghim và ghi được thư mục kết quả.');
+  };
+  await checkSandbox();
+
   // Stage 1: data preparation until the modeling table satisfies Anvil's split.
   // Closures below update the split; a holder object keeps TypeScript's narrowing honest.
   const state: { split: Awaited<ReturnType<typeof splitModelingTable>> | null } = { split: null };
-  const runPrepare = async (tag: string): Promise<string | null> => {
+  const runPrepare = async (round: number): Promise<string | null> => {
+    const tag = round.toString();
     const outputDir = join(input.workDir, `prepare-${tag}`);
     await rm(outputDir, { recursive: true, force: true });
-    const failure = await runChecked(() =>
-      runExperimentSandbox({
-        profile: 'experiment',
-        runtime: input.runtime,
-        projectDir: input.projectDir,
-        dataDir: input.rawDataDir,
-        outputDir,
-        script: 'prepare_data.py',
-        timeoutMs: 15 * 60_000,
-        signal: input.signal,
-      })
-    );
-    if (failure !== null) return failure;
+    const finishRun = progress.start({ stage: 'prepare', action: 'prepare_data', round });
+    let failure: string | null;
+    try {
+      failure = await runChecked(() =>
+        runExperimentSandbox({
+          profile: 'experiment',
+          runtime: input.runtime,
+          projectDir: input.projectDir,
+          dataDir: input.rawDataDir,
+          outputDir,
+          script: 'prepare_data.py',
+          timeoutMs: 15 * 60_000,
+          signal: input.signal,
+        })
+      );
+    } catch (error) {
+      finishRun('failed', error instanceof Error ? error.message : String(error));
+      throw error;
+    }
+    if (failure !== null) {
+      finishRun('failed', failure);
+      return failure;
+    }
+    finishRun('passed');
+    const finishSplit = progress.start({ stage: 'prepare', action: 'split', round });
     try {
       state.split = await splitModelingTable({
         runtime: input.runtime,
@@ -447,34 +557,52 @@ export async function buildExperimentCodebase(
         workDir: join(input.workDir, `split-${tag}`),
         signal: input.signal,
       });
+      finishSplit('passed', describeSplit(state.split.summary));
       return null;
     } catch (error) {
-      return clip(
+      const message = clip(
         `prepare_data.py ran, but the modeling table is not usable: ${error instanceof Error ? error.message : String(error)}`
       );
+      finishSplit('failed', message);
+      return message;
     }
   };
   const prepare = async (initialFeedback: string | null): Promise<string | null> => {
     let feedback = initialFeedback;
     for (let round = 1; round <= input.maxFixRounds; round += 1) {
-      const response = (await generate(
-        'builder',
+      await buildRound(
+        'prepare',
+        round,
         preparePrompt(input, rawData, feedback, await listProjectFiles(input.projectDir))
-      )) as BuilderResponse;
-      await writeGeneratedFiles(input.projectDir, response.files);
-      emit({ stage: 'prepare', round, kind: 'generated', detail: response.notes });
-      feedback = await runPrepare(round.toString());
-      if (feedback === null) {
-        emit({ stage: 'prepare', round, kind: 'check_passed', detail: 'Modeling table split' });
-        return null;
-      }
-      emit({ stage: 'prepare', round, kind: 'check_failed', detail: feedback });
+      );
+      feedback = await runPrepare(round);
+      if (feedback === null) return null;
     }
     return feedback ?? 'Data preparation did not converge';
   };
 
   // Stage 2: variant code until every variant produces valid predictions on smoke data.
-  const smokeVariants = async (): Promise<string | null> => {
+  const smokeVariants = async (round: number): Promise<string | null> => {
+    const finish = progress.start({
+      stage: 'variants',
+      action: 'smoke',
+      round,
+      detail: `${input.variantIds.length.toString()} phương án · mẫu ${SMOKE_TRAIN_ROWS.toString()} train / ${SMOKE_TEST_ROWS.toString()} kiểm tra`,
+    });
+    try {
+      const failure = await smokeAll();
+      finish(
+        failure === null ? 'passed' : 'failed',
+        failure ??
+          `${input.variantIds.length.toString()} phương án chạy được và ghi đủ dự đoán trên mẫu.`
+      );
+      return failure;
+    } catch (error) {
+      finish('failed', error instanceof Error ? error.message : String(error));
+      throw error;
+    }
+  };
+  const smokeAll = async (): Promise<string | null> => {
     if (state.split === null) return 'No split available';
     const smokeData = join(input.workDir, 'smoke-data');
     await rm(smokeData, { recursive: true, force: true });
@@ -524,23 +652,13 @@ export async function buildExperimentCodebase(
     let feedback = initialFeedback;
     const agentData = state.split === null ? '' : await describeCsvFolder(state.split.agentDataDir);
     for (let round = 1; round <= input.maxFixRounds; round += 1) {
-      const response = (await generate(
-        'builder',
+      await buildRound(
+        'variants',
+        round,
         variantsPrompt(input, agentData, feedback, await listProjectFiles(input.projectDir))
-      )) as BuilderResponse;
-      await writeGeneratedFiles(input.projectDir, response.files);
-      emit({ stage: 'variants', round, kind: 'generated', detail: response.notes });
-      feedback = await smokeVariants();
-      if (feedback === null) {
-        emit({
-          stage: 'variants',
-          round,
-          kind: 'check_passed',
-          detail: 'All variants ran on smoke data',
-        });
-        return null;
-      }
-      emit({ stage: 'variants', round, kind: 'check_failed', detail: feedback });
+      );
+      feedback = await smokeVariants(round);
+      if (feedback === null) return null;
     }
     return feedback ?? 'Variant code did not converge';
   };
@@ -556,21 +674,32 @@ export async function buildExperimentCodebase(
     // Stage 3: independent review; blocking findings go back to the builder a bounded number of times.
     for (let round = 1; ; round += 1) {
       const files = await listProjectFiles(input.projectDir);
-      const review = (await generate(
-        'reviewer',
-        reviewPrompt(
-          input,
-          files,
-          `Data preparation produced a modeling table that Anvil split as: ${JSON.stringify(state.split?.summary ?? null)}. Every variant produced valid predictions on a stratified sample.`
-        )
-      )) as ReviewResponse;
+      const review = await progress.track(
+        { stage: 'review', action: 'review', round },
+        async () =>
+          (await generate(
+            'reviewer',
+            reviewPrompt(
+              input,
+              files,
+              `Data preparation produced a modeling table that Anvil split as: ${JSON.stringify(state.split?.summary ?? null)}. Every variant produced valid predictions on a stratified sample.`
+            )
+          )) as ReviewResponse,
+        value => ({
+          status:
+            value.verdict === 'pass' &&
+            value.findings.every(finding => finding.severity !== 'blocking')
+              ? 'passed'
+              : 'failed',
+          detail: describeReview(value),
+        })
+      );
+      // A concern about a blueprint requirement is the user's call; fixing it in code would just
+      // trade one requirement for another (seen live: a required delivery feature removed, then
+      // re-added on the next review).
+      if (review.question !== null && review.question.trim().length > 0)
+        throw new NeedsDecision('review', review.question.trim());
       const blocking = review.findings.filter(finding => finding.severity === 'blocking');
-      emit({
-        stage: 'review',
-        round,
-        kind: 'review',
-        detail: `${review.verdict}: ${blocking.length.toString()} blocking, ${(review.findings.length - blocking.length).toString()} warnings`,
-      });
       if (review.verdict === 'pass' && blocking.length === 0) {
         if (state.split === null) throw new Error('Split missing after a successful build');
         return { status: 'ready', split: state.split, review, files, events };
@@ -603,7 +732,8 @@ export async function buildExperimentCodebase(
         if (prepareFailure !== null)
           return { status: 'failed', stage: 'prepare', reason: prepareFailure, events };
       }
-      const smokeFailure = variantFindings.length > 0 ? null : await smokeVariants();
+      // Round 0: a re-check after data preparation changed, not a builder fix round.
+      const smokeFailure = variantFindings.length > 0 ? null : await smokeVariants(0);
       if (variantFindings.length > 0 || smokeFailure !== null) {
         const fixFailure = await variants(
           variantFindings.length > 0 ? describe(variantFindings) : smokeFailure
@@ -614,12 +744,12 @@ export async function buildExperimentCodebase(
     }
   } catch (error) {
     if (error instanceof NeedsDecision) {
-      emit({
+      // The builder asks while writing code (prepare, variants); the reviewer asks at review.
+      progress.start({
         stage: error.stage,
-        round: 0,
-        kind: 'generated',
-        detail: `Question: ${error.question}`,
-      });
+        action: 'question',
+        detail: error.question,
+      })('failed');
       return { status: 'needs_decision', stage: error.stage, question: error.question, events };
     }
     throw error;

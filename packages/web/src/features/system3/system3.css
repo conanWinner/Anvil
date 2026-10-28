@@ -1874,7 +1874,8 @@
   display: grid;
   grid-template-columns: minmax(150px, 0.55fr) minmax(150px, 0.45fr) minmax(240px, 1fr) auto;
   gap: 14px;
-  align-items: end;
+  /* Top-aligned so labels line up even when only some fields carry a hint below them. */
+  align-items: start;
   margin-bottom: 20px;
   padding: 16px;
   border: 1px solid var(--s3-line);
@@ -1916,6 +1917,7 @@
   margin-bottom: 6px;
   font-size: 13px;
   font-weight: 650;
+  line-height: 19px;
 }
 
 .s3-source-upload select,
@@ -1939,6 +1941,9 @@
   align-items: center;
   gap: 7px;
   white-space: nowrap;
+  /* Label line (19px) + its gap (6px): the button sits level with the fields. */
+  min-height: 38px;
+  margin-top: 25px;
 }
 
 .s3-source-upload .s3-note {
@@ -1954,6 +1959,7 @@
 
   .s3-source-upload .s3-button {
     justify-content: center;
+    margin-top: 0;
   }
 }
 
@@ -4525,14 +4531,15 @@
 
 .s3-attempt-bar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
   margin: 0 0 18px;
   padding: 13px 15px;
-  border: 1px solid #cfe2f5;
+  border: 1px solid var(--s3-line);
   border-radius: 12px;
-  background: linear-gradient(100deg, #f4faff, #f5fffd);
+  background: var(--s3-surface-soft);
 }
 .s3-attempt-bar > div:first-child {
   display: grid;
@@ -4540,17 +4547,17 @@
   min-width: 180px;
 }
 .s3-attempt-bar strong {
-  color: #173a74;
+  color: var(--s3-text);
   font-size: 14px;
 }
 .s3-attempt-bar small {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  color: #456176;
+  color: var(--s3-muted);
 }
 .s3-attempt-kicker {
-  color: #197a94;
+  color: var(--s3-primary);
   font-size: 11px;
   font-weight: 800;
   letter-spacing: 0.08em;
@@ -4565,6 +4572,7 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  white-space: nowrap;
 }
 .s3-attempt-history {
   display: grid;
@@ -4572,7 +4580,7 @@
   width: 100%;
   gap: 7px;
   padding-top: 8px;
-  border-top: 1px solid #d6e6ef;
+  border-top: 1px solid var(--s3-line);
 }
 .s3-attempt-history > div {
   display: flex;
@@ -4580,15 +4588,15 @@
   flex-wrap: wrap;
   gap: 8px;
   padding: 9px 10px;
-  border: 1px solid #dce8ef;
+  border: 1px solid var(--s3-line);
   border-radius: 9px;
-  background: #fff;
-  color: #456176;
+  background: var(--s3-surface);
+  color: var(--s3-muted);
   font-size: 12px;
 }
 .s3-attempt-history > div.current {
-  border-color: #72bfd3;
-  background: #f1fbfd;
+  border-color: var(--s3-primary);
+  background: var(--s3-surface-muted);
 }
 .s3-attempt-history small {
   display: inline-flex;
@@ -4602,7 +4610,7 @@
   gap: 5px;
   border: 0;
   background: transparent;
-  color: #a6483c;
+  color: var(--s3-error);
   cursor: pointer;
   font-weight: 700;
 }
@@ -4616,26 +4624,26 @@
   margin: 18px 0;
 }
 .s3-attempt-scope button {
-  border: 1px solid #c9d8e9;
+  border: 1px solid var(--s3-line-strong);
   border-radius: 999px;
-  background: #fff;
-  color: #36506c;
+  background: var(--s3-surface);
+  color: var(--s3-text);
   cursor: pointer;
   padding: 8px 10px;
   font-weight: 700;
 }
 .s3-attempt-scope button.selected {
-  border-color: #1679a3;
-  background: #eaf8fb;
-  color: #12617f;
+  border-color: var(--s3-primary);
+  background: var(--s3-surface-muted);
+  color: var(--s3-primary);
 }
 .s3-attempt-preview {
   display: grid;
   gap: 8px;
   padding: 13px;
-  border: 1px solid #dce8ef;
+  border: 1px solid var(--s3-line);
   border-radius: 10px;
-  background: #fafcfd;
+  background: var(--s3-surface-soft);
 }
 .s3-attempt-advanced {
   flex: 0 0 100%;
@@ -4652,7 +4660,7 @@
   align-items: center;
   gap: 7px;
   margin: 0;
-  color: #40566b;
+  color: var(--s3-muted);
   font-size: 13px;
 }
 .s3-lifecycle-workspace {
@@ -5503,97 +5511,6 @@
   }
 }
 
-/* Journey steps */
-.s3-journey-steps {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 6px;
-  margin: 4px 0 18px;
-  padding: 0;
-  list-style: none;
-  counter-reset: none;
-}
-.s3-journey-step {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  min-width: 0;
-  padding: 10px 12px;
-  border: 1px solid var(--s3-line);
-  border-radius: 12px;
-  background: var(--s3-surface);
-  color: var(--s3-subtle);
-  font-size: 13px;
-  font-weight: 600;
-}
-.s3-journey-step-marker {
-  display: grid;
-  flex: 0 0 auto;
-  width: 24px;
-  height: 24px;
-  place-items: center;
-  border-radius: 999px;
-  background: var(--s3-surface-muted);
-  font-size: 12px;
-  font-weight: 800;
-}
-.s3-journey-step-label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.s3-journey-step.done {
-  color: var(--s3-text);
-}
-.s3-journey-step.done .s3-journey-step-marker {
-  background: var(--s3-success);
-  color: var(--s3-surface);
-}
-.s3-journey-step.current {
-  border-color: color-mix(in srgb, var(--s3-brand) 55%, var(--s3-line));
-  background: color-mix(in srgb, var(--s3-brand) 7%, var(--s3-surface));
-  color: var(--s3-text);
-  box-shadow: var(--s3-shadow-md);
-}
-.s3-journey-step.current .s3-journey-step-marker {
-  background: var(--s3-brand);
-  color: var(--s3-surface);
-}
-.s3-journey-step.attention,
-.s3-journey-step.stale {
-  border-color: color-mix(in srgb, var(--s3-warning) 55%, var(--s3-line));
-  color: var(--s3-text);
-}
-.s3-journey-step.attention .s3-journey-step-marker,
-.s3-journey-step.stale .s3-journey-step-marker {
-  background: color-mix(in srgb, var(--s3-warning) 22%, var(--s3-surface));
-  color: var(--s3-warning);
-}
-.s3-journey-step.active .s3-journey-step-marker {
-  background: color-mix(in srgb, var(--s3-running) 18%, var(--s3-surface));
-  color: var(--s3-running);
-}
-@media (max-width: 760px) {
-  .s3-journey-steps {
-    grid-template-columns: repeat(5, minmax(0, 1fr));
-    gap: 4px;
-  }
-  .s3-journey-step {
-    flex-direction: column;
-    gap: 4px;
-    padding: 8px 2px;
-    font-size: 11px;
-    text-align: center;
-  }
-  .s3-journey-step-label {
-    max-width: 100%;
-    white-space: normal;
-    line-height: 1.2;
-  }
-}
-
 /* Create project */
 .s3-create {
   width: min(760px, 100%);
@@ -5622,6 +5539,8 @@
 }
 .s3-create-form {
   display: grid;
+  /* minmax(0, …): long unbreakable content must not widen the track past the viewport. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
 }
 .s3-source-choice {
@@ -6286,6 +6205,18 @@
   color: var(--s3-muted);
   font-size: 12px;
 }
+/* Metrics never break mid-number and headers only at spaces; the wrapper scrolls instead. */
+.s3-experiment-table thead th,
+.s3-experiment-table tbody th {
+  overflow-wrap: normal;
+}
+.s3-experiment-table td {
+  overflow-wrap: normal;
+  white-space: nowrap;
+}
+.s3-experiment-table tbody th {
+  min-width: 150px;
+}
 .s3-experiment-table tbody tr.selected {
   background: color-mix(in srgb, var(--s3-brand) 6%, var(--s3-surface));
 }
@@ -6490,4 +6421,17 @@
 .s3-experiment-run-facts dd svg {
   display: inline;
   vertical-align: -2px;
+}
+
+.s3-attempt-confirm {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in oklch, var(--s3-warning), var(--s3-surface) 60%);
+  background: color-mix(in oklch, var(--s3-warning), var(--s3-surface) 92%);
+}
+.s3-attempt-confirm p {
+  margin: 0;
+  color: var(--s3-text);
 }

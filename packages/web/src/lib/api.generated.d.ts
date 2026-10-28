@@ -7230,6 +7230,107 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  '/api/system3/operations/{operationId}/trace': {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Live step trace of a System 3 operation (builder, reviewer, sandbox and scoring) */
+    get: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          operationId: string;
+        };
+        cookie?: never;
+      };
+      requestBody?: never;
+      responses: {
+        /** @description Trace events recorded so far */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['System3OperationTrace'];
+          };
+        };
+        /** @description Bad request */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Conflict */
+        409: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Payload too large */
+        413: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unsupported media type */
+        415: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Unprocessable input */
+        422: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+        /** @description Server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            'application/json': components['schemas']['Error'];
+          };
+        };
+      };
+    };
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   '/api/system3/operations/{operationId}/events': {
     parameters: {
       query?: never;
@@ -10356,6 +10457,7 @@ export interface components {
                   inferredType: 'empty' | 'boolean' | 'integer' | 'number' | 'datetime' | 'string';
                   missingCount: number;
                   distinctCount: number;
+                  distinctCountCapped?: boolean;
                 }[];
                 targetColumn: string | null;
                 targetExists: boolean;
@@ -11993,6 +12095,7 @@ export interface components {
                   inferredType: 'empty' | 'boolean' | 'integer' | 'number' | 'datetime' | 'string';
                   missingCount: number;
                   distinctCount: number;
+                  distinctCountCapped?: boolean;
                 }[];
                 targetColumn: string | null;
                 targetExists: boolean;
@@ -12448,6 +12551,36 @@ export interface components {
     StartSystem3DeliveryBody: {
       expectedVersion: number;
       selectedVariant?: string;
+    };
+    System3OperationTrace: {
+      /** Format: uuid */
+      operationId: string;
+      events: components['schemas']['System3ExperimentProgressEvent'][];
+    };
+    System3ExperimentProgressEvent: {
+      seq: number;
+      step: string;
+      /** Format: date-time */
+      at: string;
+      /** @enum {string} */
+      stage: 'prepare' | 'variants' | 'review' | 'run';
+      /** @enum {string} */
+      action:
+        | 'sandbox_check'
+        | 'generate'
+        | 'prepare_data'
+        | 'split'
+        | 'smoke'
+        | 'review'
+        | 'question'
+        | 'variant_run'
+        | 'evaluate';
+      /** @enum {string} */
+      status: 'running' | 'passed' | 'failed';
+      round: number;
+      variantId: string | null;
+      detail: string;
+      durationMs: number | null;
     };
     System3EvidenceRecord: {
       /** Format: uuid */

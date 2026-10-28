@@ -3,6 +3,7 @@ import {
   blueprintAnalysisSchema,
   experimentEvidenceViewSchema,
   experimentPinSchema,
+  experimentProgressEventSchema,
   system3AttentionSchema,
   system3FreshnessSchema,
   system3PhaseSchema,
@@ -1538,6 +1539,26 @@ export const streamSystem3OperationRoute = createRoute({
     200: {
       description: 'Server-sent operation state events',
       content: { 'text/event-stream': { schema: z.string() } },
+    },
+    ...projectErrors,
+  },
+});
+export const system3OperationTraceSchema = z
+  .object({
+    operationId: z.string().uuid(),
+    /** Experiment steps (TW-06) in the order they happened; empty for other operations. */
+    events: z.array(experimentProgressEventSchema.openapi('System3ExperimentProgressEvent')),
+  })
+  .openapi('System3OperationTrace');
+export const getSystem3OperationTraceRoute = createRoute({
+  method: 'get',
+  path: '/api/system3/operations/{operationId}/trace',
+  summary: 'Live step trace of a System 3 operation (builder, reviewer, sandbox and scoring)',
+  request: { params: system3OperationParamsSchema },
+  responses: {
+    200: {
+      description: 'Trace events recorded so far',
+      content: { 'application/json': { schema: system3OperationTraceSchema } },
     },
     ...projectErrors,
   },

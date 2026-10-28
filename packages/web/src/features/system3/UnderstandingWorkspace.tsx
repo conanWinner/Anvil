@@ -95,7 +95,7 @@ export function UnderstandingWorkspace({
               <strong>Chưa phân tích</strong>
               <p>
                 Phân tích đọc các nguồn đã ghim, rút ra mục tiêu, yêu cầu và những câu hỏi cần bạn
-                xác nhận. Bước này chưa chạy các LLM so sánh.
+                xác nhận. Bước này chỉ đọc tài liệu, chưa viết hay chạy code.
               </p>
             </div>
           </>
@@ -295,7 +295,8 @@ export function UnderstandingWorkspace({
         </div>
       </details>
 
-      {view.blockingReasons.length > 0 ? (
+      {/* Blockers gate accepting a draft; once a snapshot is active with no new draft they are moot. */}
+      {view.blockingReasons.length > 0 && (candidate || !active) ? (
         <div className="s3-understanding-blockers" role="status">
           <AlertTriangle size={18} aria-hidden="true" />
           <div>

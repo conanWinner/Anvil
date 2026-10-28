@@ -1,6 +1,10 @@
 import {
+  AlertTriangle,
   ArrowRight,
+  BarChart3,
   Check,
+  ClipboardCheck,
+  Database,
   CheckCircle2,
   ChevronRight,
   CircleHelp,
@@ -15,6 +19,7 @@ import {
   PackageCheck,
   PanelLeftClose,
   Play,
+  RotateCcw,
   SearchCheck,
   ShieldCheck,
   Sparkles,
@@ -23,7 +28,7 @@ import {
   Workflow,
   X,
 } from 'lucide-react';
-import { createElement, useEffect, useRef, useState, type ReactElement } from 'react';
+import { createElement, Fragment, useEffect, useRef, useState, type ReactElement } from 'react';
 import { Link, NavLink, Navigate, Route, Routes, useNavigate, useParams } from 'react-router';
 import {
   listSystem3Projects,
@@ -44,10 +49,9 @@ import { System3SourceIntakeRequestError, system3Store, useSystem3Project } from
 import { InlineResourceViewer, ResourceList, type ModelResourceView } from './ResourceViewer';
 import { UnderstandingWorkspace } from './UnderstandingWorkspace';
 import { LifecycleAttemptBar } from './LifecycleAttemptBar';
-import { buildJourney } from './journey';
-import { JourneySteps } from './JourneySteps';
 import { ExperimentResultsView, metricLabel } from './ExperimentResults';
 import { ExperimentRunPanel } from './ExperimentRun';
+import { RunTrace } from './RunTrace';
 import { presentProjectCard } from './project-card';
 import type {
   PhaseStatus,
@@ -59,8 +63,23 @@ import type {
   System3SourceRole,
 } from './types';
 import './system3.css';
+import './system3-theme.css';
 
-const NAV_ITEMS = [{ to: 'flow', label: 'Workspace dự án', icon: LayoutDashboard }] as const;
+/** One tab per lifecycle area; `phase` ties a tab to the lifecycle phase it shows. */
+const PROJECT_TABS = [
+  { to: 'flow', label: 'Pipeline', icon: Workflow, phase: null },
+  { to: 'sources', label: 'Nguồn dữ liệu', icon: Database, phase: 'intake' },
+  { to: 'understanding', label: 'Bản hiểu', icon: SearchCheck, phase: 'understanding' },
+  { to: 'plan', label: 'Kế hoạch & duyệt', icon: ClipboardCheck, phase: 'readiness' },
+  { to: 'run', label: 'Lượt chạy', icon: Play, phase: 'build' },
+  { to: 'results', label: 'Kết quả', icon: BarChart3, phase: 'verify' },
+  { to: 'delivery', label: 'Bàn giao', icon: PackageCheck, phase: 'delivery' },
+] as const satisfies readonly {
+  to: string;
+  label: string;
+  icon: typeof LayoutDashboard;
+  phase: LifecyclePhaseView['id'] | null;
+}[];
 const OLIST_BLUEPRINT_URL = '/samples/olist/customer-summary-blueprint.md';
 const OLIST_DATASET_URL = '/samples/olist/olist-customers-sample.csv';
 
@@ -72,6 +91,15 @@ function Shell({ children }: { children: ReactElement }): ReactElement {
       return false;
     }
   });
+  // index.html marks the light surface before the app loads; keep it in step with the theme and
+  // drop it when leaving System 3 so the console keeps its own background.
+  useEffect(() => {
+    if (dark) document.documentElement.removeAttribute('data-surface');
+    else document.documentElement.setAttribute('data-surface', 'system3-light');
+    return (): void => {
+      document.documentElement.removeAttribute('data-surface');
+    };
+  }, [dark]);
   return (
     <div className={`system3-root ${dark ? 's3-dark' : ''}`}>
       <a className="s3-skip-link" href="#main-content" aria-label="Skip to main content">
@@ -106,36 +134,75 @@ function Shell({ children }: { children: ReactElement }): ReactElement {
   );
 }
 
+/** Sidebar marker for a tab: a running phase pulses, one that needs the user is amber. */
+function tabMarker(status: PhaseStatus | undefined): 'running' | 'attention' | 'done' | null {
+  if (status === 'active') return 'running';
+  if (status === 'blocked' || status === 'stale' || status === 'ready') return 'attention';
+  if (status === 'completed') return 'done';
+  return null;
+}
+
 function ProjectNav(): ReactElement {
   const project = useSystem3Project();
+  const lifecycle = buildLifecycleView(project);
+  const pendingDecisions = project.decisions.filter(item => item.status === 'pending').length;
   return (
-    <nav className="s3-nav" aria-label="Điều hướng Anvil Project">
+    <nav className="s3-nav s3-side" aria-label="Điều hướng Anvil Project">
       <Link to="/console/projects" className="s3-project-back">
-        Dự án
+        ‹ Dự án
       </Link>
-      <span aria-hidden="true">/</span>
-      {NAV_ITEMS.map(item => {
-        return (
-          <NavLink
-            key={item.to}
-            to={`/console/projects/${project.id}/${item.to}`}
-            className={({ isActive }) => (isActive ? 's3-active' : '')}
-          >
-            <span className="flex items-center gap-2">
-              {createElement(item.icon, { size: 16 })} {item.label}
-            </span>
-          </NavLink>
-        );
-      })}
+      <p className="s3-side-project" title={project.name}>
+        {project.name}
+      </p>
+      <ul className="s3-side-tabs">
+        {PROJECT_TABS.map((item, index) => {
+          const marker = tabMarker(
+            item.phase === null
+              ? undefined
+              : lifecycle.find(phase => phase.id === item.phase)?.status
+          );
+          return (
+            <Fragment key={item.to}>
+              {/* The pipeline is where a run is started and followed; the rest are per-step details. */}
+              {index === 1 ? <li className="s3-side-heading">Chi tiết từng bước</li> : null}
+              <li>
+                <NavLink
+                  to={`/console/projects/${project.id}/${item.to}`}
+                  className={({ isActive }) => (isActive ? 's3-active' : '')}
+                >
+                  {createElement(item.icon, { size: 16, 'aria-hidden': true })}
+                  <span className="s3-side-label">{item.label}</span>
+                  {marker ? (
+                    <span
+                      className={`s3-side-marker ${marker}`}
+                      aria-hidden="true"
+                      title={
+                        marker === 'running'
+                          ? 'đang chạy'
+                          : marker === 'attention'
+                            ? 'cần bạn'
+                            : 'đã xong'
+                      }
+                    />
+                  ) : null}
+                </NavLink>
+              </li>
+            </Fragment>
+          );
+        })}
+      </ul>
       <details className="s3-nav-secondary">
-        <summary>Chi tiết khác</summary>
+        <summary>
+          Chi tiết khác
+          {pendingDecisions > 0 ? (
+            <span className="s3-nav-badge">{pendingDecisions.toString()}</span>
+          ) : null}
+        </summary>
         <div>
           {[
-            ['overview', 'Tổng quan'],
-            ['sources', 'Nguồn đầu vào'],
-            ['evidence', 'Kết quả & Bằng chứng'],
             ['decisions', 'Quyết định & Phê duyệt'],
-            ['delivery', 'Bàn giao'],
+            ['overview', 'Tóm tắt dự án'],
+            ['evidence', 'Bằng chứng'],
             ['technical', 'Chi tiết kỹ thuật'],
           ].map(([route, label]) => (
             <NavLink key={route} to={`/console/projects/${project.id}/${route}`}>
@@ -150,7 +217,11 @@ function ProjectNav(): ReactElement {
 
 function Workspace({ children }: { children: ReactElement }): ReactElement {
   const { projectId } = useParams();
-  const [loading, setLoading] = useState(true);
+  // Each tab mounts its own Workspace; when the store already holds this project, show it at
+  // once and refresh in the background instead of blanking the page behind a loading notice.
+  const holdsProject = (): boolean =>
+    projectId !== undefined && system3Store.getSnapshot().id === projectId;
+  const [loading, setLoading] = useState(() => !holdsProject());
   const [loadError, setLoadError] = useState<string | null>(null);
   const [operationLoadError, setOperationLoadError] = useState<string | null>(null);
   useEffect(() => {
@@ -161,7 +232,7 @@ function Workspace({ children }: { children: ReactElement }): ReactElement {
     }
     const controller = new AbortController();
     let active = true;
-    setLoading(true);
+    setLoading(!holdsProject());
     setLoadError(null);
     setOperationLoadError(null);
     void system3Store.load(projectId, controller.signal).then(
@@ -414,7 +485,8 @@ function phaseGlyph(status: PhaseStatus): string {
   return '○';
 }
 
-function phaseStatusLabel(status: PhaseStatus): string {
+function phaseStatusLabel(status: PhaseStatus, awaitingUser = false): string {
+  if ((status === 'active' || status === 'ready') && awaitingUser) return 'Chờ bạn';
   if (status === 'completed') return 'Đã hoàn tất';
   if (status === 'blocked') return 'Đang bị chặn';
   if (status === 'active') return 'Đang chạy';
@@ -459,7 +531,7 @@ function OverviewPage(): ReactElement {
           <section className="s3-overview-command" aria-labelledby="overview-next-title">
             <p className="s3-kicker">Việc nên làm tiếp theo</p>
             <span className={`s3-status-badge ${nextActivity?.status ?? 'waiting'}`}>
-              {phaseStatusLabel(nextActivity?.status ?? 'waiting')}
+              {phaseStatusLabel(nextActivity?.status ?? 'waiting', nextActivity?.awaitingUser)}
             </span>
             <h2 id="overview-next-title">
               {project.operation?.status === 'unknown'
@@ -524,7 +596,7 @@ function OverviewPage(): ReactElement {
                 <span>{(index + 1).toString().padStart(2, '0')}</span>
                 <div>
                   <strong>{phase.title}</strong>
-                  <small>{phaseStatusLabel(phase.status)}</small>
+                  <small>{phaseStatusLabel(phase.status, phase.awaitingUser)}</small>
                 </div>
               </li>
             ))}
@@ -537,6 +609,7 @@ function OverviewPage(): ReactElement {
 
 function FlowPage(): ReactElement {
   const project = useSystem3Project();
+  const navigate = useNavigate();
   const lifecycle = buildLifecycleView(project);
   const suggestedActivityId = selectSuggestedLifecycleActivity(project, lifecycle).activityId;
   const selectionWasExplicit = useRef(false);
@@ -551,45 +624,140 @@ function FlowPage(): ReactElement {
     if (activityId === 'OP-05') return system3Store.approve();
     if (activityId === 'TW-06') return system3Store.execute();
     if (activityId === 'TW-07') return system3Store.verify();
-    if (activityId === 'TW-09') return system3Store.deliver();
+    if (activityId === 'TW-09') {
+      // An experiment delivers the variant the user picks on the results page; never pick here.
+      if (project.compilation?.experiment) {
+        navigate(`/console/projects/${project.id}/results`);
+        return;
+      }
+      return system3Store.deliver();
+    }
     throw new Error(`Activity ${activityId} cần được thực hiện trong workspace tương ứng.`);
   };
   useEffect(() => {
     if (!selectionWasExplicit.current) setSelectedActivityId(suggestedActivityId);
   }, [project.id, suggestedActivityId]);
+  const currentPhaseId = lifecycle.find(phase =>
+    phase.activities.some(activity => activity.id === suggestedActivityId)
+  )?.id;
+  const [openPhases, setOpenPhases] = useState<ReadonlySet<string>>(() => new Set());
+  const currentStepRef = useRef<HTMLLIElement>(null);
+  const shownPhaseId = useRef(currentPhaseId);
+  useEffect(() => {
+    // Follow the pipeline: when it moves on to another step, bring that step into view.
+    if (shownPhaseId.current === currentPhaseId) return;
+    shownPhaseId.current = currentPhaseId;
+    currentStepRef.current?.scrollIntoView({
+      block: 'nearest',
+      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+    });
+  }, [currentPhaseId]);
   if (selected === undefined)
     return (
       <Workspace>
         <div aria-hidden="true" />
       </Workspace>
     );
+  /** The activity a step shows: the one picked in the lifecycle rail, the current one, or the next due. */
+  const activityFor = (phase: LifecyclePhaseView): string =>
+    phase.activities.find(activity => activity.id === selectedActivityId)?.id ??
+    phase.activities.find(activity => activity.id === suggestedActivityId)?.id ??
+    phase.activities.find(activity => activity.status !== 'completed')?.id ??
+    phase.activities.at(-1)?.id ??
+    '';
   return (
     <Workspace>
       <>
         <ProjectHeader showPrimaryAction={false} />
-        <JourneySteps steps={buildJourney(lifecycle)} />
-        <section className="s3-minimal-workspace" aria-label="Workspace dự án">
-          {selectionWasExplicit.current && selectedActivityId !== suggestedActivityId ? (
-            <button
-              type="button"
-              className="s3-text-button"
-              onClick={() => {
-                selectionWasExplicit.current = false;
-                setSelectedActivityId(suggestedActivityId);
-              }}
-            >
-              Trở lại bước hiện tại
-            </button>
-          ) : null}
-          <LifecyclePhaseDetail
-            onResourceOpen={() => {
-              selectionWasExplicit.current = true;
-            }}
-            phase={selected}
-            projectId={project.id}
-            projectVersion={project.version}
-            selectedActivityId={selectedActivityId}
-          />
+        <section className="s3-minimal-workspace" aria-label="Pipeline dự án">
+          <StaleSourcesNotice />
+          <ol className="s3-pipeline" aria-label="Các bước của pipeline">
+            {lifecycle.map((phase, index) => {
+              const tab = PROJECT_TABS.find(item => item.phase === phase.id);
+              const current = phase.id === currentPhaseId;
+              const open = current || phase.id === selected.id || openPhases.has(phase.id);
+              const activityId = activityFor(phase);
+              const activity = phase.activities.find(item => item.id === activityId);
+              return (
+                <li
+                  key={phase.id}
+                  ref={current ? currentStepRef : undefined}
+                  className={`s3-pipeline-step ${phase.status}${current ? ' current' : ''}`}
+                  aria-current={current ? 'step' : undefined}
+                >
+                  <div className="s3-pipeline-head">
+                    <span className={`s3-pipeline-marker ${phase.status}`} aria-hidden="true">
+                      {phase.status === 'completed' ? <Check size={14} /> : index + 1}
+                    </span>
+                    <button
+                      type="button"
+                      className="s3-pipeline-toggle"
+                      aria-expanded={open}
+                      disabled={current}
+                      onClick={() => {
+                        setOpenPhases(previous => {
+                          const next = new Set(previous);
+                          if (next.has(phase.id)) next.delete(phase.id);
+                          else next.add(phase.id);
+                          return next;
+                        });
+                        if (phase.id === selected.id) {
+                          selectionWasExplicit.current = false;
+                          setSelectedActivityId(suggestedActivityId);
+                        }
+                      }}
+                    >
+                      <strong>{tab?.label ?? phase.title}</strong>
+                      <span>{activity?.statusDetail ?? phase.summary}</span>
+                    </button>
+                    <span className={`s3-status-badge ${phase.status}`}>
+                      {phaseStatusLabel(phase.status, phase.awaitingUser)}
+                    </span>
+                    {tab ? (
+                      <Link
+                        className="s3-pipeline-detail no-underline"
+                        to={`/console/projects/${project.id}/${tab.to}`}
+                      >
+                        Chi tiết <ChevronRight size={14} aria-hidden="true" />
+                      </Link>
+                    ) : null}
+                  </div>
+                  {open ? (
+                    <div className="s3-pipeline-body">
+                      {phase.id === 'build' ? (
+                        <>
+                          <RunTrace
+                            project={project}
+                            variantNames={experimentVariantNames(project)}
+                          />
+                          <BuildRetry />
+                        </>
+                      ) : null}
+                      {phase.id === 'delivery' && project.delivery ? (
+                        <a
+                          className="s3-button no-underline"
+                          href={`/api/system3/projects/${project.id}/delivery/package`}
+                        >
+                          <PackageCheck size={15} aria-hidden="true" /> Tải gói bàn giao
+                        </a>
+                      ) : null}
+                      <LifecyclePhaseDetail
+                        // An activity picked in the lifecycle rail is being inspected: show it in full.
+                        compact={!(selectionWasExplicit.current && phase.id === selected.id)}
+                        onResourceOpen={() => {
+                          selectionWasExplicit.current = true;
+                        }}
+                        phase={phase}
+                        projectId={project.id}
+                        projectVersion={project.version}
+                        selectedActivityId={activityId}
+                      />
+                    </div>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ol>
           <details className="s3-secondary-details s3-lifecycle-disclosure">
             <summary>Chi tiết vòng đời · 6 giai đoạn, 10 hoạt động</summary>
             <nav
@@ -610,7 +778,9 @@ function FlowPage(): ReactElement {
                       <small>{(index + 1).toString().padStart(2, '0')}</small>
                       <strong id={`lifecycle-phase-${phase.id}`}>{phase.title}</strong>
                     </span>
-                    <span className="s3-rail-phase-status">{phaseStatusLabel(phase.status)}</span>
+                    <span className="s3-rail-phase-status">
+                      {phaseStatusLabel(phase.status, phase.awaitingUser)}
+                    </span>
                   </div>
                   <div className="s3-lifecycle-rail-activities">
                     {phase.activities.map(activity => (
@@ -639,7 +809,7 @@ function FlowPage(): ReactElement {
             <LifecycleAttemptBar
               projectId={project.id}
               projectVersion={project.version}
-              hasExecution={project.execution !== undefined}
+              executionStatus={project.execution?.status}
               selectedActivityId={selectedActivityId}
               onSelectActivity={activityId => {
                 selectionWasExplicit.current = true;
@@ -651,6 +821,239 @@ function FlowPage(): ReactElement {
         </section>
       </>
     </Workspace>
+  );
+}
+
+/**
+ * What the approved plan runs, in words: experiment and comparison projects have no meaningful
+ * workflow template id (an Olist project still carries the historical churn template id).
+ */
+function workflowLabel(project: ReturnType<typeof useSystem3Project>): string {
+  if (project.compilation?.experiment) return 'Thí nghiệm theo blueprint';
+  if (project.compilation?.modelComparison) return 'So sánh nhiều LLM';
+  return project.workflowVersion;
+}
+
+/** The experiment variant the user chose when requesting delivery, if any. */
+function deliveredExperimentVariant(project: ReturnType<typeof useSystem3Project>): string | null {
+  const evidenceMap = project.delivery?.manifest.evidenceMap;
+  return typeof evidenceMap === 'object' &&
+    evidenceMap !== null &&
+    'selectedVariant' in evidenceMap &&
+    typeof evidenceMap.selectedVariant === 'string'
+    ? evidenceMap.selectedVariant
+    : null;
+}
+
+function experimentVariantNames(
+  project: ReturnType<typeof useSystem3Project>
+): ReadonlyMap<string, string> {
+  return new Map(
+    (project.compilation?.experiment?.summary.variants ?? []).map(variant => [
+      variant.id,
+      variant.name,
+    ])
+  );
+}
+
+const PHASE_PAGE_COPY: Record<
+  Exclude<LifecyclePhaseView['id'], 'intake'>,
+  { kicker: string; lead: string }
+> = {
+  understanding: {
+    kicker: 'Bản hiểu',
+    lead: 'Anvil trích bài toán, phương án và cách đánh giá từ blueprint; thiếu gì thì hỏi bạn.',
+  },
+  readiness: {
+    kicker: 'Kế hoạch & duyệt',
+    lead: 'Kiểm tra đủ điều kiện, biên dịch kế hoạch và phê duyệt đúng kế hoạch sẽ chạy.',
+  },
+  build: {
+    kicker: 'Lượt chạy',
+    lead: 'Agent viết code, sandbox chạy thử, agent review; sau đó bạn chọn phương án để chạy thật.',
+  },
+  verify: {
+    kicker: 'Kết quả',
+    lead: 'Anvil chấm lại độc lập bằng nhãn giữ riêng và gợi ý; bạn là người chọn phương án.',
+  },
+  delivery: {
+    kicker: 'Bàn giao',
+    lead: 'Tạo gói chạy lại gồm code, dữ liệu, kết quả và phương án bạn đã chọn.',
+  },
+};
+
+/** One lifecycle phase as its own tab, with the same activity detail the overview uses. */
+function PhasePage({
+  phaseId,
+}: {
+  phaseId: Exclude<LifecyclePhaseView['id'], 'intake'>;
+}): ReactElement {
+  return (
+    <Workspace>
+      <PhasePageContent phaseId={phaseId} />
+    </Workspace>
+  );
+}
+
+function PhasePageContent({
+  phaseId,
+}: {
+  phaseId: Exclude<LifecyclePhaseView['id'], 'intake'>;
+}): ReactElement {
+  const project = useSystem3Project();
+  const lifecycle = buildLifecycleView(project);
+  const phase = lifecycle.find(item => item.id === phaseId);
+  const suggested = selectSuggestedLifecycleActivity(project, lifecycle).activityId;
+  const defaultActivity =
+    phase?.activities.find(activity => activity.id === suggested)?.id ??
+    phase?.activities.find(activity => activity.status !== 'completed')?.id ??
+    phase?.activities.at(-1)?.id ??
+    '';
+  const [chosen, setChosen] = useState<string | null>(null);
+  const selectedActivityId =
+    chosen !== null && phase?.activities.some(activity => activity.id === chosen)
+      ? chosen
+      : defaultActivity;
+  const copy = PHASE_PAGE_COPY[phaseId];
+  if (phase === undefined) return <div aria-hidden="true" />;
+  return (
+    <>
+      <ProjectHeader showPrimaryAction={false} />
+      <section className="s3-phase-page" aria-labelledby={`phase-page-${phaseId}`}>
+        <header className="s3-phase-page-head">
+          <div>
+            <p className="s3-kicker">{copy.kicker}</p>
+            <h2 id={`phase-page-${phaseId}`}>{phase.title}</h2>
+            <p>{copy.lead}</p>
+          </div>
+          <span className={`s3-status-badge ${phase.status}`}>
+            {phaseStatusLabel(phase.status, phase.awaitingUser)}
+          </span>
+        </header>
+        {phase.activities.length > 1 ? (
+          <div className="s3-phase-tabs" role="group" aria-label={`Hoạt động của ${phase.title}`}>
+            {phase.activities.map(activity => (
+              <button
+                key={activity.id}
+                type="button"
+                className={activity.id === selectedActivityId ? 'selected' : ''}
+                aria-pressed={activity.id === selectedActivityId}
+                onClick={() => {
+                  setChosen(activity.id);
+                }}
+              >
+                <span>{activity.id}</span>
+                <strong>{activity.shortLabel}</strong>
+                <i className={`s3-rail-status-dot ${activity.status}`} aria-hidden="true" />
+              </button>
+            ))}
+          </div>
+        ) : null}
+        {phaseId === 'build' ? (
+          <>
+            <RunTrace project={project} variantNames={experimentVariantNames(project)} />
+            <BuildRetry />
+          </>
+        ) : null}
+        <LifecyclePhaseDetail
+          onResourceOpen={() => undefined}
+          phase={phase}
+          projectId={project.id}
+          projectVersion={project.version}
+          selectedActivityId={selectedActivityId}
+        />
+      </section>
+    </>
+  );
+}
+
+/**
+ * A new source version makes the understanding stale; the pipeline offers the re-analysis right
+ * here so answering an agent's question with a new blueprint does not send the user elsewhere.
+ */
+function StaleSourcesNotice(): ReactElement | null {
+  const project = useSystem3Project();
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analyzeError, setAnalyzeError] = useState<string | null>(null);
+  const busy = project.operation?.status === 'accepted' || project.operation?.status === 'running';
+  if (project.freshness === 'current' || !project.intakeGate.ready || busy) return null;
+  return (
+    <section className="s3-stale-notice" role="status" aria-labelledby="s3-stale-notice-title">
+      <div>
+        <strong id="s3-stale-notice-title">Nguồn đã thay đổi</strong>
+        <p>
+          Bản hiểu, kế hoạch và kết quả hiện tại dựa trên nguồn cũ. Phân tích lại để Anvil đọc phiên
+          bản mới; kết quả cũ vẫn được giữ trong lịch sử.
+        </p>
+        {analyzeError ? <p className="s3-build-retry-error">{analyzeError}</p> : null}
+      </div>
+      <button
+        type="button"
+        className="s3-button"
+        disabled={analyzing}
+        onClick={() => {
+          setAnalyzing(true);
+          setAnalyzeError(null);
+          void system3Store
+            .startAnalysis()
+            .catch(error => {
+              setAnalyzeError(error instanceof Error ? error.message : 'Không thể phân tích lại');
+            })
+            .finally(() => {
+              setAnalyzing(false);
+            });
+        }}
+      >
+        <RotateCcw size={15} aria-hidden="true" />{' '}
+        {analyzing ? 'Đang bắt đầu…' : 'Phân tích lại với nguồn mới'}
+      </button>
+    </section>
+  );
+}
+
+/** A failed build says why and offers the re-run right here, not only in the history panel. */
+function BuildRetry(): ReactElement | null {
+  const project = useSystem3Project();
+  const [retrying, setRetrying] = useState(false);
+  const [retryError, setRetryError] = useState<string | null>(null);
+  const busy = project.operation?.status === 'accepted' || project.operation?.status === 'running';
+  // A question from the builder or reviewer is not an error: the activity shows it with the way
+  // to answer it (update the blueprint), so this box only handles real failures.
+  if (
+    project.execution?.status !== 'failed' ||
+    busy ||
+    project.execution.error?.startsWith('Cần bạn quyết định') === true
+  )
+    return null;
+  return (
+    <section className="s3-build-retry" role="alert" aria-labelledby="s3-build-retry-title">
+      <AlertTriangle size={18} aria-hidden="true" />
+      <div>
+        <strong id="s3-build-retry-title">Bước Xây dựng dừng vì lỗi</strong>
+        {project.execution.error ? <pre>{project.execution.error}</pre> : null}
+        <p>Chạy lại sẽ tạo một lượt mới trên cùng dữ liệu; lượt lỗi vẫn được giữ trong lịch sử.</p>
+        {retryError ? <p className="s3-build-retry-error">{retryError}</p> : null}
+      </div>
+      <button
+        type="button"
+        className="s3-button"
+        disabled={retrying}
+        onClick={() => {
+          setRetrying(true);
+          setRetryError(null);
+          void system3Store
+            .retryBuild()
+            .catch(error => {
+              setRetryError(error instanceof Error ? error.message : 'Không thể chạy lại');
+            })
+            .finally(() => {
+              setRetrying(false);
+            });
+        }}
+      >
+        <RotateCcw size={15} aria-hidden="true" /> {retrying ? 'Đang chạy lại…' : 'Chạy lại'}
+      </button>
+    </section>
   );
 }
 
@@ -719,12 +1122,7 @@ function PlanReviewDialog({ onClose }: { onClose: () => void }): ReactElement {
         </header>
         <div className="s3-dialog-body">
           <div className="s3-review-grid">
-            <ReviewItem
-              label="Product workflow"
-              value={
-                project.compilation?.modelComparison ? 'So sánh nhiều LLM' : project.workflowVersion
-              }
-            />
+            <ReviewItem label="Quy trình" value={workflowLabel(project)} />
             <ReviewItem
               label="Input snapshot"
               value={`${(project.compilation?.inputSourceCount ?? 0).toString()} source đã pin`}
@@ -977,8 +1375,9 @@ function PlanSummary({ onOpenDetails }: { onOpenDetails: () => void }): ReactEle
           <div>
             <dt>Giới hạn</dt>
             <dd>
-              Sandbox không mạng · 2 GB RAM · 2 CPU · {config.variantTimeoutMinutes.toString()}{' '}
-              phút/phương án · tối đa {config.maxFixRounds.toString()} vòng sửa lỗi
+              Sandbox không mạng · 2 GB RAM · 2 CPU · dừng phương án chạy quá{' '}
+              {config.variantTimeoutMinutes.toString()} phút · tối đa{' '}
+              {config.maxFixRounds.toString()} vòng sửa lỗi
             </dd>
           </div>
         </dl>
@@ -1017,7 +1416,7 @@ function PlanSummary({ onOpenDetails }: { onOpenDetails: () => void }): ReactEle
                 ))}
               </span>
             ) : (
-              project.workflowVersion
+              workflowLabel(project)
             )}
           </dd>
         </div>
@@ -1093,7 +1492,7 @@ function activityActionLabel(activity: LifecycleActivityView): string {
   if (activity.route === 'evidence') return 'Xem bằng chứng';
   if (activity.route === 'delivery') return 'Mở khu vực bàn giao';
   if (activity.route === 'technical') return 'Theo dõi lần chạy kỹ thuật';
-  return 'Mở chi tiết activity';
+  return 'Mở chi tiết';
 }
 
 function activityAsTechnicalPhase(
@@ -1196,12 +1595,18 @@ function LifecyclePhaseDetail({
   projectVersion,
   selectedActivityId,
   onResourceOpen,
+  compact = false,
 }: {
   onResourceOpen: () => void;
   phase: LifecyclePhaseView;
   projectId: string;
   projectVersion: number;
   selectedActivityId: string;
+  /**
+   * Pipeline view: only what the user acts on (action, questions, plan, run choice, results); the
+   * row around it already shows the title and status, and resources stay on the step's own tab.
+   */
+  compact?: boolean;
 }): ReactElement {
   const project = useSystem3Project();
   const [activityView, setActivityView] = useState<System3ActivityResourceView | null>(null);
@@ -1317,13 +1722,7 @@ function LifecyclePhaseDetail({
     project.execution?.id === experimentBuild.latestRunExecutionId &&
     project.freshness === 'current' &&
     !project.deliveryAvailable;
-  const deliveredVariant =
-    typeof project.delivery?.manifest.evidenceMap === 'object' &&
-    project.delivery.manifest.evidenceMap !== null &&
-    'selectedVariant' in project.delivery.manifest.evidenceMap &&
-    typeof project.delivery.manifest.evidenceMap.selectedVariant === 'string'
-      ? project.delivery.manifest.evidenceMap.selectedVariant
-      : null;
+  const deliveredVariant = deliveredExperimentVariant(project);
   const chosenVariant =
     deliveredVariant ?? selectedVariant ?? experimentResults?.suggestion.suggested ?? null;
   const hasComparisonResults =
@@ -1446,42 +1845,53 @@ function LifecyclePhaseDetail({
       </Link>
     );
   };
+  const workspaceTitle = hasComparisonResults
+    ? project.freshness === 'current'
+      ? experimentResults
+        ? 'Kết quả thí nghiệm'
+        : 'Kết quả so sánh'
+      : experimentResults
+        ? 'Kết quả thí nghiệm cũ'
+        : 'Kết quả so sánh cũ'
+    : selectedActivity.label;
   return (
     <>
-      <article className="s3-activity-workspace" aria-labelledby="selected-activity-title">
+      <article
+        className={`s3-activity-workspace${compact ? ' compact' : ''}`}
+        aria-labelledby={compact ? undefined : 'selected-activity-title'}
+        aria-label={compact ? workspaceTitle : undefined}
+      >
         <header className="s3-activity-workspace-header">
-          <div className="s3-activity-workspace-title">
-            <span
-              className={`s3-activity-icon ${selectedActivity.executionKind}`}
-              aria-hidden="true"
-            >
-              {activityIcon(selectedActivity.id)}
-            </span>
-            <div>
-              <h2 id="selected-activity-title">
-                {hasComparisonResults
-                  ? project.freshness === 'current'
+          {compact ? (
+            // The pipeline row shows the step; keep the heading for assistive tech, without an id
+            // since several compact steps can be open at once.
+            <h2 className="s3-visually-hidden">{workspaceTitle}</h2>
+          ) : (
+            <div className="s3-activity-workspace-title">
+              <span
+                className={`s3-activity-icon ${selectedActivity.executionKind}`}
+                aria-hidden="true"
+              >
+                {activityIcon(selectedActivity.id)}
+              </span>
+              <div>
+                <h2 id="selected-activity-title">{workspaceTitle}</h2>
+                <p>
+                  {hasComparisonResults
                     ? experimentResults
-                      ? 'Kết quả thí nghiệm'
-                      : 'Kết quả so sánh'
-                    : experimentResults
-                      ? 'Kết quả thí nghiệm cũ'
-                      : 'Kết quả so sánh cũ'
-                  : selectedActivity.label}
-              </h2>
-              <p>
-                {hasComparisonResults
-                  ? experimentResults
-                    ? 'Các phương án từ blueprint chạy trên cùng dữ liệu; Anvil tự chấm trên tập kiểm tra giữ riêng.'
-                    : 'Cùng bài toán và dữ liệu; mỗi model có code, output và kết quả kiểm tra riêng.'
-                  : selectedActivity.description}
-              </p>
+                      ? 'Các phương án từ blueprint chạy trên cùng dữ liệu; Anvil tự chấm trên tập kiểm tra giữ riêng.'
+                      : 'Cùng bài toán và dữ liệu; mỗi model có code, output và kết quả kiểm tra riêng.'
+                    : selectedActivity.description}
+                </p>
+              </div>
             </div>
-          </div>
+          )}
           <div className="s3-activity-workspace-actions">
-            <span className={`s3-status-badge ${selectedActivity.status}`}>
-              {phaseStatusLabel(selectedActivity.status)}
-            </span>
+            {compact ? null : (
+              <span className={`s3-status-badge ${selectedActivity.status}`}>
+                {phaseStatusLabel(selectedActivity.status, selectedActivity.awaitingUser)}
+              </span>
+            )}
             {primaryAction()}
           </div>
         </header>
@@ -1492,15 +1902,17 @@ function LifecyclePhaseDetail({
           </p>
         ) : null}
 
-        <section className={`s3-next-action ${selectedActivity.status}`} aria-live="polite">
-          <div>
-            <span>Trạng thái và việc cần làm</span>
-            <strong>{selectedActivity.statusDetail}</strong>
-          </div>
-          <small>
-            Phase {phase.eyebrow} · {phase.title} · {phase.progress.toString()}% hoàn thành
-          </small>
-        </section>
+        {compact ? null : (
+          <section className={`s3-next-action ${selectedActivity.status}`} aria-live="polite">
+            <div>
+              <span>Trạng thái và việc cần làm</span>
+              <strong>{selectedActivity.statusDetail}</strong>
+            </div>
+            <small>
+              Phase {phase.eyebrow} · {phase.title} · {phase.progress.toString()}% hoàn thành
+            </small>
+          </section>
+        )}
 
         {selectedActivity.id === 'TW-06' && agentQuestion !== null ? (
           <section className="s3-agent-question" aria-labelledby="agent-question-title">
@@ -1509,9 +1921,8 @@ function LifecyclePhaseDetail({
               <h3 id="agent-question-title">Agent cần bạn quyết định</h3>
               <p className="s3-agent-question-text">{agentQuestion}</p>
               <p>
-                Agent thi công dừng vì blueprint chưa rõ hoặc mâu thuẫn với dữ liệu, và không tự đổi
-                đề. Cập nhật blueprint (hoặc dữ liệu) để trả lời, rồi phân tích và duyệt lại kế
-                hoạch.
+                Agent dừng vì blueprint chưa rõ hoặc mâu thuẫn với dữ liệu, và không tự đổi đề. Cập
+                nhật blueprint (hoặc dữ liệu) để trả lời, rồi phân tích và duyệt lại kế hoạch.
               </p>
               <Link
                 className="s3-button no-underline"
@@ -1689,29 +2100,31 @@ function LifecyclePhaseDetail({
           </div>
         ) : null}
 
-        <details className="s3-secondary-details">
-          <summary>Thông tin hoạt động</summary>
-          <dl className="s3-activity-brief">
-            <div>
-              <dt>Đầu vào chính</dt>
-              <dd>{selectedActivity.input}</dd>
-            </div>
-            <div>
-              <dt>Kết quả chính</dt>
-              <dd>{selectedActivity.output}</dd>
-            </div>
-            <div>
-              <dt>Cách Anvil thực hiện</dt>
-              <dd>
-                {selectedActivity.executionKind === 'operation'
-                  ? 'Backend xử lý theo quy tắc; không tạo Workflow Run mặc định.'
-                  : `Anvil Workflow Runtime · ${selectedActivity.technicalWorkflow ?? 'workflow đã đăng ký'}`}
-              </dd>
-            </div>
-          </dl>
-        </details>
+        {compact ? null : (
+          <details className="s3-secondary-details">
+            <summary>Thông tin hoạt động</summary>
+            <dl className="s3-activity-brief">
+              <div>
+                <dt>Đầu vào chính</dt>
+                <dd>{selectedActivity.input}</dd>
+              </div>
+              <div>
+                <dt>Kết quả chính</dt>
+                <dd>{selectedActivity.output}</dd>
+              </div>
+              <div>
+                <dt>Cách Anvil thực hiện</dt>
+                <dd>
+                  {selectedActivity.executionKind === 'operation'
+                    ? 'Backend xử lý theo quy tắc; không tạo Workflow Run mặc định.'
+                    : `Anvil Workflow Runtime · ${selectedActivity.technicalWorkflow ?? 'workflow đã đăng ký'}`}
+                </dd>
+              </div>
+            </dl>
+          </details>
+        )}
 
-        {activityViewLoading ? (
+        {activityViewLoading && !compact ? (
           <p className="s3-resource-loading" role="status" aria-live="polite">
             Đang tải đầu vào và kết quả của activity…
           </p>
@@ -1744,7 +2157,7 @@ function LifecyclePhaseDetail({
           </section>
         ) : null}
 
-        {resourcesCollapsed ? (
+        {compact ? null : resourcesCollapsed ? (
           <details className="s3-secondary-details">
             <summary>
               {hasComparisonResults
@@ -1769,7 +2182,7 @@ function LifecyclePhaseDetail({
           />
         )}
 
-        {activityView !== null ? (
+        {activityView !== null && !compact ? (
           <details className="s3-secondary-details">
             <summary>
               <span>
@@ -1813,7 +2226,7 @@ function LifecyclePhaseDetail({
           </details>
         ) : null}
 
-        {technicalResources.length > 0 ? (
+        {technicalResources.length > 0 && !compact ? (
           <details className="s3-technical-drilldown">
             <summary>
               <span>
@@ -1829,7 +2242,8 @@ function LifecyclePhaseDetail({
           </details>
         ) : null}
 
-        {selectedActivity.executionKind === 'workflow' &&
+        {!compact &&
+        selectedActivity.executionKind === 'workflow' &&
         selectedActivity.workflowSteps.length > 0 ? (
           <details className="s3-technical-drilldown">
             <summary>
@@ -2385,8 +2799,8 @@ function SourcesPage(): ReactElement {
               </span>
               <h2 id="source-intake-title">Tiếp nhận nguồn đầu vào</h2>
               <p>
-                Anvil kiểm tra file, giữ nguyên bytes đã nhận và tạo Source Version không bị ghi đè.
-                Bạn luôn biết nguồn nào đang được dùng trước khi chuyển sang Hiểu dự án.
+                Anvil kiểm tra từng tệp, giữ nguyên nội dung đã nhận và lưu thành một phiên bản
+                không bị ghi đè, để bạn luôn biết nguồn nào đang được dùng trước khi phân tích.
               </p>
             </div>
             <div className={`s3-op-status ${intakeGate.ready ? 'ready' : 'attention'}`}>
@@ -2420,7 +2834,7 @@ function SourcesPage(): ReactElement {
           <section className="s3-card s3-source-workbench">
             <div className="s3-card-head">
               <div>
-                <p className="s3-kicker">Source Registry</p>
+                <p className="s3-kicker">Danh sách nguồn</p>
                 <h2>Thêm hoặc cập nhật nguồn</h2>
                 <p className="m-1 text-sm text-slate-500">
                   Mỗi tài liệu là một nguồn riêng. Khi thay file, Anvil giữ lại phiên bản cũ để có
@@ -2534,7 +2948,7 @@ function SourcesPage(): ReactElement {
                 }}
               >
                 <div>
-                  <label htmlFor="system3-source-kind">Loại source</label>
+                  <label htmlFor="system3-source-kind">Loại nguồn</label>
                   <select
                     id="system3-source-kind"
                     value={kind}
@@ -3395,6 +3809,7 @@ function DeliveryPage(): ReactElement {
   const project = useSystem3Project();
   const [delivering, setDelivering] = useState(false);
   const [deliveryError, setDeliveryError] = useState<string | null>(null);
+  const deliveredVariant = deliveredExperimentVariant(project);
   const activeSourceCount = new Set(
     project.sources.filter(source => source.status === 'ready').map(source => source.sourceId)
   ).size;
@@ -3419,18 +3834,18 @@ function DeliveryPage(): ReactElement {
             <p className="s3-kicker">Bàn giao</p>
             <h2>Kiểm tra và tạo gói bàn giao</h2>
             <p>
-              Khu vực này sở hữu Delivery Request, bản kê bàn giao và package cuối cùng. Vòng đời dự
-              án chỉ hiển thị trạng thái tóm tắt của OP-08 và TW-09.
+              Anvil kiểm tra điều kiện, rồi đóng gói code, dữ liệu, kết quả và phương án bạn đã chọn
+              thành một gói có thể chạy lại.
             </p>
           </div>
           <span
             className={`s3-status-badge ${project.deliveryAvailable ? 'completed' : project.deliveryReady ? 'ready' : 'waiting'}`}
           >
             {project.deliveryAvailable
-              ? 'Đã tạo package'
+              ? 'Đã tạo gói'
               : project.deliveryReady
                 ? 'Sẵn sàng yêu cầu'
-                : 'Chưa đạt delivery gate'}
+                : 'Chưa đủ điều kiện'}
           </span>
         </header>
 
@@ -3438,11 +3853,11 @@ function DeliveryPage(): ReactElement {
           <section className="s3-delivery-gate" aria-labelledby="delivery-gate-title">
             <div>
               <span className="s3-operation-label">
-                <LockKeyhole size={14} /> OP-08 · Delivery Request
+                <LockKeyhole size={14} /> OP-08 · Yêu cầu bàn giao
               </span>
               <h2 id="delivery-gate-title">Điều kiện bàn giao</h2>
               <p>
-                Anvil kiểm tra lại đúng execution, verification và phiên bản project trước khi chấp
+                Anvil kiểm tra lại đúng lượt chạy, kết quả xác minh và phiên bản dự án trước khi
                 nhận yêu cầu đóng gói.
               </p>
             </div>
@@ -3451,7 +3866,7 @@ function DeliveryPage(): ReactElement {
                 {project.manifestApproved ? <CheckCircle2 size={17} /> : <Clock3 size={17} />}
                 <span>
                   <strong>Kế hoạch đã phê duyệt</strong>
-                  <small>Approval Manifest thuộc đúng project version</small>
+                  <small>Bản phê duyệt khớp đúng phiên bản dự án</small>
                 </span>
               </li>
               <li className={project.verification?.status === 'completed' ? 'complete' : ''}>
@@ -3461,7 +3876,7 @@ function DeliveryPage(): ReactElement {
                   <Clock3 size={17} />
                 )}
                 <span>
-                  <strong>Verification hiện hành</strong>
+                  <strong>Kết quả đã xác minh</strong>
                   <small>Kết quả được kiểm tra độc lập trước khi đóng gói</small>
                 </span>
               </li>
@@ -3472,8 +3887,8 @@ function DeliveryPage(): ReactElement {
                   <Clock3 size={17} />
                 )}
                 <span>
-                  <strong>Nguồn và kết quả còn hiện hành</strong>
-                  <small>Không dùng kết quả stale cho Delivery Request</small>
+                  <strong>Nguồn và kết quả còn mới</strong>
+                  <small>Không đóng gói kết quả đã cũ so với nguồn</small>
                 </span>
               </li>
             </ul>
@@ -3502,12 +3917,11 @@ function DeliveryPage(): ReactElement {
           <section className="s3-delivery-package" aria-labelledby="delivery-package-title">
             <div>
               <span className="s3-operation-label">
-                <Workflow size={14} /> TW-09 · Deliver
+                <Workflow size={14} /> TW-09 · Tạo gói
               </span>
               <h2 id="delivery-package-title">Gói sản phẩm</h2>
               <p>
-                Package bất biến đi cùng Delivery Manifest và hướng dẫn để người nhận có thể đối
-                soát hoặc chạy lại.
+                Gói cố định kèm bản kê bàn giao và hướng dẫn để người nhận đối soát hoặc chạy lại.
               </p>
             </div>
             {project.delivery ? (
@@ -3526,16 +3940,20 @@ function DeliveryPage(): ReactElement {
                   </a>
                 </div>
                 <dl className="s3-delivery-manifest-summary">
+                  {deliveredVariant !== null ? (
+                    <div>
+                      <dt>Phương án bạn đã chọn</dt>
+                      <dd>
+                        {experimentVariantNames(project).get(deliveredVariant) ?? deliveredVariant}
+                      </dd>
+                    </div>
+                  ) : null}
                   <div>
-                    <dt>Project Workflow Version</dt>
-                    <dd>{project.workflowVersion}</dd>
-                  </div>
-                  <div>
-                    <dt>Source Version đang dùng</dt>
+                    <dt>Phiên bản nguồn đã ghim</dt>
                     <dd>{activeSourceCount.toString()}</dd>
                   </div>
                   <div>
-                    <dt>Verification</dt>
+                    <dt>Xác minh</dt>
                     <dd>Đã hoàn tất</dd>
                   </div>
                 </dl>
@@ -3544,15 +3962,15 @@ function DeliveryPage(): ReactElement {
                   <p>Mã nội dung: {project.delivery.contentHash}</p>
                 </details>
                 <div className="s3-note">
-                  Package hiện hành vẫn ghi rõ các requirement ngoài phạm vi hoặc chưa có Evidence;
-                  trạng thái build thành công không tự động biến các khoảng trống đó thành verified.
+                  Gói ghi rõ các yêu cầu ngoài phạm vi hoặc chưa có bằng chứng; chạy thành công
+                  không tự biến các khoảng trống đó thành đã xác minh.
                 </div>
               </>
             ) : (
               <div className="s3-delivery-empty">
                 <PackageCheck size={26} />
                 <strong>Chưa có package</strong>
-                <p>TW-09 chỉ bắt đầu sau khi người dùng gửi Delivery Request hợp lệ.</p>
+                <p>Gói chỉ được tạo sau khi bạn gửi yêu cầu bàn giao hợp lệ.</p>
               </div>
             )}
           </section>
@@ -4493,7 +4911,8 @@ function HomePage(): ReactElement {
             <div>
               <h1 className="s3-title">Dự án của bạn</h1>
               <p className="s3-subtitle">
-                Một bài toán, một bộ dữ liệu, nhiều LLM — chấm bằng cùng một bộ kiểm tra.
+                Blueprint và dữ liệu vào — agent viết code từng phương án, Anvil chạy cô lập, tự
+                chấm và gợi ý; bạn chọn.
               </p>
             </div>
             <Link className="s3-button s3-button-lg no-underline" to="/console/projects/new">
@@ -4503,10 +4922,10 @@ function HomePage(): ReactElement {
           </div>
           <ol className="s3-how-it-works" aria-label="Cách Anvil hoạt động">
             {[
-              ['Tạo dự án', 'Bài toán, CSV và các LLM'],
+              ['Tạo dự án', 'Blueprint và dữ liệu CSV'],
               ['Phân tích', 'Xác nhận Bản hiểu'],
-              ['Phê duyệt và chạy', 'Mỗi LLM chạy riêng, cô lập'],
-              ['Xem kết quả', 'So sánh và tải gói chạy lại'],
+              ['Phê duyệt và chạy', 'Agent viết code, sandbox chạy'],
+              ['Xem kết quả', 'Chọn phương án, tải gói'],
             ].map(([title, detail], index) => (
               <li key={title}>
                 <span aria-hidden="true">{(index + 1).toString()}</span>
@@ -4573,6 +4992,13 @@ export function System3App(): ReactElement {
         <Route path=":projectId/flow" element={<FlowPage />} />
         <Route path=":projectId/overview" element={<OverviewPage />} />
         <Route path=":projectId/sources" element={<SourcesPage />} />
+        <Route
+          path=":projectId/understanding"
+          element={<PhasePage key="understanding" phaseId="understanding" />}
+        />
+        <Route path=":projectId/plan" element={<PhasePage key="plan" phaseId="readiness" />} />
+        <Route path=":projectId/run" element={<PhasePage key="run" phaseId="build" />} />
+        <Route path=":projectId/results" element={<PhasePage key="results" phaseId="verify" />} />
         <Route path=":projectId/decisions" element={<DecisionsPage />} />
         <Route path=":projectId/evidence" element={<EvidencePage />} />
         <Route path=":projectId/delivery" element={<DeliveryPage />} />

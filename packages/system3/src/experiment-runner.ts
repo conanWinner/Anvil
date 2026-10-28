@@ -7,6 +7,7 @@ import {
   type ExperimentEvaluation,
   type VariantSuggestion,
 } from './experiment-evaluation';
+import type { ExperimentProgress } from './experiment-progress';
 import { runExperimentSandbox } from './experiment-sandbox';
 import type { MlRuntime } from './ml-runtime';
 
@@ -51,23 +52,37 @@ export async function runExperimentVariants(input: {
   parallelism?: number;
   carryOver?: CarriedVariantResults;
   onVariant?: (run: VariantRun) => void;
+  /** Traces each variant run and the scoring step as they start and finish. */
+  progress?: ExperimentProgress;
 }): Promise<ExperimentRunResult> {
   const outputDir = join(input.workDir, 'runs');
   await rm(outputDir, { recursive: true, force: true });
   const runVariant = async (variant: string): Promise<VariantRun> => {
     const variantOut = join(outputDir, variant);
     await mkdir(variantOut, { recursive: true });
-    const result = await runExperimentSandbox({
-      profile: 'experiment',
-      runtime: input.runtime,
-      projectDir: input.projectDir,
-      dataDir: input.agentDataDir,
-      outputDir: variantOut,
-      script: 'train_variant.py',
-      args: ['--variant', variant],
-      timeoutMs: input.timeoutMs,
-      signal: input.signal,
+    const finish = input.progress?.start({
+      stage: 'run',
+      action: 'variant_run',
+      variantId: variant,
+      detail: `Giới hạn ${Math.round(input.timeoutMs / 60_000).toString()} phút`,
     });
+    let result: Awaited<ReturnType<typeof runExperimentSandbox>>;
+    try {
+      result = await runExperimentSandbox({
+        profile: 'experiment',
+        runtime: input.runtime,
+        projectDir: input.projectDir,
+        dataDir: input.agentDataDir,
+        outputDir: variantOut,
+        script: 'train_variant.py',
+        args: ['--variant', variant],
+        timeoutMs: input.timeoutMs,
+        signal: input.signal,
+      });
+    } catch (error) {
+      finish?.('failed', error instanceof Error ? error.message : String(error));
+      throw error;
+    }
     // The sandbox kills runs that hit their memory or time budget; that is a capacity result,
     // not evidence that the variant is worse.
     const hitLimit =
@@ -80,6 +95,17 @@ export async function runExperimentVariants(input: {
       durationMs: result.durationMs,
       logTail: `${result.stderr}\n${result.stdout}`.trim().slice(-4_000),
     };
+    finish?.(
+      run.status === 'completed' ? 'passed' : 'failed',
+      [
+        run.status === 'resource_limit'
+          ? 'Dừng vì chạm giới hạn RAM hoặc thời gian của sandbox.'
+          : `exit code ${run.exitCode.toString()}`,
+        run.logTail,
+      ]
+        .filter(part => part.length > 0)
+        .join('\n')
+    );
     input.onVariant?.(run);
     return run;
   };
@@ -130,15 +156,31 @@ export async function runExperimentVariants(input: {
     }
   }
   const variants = runs.map(run => run.variant);
-  const evaluation = await evaluateExperimentPredictions({
-    runtime: input.runtime,
-    variants,
-    holdoutDir: input.holdoutDir,
-    predictionsDir,
-    reportedDir,
-    workDir: join(input.workDir, 'evaluation'),
-    signal: input.signal,
-  });
+  const evaluate = (): Promise<ExperimentEvaluation> =>
+    evaluateExperimentPredictions({
+      runtime: input.runtime,
+      variants,
+      holdoutDir: input.holdoutDir,
+      predictionsDir,
+      reportedDir,
+      workDir: join(input.workDir, 'evaluation'),
+      signal: input.signal,
+    });
+  const evaluation = input.progress
+    ? await input.progress.track(
+        { stage: 'run', action: 'evaluate', detail: `${variants.length.toString()} phương án` },
+        evaluate,
+        value => {
+          const verified = Object.values(value.variants).filter(
+            item => item.status === 'verified'
+          ).length;
+          return {
+            status: verified > 0 ? 'passed' : 'failed',
+            detail: `${verified.toString()}/${variants.length.toString()} phương án có dự đoán hợp lệ`,
+          };
+        }
+      )
+    : await evaluate();
   const suggestion = rankExperimentVariants({
     protocol: input.protocol,
     evaluation,
