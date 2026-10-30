@@ -3,6 +3,11 @@ import { z } from '@hono/zod-openapi';
 import type { System3ManualReviewV2, System3RequirementV2 } from '../contracts';
 import type { BlueprintExtractionResult } from './extractors';
 import type { UnderstandingCoverageEntry, UnderstandingSourcePointer } from './schemas';
+import {
+  misplacedVerificationContractIssue,
+  readVerificationContractValue,
+  type VerificationContractReadResult,
+} from '../verification-contract';
 
 const sourceTextSchema = z.union([
   z.string(),
@@ -10,7 +15,8 @@ const sourceTextSchema = z.union([
 ]);
 
 export const system2BlueprintExportSchema = z.object({
-  schemaVersion: z.literal(1),
+  /** Version 2 adds `verificationContract`; every other field is the same. */
+  schemaVersion: z.union([z.literal(1), z.literal(2)]),
   problemProfile: z.object({
     businessGoal: sourceTextSchema.nullable(),
     technicalObjective: sourceTextSchema.nullable(),
@@ -97,6 +103,8 @@ export const system2BlueprintExportSchema = z.object({
       .default([]),
   }),
   manualReviews: z.array(z.string()).default([]),
+  /** Read separately so a broken contract becomes an Issue, not a failed analysis. */
+  verificationContract: z.unknown().optional(),
 });
 
 function valueOf(value: z.infer<typeof sourceTextSchema>): string {
@@ -126,7 +134,11 @@ export function readSystem2BlueprintJson(input: {
   json: string;
   sourceVersionId: string;
   filename: string;
-}): { extraction: BlueprintExtractionResult; coverage: UnderstandingCoverageEntry[] } {
+}): {
+  extraction: BlueprintExtractionResult;
+  coverage: UnderstandingCoverageEntry[];
+  contract: VerificationContractReadResult;
+} {
   const parsed = system2BlueprintExportSchema.parse(JSON.parse(input.json) as unknown);
   const problemPointer = pointer({
     ...input,
@@ -193,6 +205,29 @@ export function readSystem2BlueprintJson(input: {
     status: 'declared_unverified' as const,
     sourcePointers: [source],
   });
+  const contract = ((): VerificationContractReadResult => {
+    if (parsed.verificationContract === undefined) return { contract: null, issues: [] };
+    const contractPointer = pointer({
+      ...input,
+      jsonPointer: '/verificationContract',
+      value: parsed.verificationContract,
+    });
+    if (parsed.schemaVersion === 1)
+      return {
+        contract: null,
+        issues: [
+          misplacedVerificationContractIssue({
+            detail: 'verificationContract chỉ được đọc khi schemaVersion là 2.',
+            pointer: contractPointer,
+          }),
+        ],
+      };
+    return readVerificationContractValue({
+      value: parsed.verificationContract,
+      requirementIds: requirements.map(requirement => requirement.id),
+      pointer: contractPointer,
+    });
+  })();
   const extraction: BlueprintExtractionResult = {
     businessGoal:
       parsed.problemProfile.businessGoal === null
@@ -265,6 +300,7 @@ export function readSystem2BlueprintJson(input: {
   ] as const;
   return {
     extraction,
+    contract,
     coverage: chapters.map(([chapter, source]) => ({
       componentId: `${input.sourceVersionId}:${chapter}`,
       kind: 'paragraph',

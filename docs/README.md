@@ -17,9 +17,11 @@ Mục tiêu hiện tại: triển khai nhanh các phương án thí nghiệm do 
 
 ## Tài liệu tham khảo
 
+- [Định hướng code bám sát blueprint System 2 — 15](technical/15-blueprint-fidelity-direction.md): hiện trạng, khoảng cách và lộ trình kiểm chứng từng yêu cầu; đề xuất chưa triển khai.
 - [Bộ mẫu Olist](../packages/web/public/samples/olist/README.md): nguồn Kaggle, CSV mẫu có sẵn trên form tạo dự án và cách tái tạo.
 - [CLI, workflow, provider và adapter](../packages/docs-web/src/content/docs/reference/index.md): tài liệu nền tảng trong `packages/docs-web`; không phải các bước bắt buộc của luồng nhiều LLM.
 - [Blueprint System 2 mẫu](system_2/DESIGN_B_2.md): fixture Customer Churn, không phải yêu cầu chung cho mọi dự án.
+- [Hợp đồng kiểm chứng trong blueprint](system_2/verification-contract.md): đặc tả định dạng cho exporter System 2.
 - [Audit 08](technical/08-product-readiness-audit.md) và [Execution Brief 09](technical/09-product-readiness-execution-brief.md): lịch sử ngày 07/09/2026, giữ để đối chiếu; không dùng làm backlog hiện tại.
 
 Giữ mỗi nội dung ở một nơi: cách chạy trong README/12, tiến độ trong 13, mapping hoạt động trong `lifecycle_activity/README.md`, contract chi tiết trong `technical/`. Khi thay đổi cấu trúc tài liệu, cập nhật mục lục và liên kết liên quan.

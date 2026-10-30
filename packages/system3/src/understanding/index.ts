@@ -1,6 +1,15 @@
 import { createHash } from 'node:crypto';
+import {
+  blueprintReviewOutputSchema,
+  findingsToIssues,
+  screenBlueprintConstraints,
+} from './blueprint-review';
 import { blueprintAnalysisV2Schema, type BlueprintAnalysis } from '../contracts';
-import { parseUnderstandingMarkdown, markComponent } from './document-index';
+import {
+  parseUnderstandingMarkdown,
+  markComponent,
+  type UnderstandingDocumentIndex,
+} from './document-index';
 import { profileDatasetCsvStream } from './dataset-profiler';
 import { modelComparisonConfigSchema, type ModelComparisonConfig } from '../model-comparison';
 import { extractBlueprintFromIndex, type BlueprintExtractionResult } from './extractors';
@@ -16,6 +25,12 @@ import type {
 } from './schemas';
 import { readSystem2BlueprintJson } from './system2-json-reader';
 import { readSupplementalStructuredSource, type SupplementalFact } from './supplemental-reader';
+import {
+  misplacedVerificationContractIssue,
+  readVerificationContractText,
+  VERIFICATION_CONTRACT_CODE_LANGUAGE,
+  type VerificationContractReadResult,
+} from '../verification-contract';
 
 export interface PinnedUnderstandingSource {
   id: string;
@@ -412,12 +427,71 @@ function applySupplementalFacts(
   return issues;
 }
 
+const NESTED_CONTRACT_FENCE = new RegExp(
+  `^[\\s>*+-]*(?:\`{3,}|~{3,})\\s*${VERIFICATION_CONTRACT_CODE_LANGUAGE}\\b`,
+  'mu'
+);
+
+/** Reads the one top-level contract block; a contract signal it cannot take in becomes an Issue. */
+function readMarkdownContract(
+  index: UnderstandingDocumentIndex,
+  requirementIds: readonly string[]
+): VerificationContractReadResult {
+  const blocks = index.components.filter(
+    component =>
+      component.node.type === 'code' && component.node.lang === VERIFICATION_CONTRACT_CODE_LANGUAGE
+  );
+  const [block, ...extra] = blocks;
+  if (block && extra[0]) {
+    return {
+      contract: null,
+      issues: extra.map(item =>
+        misplacedVerificationContractIssue({
+          detail: `Chỉ được có một khối ${VERIFICATION_CONTRACT_CODE_LANGUAGE}; không biết nên dùng khối nào.`,
+          pointer: item.sourcePointer,
+        })
+      ),
+    };
+  }
+  if (block?.node.type === 'code') {
+    markComponent(block, 'extracted', 'Đã đọc hợp đồng kiểm chứng.');
+    return readVerificationContractText({
+      text: block.node.value,
+      requirementIds,
+      pointer: block.sourcePointer,
+    });
+  }
+  const signal = index.components.find(
+    component =>
+      (component.kind !== 'code' && NESTED_CONTRACT_FENCE.test(component.raw)) ||
+      (component.kind === 'heading' &&
+        /verification contract|hop dong kiem chung/u.test(
+          component.text
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/gu, '')
+            .toLowerCase()
+        ))
+  );
+  return {
+    contract: null,
+    issues: signal
+      ? [
+          misplacedVerificationContractIssue({
+            detail: `Blueprint nhắc tới hợp đồng kiểm chứng nhưng không có khối mã ${VERIFICATION_CONTRACT_CODE_LANGUAGE} ở cấp ngoài cùng.`,
+            pointer: signal.sourcePointer,
+          }),
+        ]
+      : [],
+  };
+}
+
 async function parseBlueprint(input: {
   source: PinnedUnderstandingSource;
   semanticFallback?: UnderstandingSemanticFallback;
 }): Promise<{
   extraction: BlueprintExtractionResult;
   coverage: UnderstandingCoverageEntry[];
+  contract: VerificationContractReadResult;
   parserVersion: string;
   semanticAssistance: UnderstandingSemanticFallbackResult | null;
   semanticFailure: string | null;
@@ -448,6 +522,7 @@ async function parseBlueprint(input: {
     return {
       extraction: extractBlueprintFromIndex(index),
       coverage: [unsupportedSourceCoverage(input.source)],
+      contract: { contract: null, issues: [] },
       parserVersion: 'system3-unsupported-source@1',
       semanticAssistance: null,
       semanticFailure: null,
@@ -465,6 +540,10 @@ async function parseBlueprint(input: {
         filename: input.source.filename,
       });
   const extraction = extractBlueprintFromIndex(index);
+  const contract = readMarkdownContract(
+    index,
+    extraction.requirements.map(requirement => requirement.id)
+  );
   let semanticAssistance: UnderstandingSemanticFallbackResult | null = null;
   let semanticFailure: string | null = null;
   const candidates = index.components.filter(
@@ -525,6 +604,7 @@ async function parseBlueprint(input: {
   return {
     extraction,
     coverage: coverageFromIndex(index.components),
+    contract,
     parserVersion: sourceHasFormat(input.source, 'pdf')
       ? UNDERSTANDING_PDF_PARSER_VERSION
       : 'system3-markdown-reader@2',
@@ -533,13 +613,52 @@ async function parseBlueprint(input: {
   };
 }
 
+/** Code checks always run; a failed model review is reported and never stops the analysis. */
+async function screenBlueprint(input: {
+  blueprint: string;
+  datasetFiles: readonly string[];
+  requirementIds: readonly string[];
+  ramGb: number | null;
+  sourcePointers: readonly UnderstandingSourcePointer[];
+  review?: (input: { blueprint: string; datasetFiles: readonly string[] }) => Promise<unknown>;
+}): Promise<UnderstandingIssue[]> {
+  const issues = screenBlueprintConstraints(input);
+  if (!input.review) return issues;
+  try {
+    const output = blueprintReviewOutputSchema.parse(
+      await input.review({ blueprint: input.blueprint, datasetFiles: input.datasetFiles })
+    );
+    return [...issues, ...findingsToIssues({ ...input, findings: output.findings })];
+  } catch (error) {
+    return [
+      ...issues,
+      datasetIssue({
+        key: 'blueprint-review-failed',
+        kind: 'semantic_assistance',
+        severity: 'warning',
+        title: 'Chưa rà soát được blueprint bằng model',
+        detail: `${error instanceof Error ? error.message.slice(0, 300) : 'Lỗi không xác định'}. Các kiểm tra bằng code vẫn chạy; mâu thuẫn trong yêu cầu có thể chưa được phát hiện.`,
+        requiresDecision: false,
+        sourcePointers: [],
+      }),
+    ];
+  }
+}
+
 export async function understandProjectSources(input: {
   sources: readonly PinnedUnderstandingSource[];
+  /** Names of the attached data tables, for checking what the blueprint refers to. */
+  datasetFilenames?: readonly string[];
   datasetSource?: StreamedPinnedUnderstandingSource;
   modelComparison?: ModelComparisonConfig;
   targetFromPreparation?: boolean;
   previousAnalysis?: BlueprintAnalysis | null;
   semanticFallback?: UnderstandingSemanticFallback;
+  /** Experiment mode: proposes blueprint problems for the user to decide on. */
+  blueprintReview?: (input: {
+    blueprint: string;
+    datasetFiles: readonly string[];
+  }) => Promise<unknown>;
   signal?: AbortSignal;
 }): Promise<UnderstandProjectResult> {
   for (const source of input.sources) {
@@ -629,13 +748,25 @@ export async function understandProjectSources(input: {
     ...unsupportedSupplementalIssues,
     ...(dataset && !hasSupportedDataset ? [unsupportedSourceIssue(dataset)] : [])
   );
+  const screeningIssues = input.targetFromPreparation
+    ? await screenBlueprint({
+        blueprint: decodeUtf8(blueprint),
+        datasetFiles: [...(input.datasetFilenames ?? [])],
+        requirementIds: parsed.extraction.requirements.map(requirement => requirement.id),
+        ramGb: parsed.extraction.runtime.ramGb,
+        sourcePointers: parsed.extraction.requirements[0]?.sourcePointers ?? [],
+        ...(input.blueprintReview ? { review: input.blueprintReview } : {}),
+      })
+    : [];
   const quality = evaluateUnderstandingQuality({
     extraction: parsed.extraction,
     coverage: parsed.coverage,
     datasetUnderstanding: datasetResult,
     parserVersion: parsed.parserVersion,
-    additionalIssues:
-      parsed.semanticFailure === null
+    additionalIssues: [
+      ...parsed.contract.issues,
+      ...screeningIssues,
+      ...(parsed.semanticFailure === null
         ? []
         : [
             datasetIssue({
@@ -647,7 +778,8 @@ export async function understandProjectSources(input: {
               requiresDecision: false,
               sourcePointers: [],
             }),
-          ],
+          ]),
+    ],
   });
   const legacyProfile = profile
     ? {
@@ -677,6 +809,7 @@ export async function understandProjectSources(input: {
     moduleDesign: parsed.extraction.moduleDesign,
     executionBlueprint: parsed.extraction.executionBlueprint,
     extractionQuality: quality,
+    ...(parsed.contract.contract ? { verificationContract: parsed.contract.contract } : {}),
   });
   return {
     analysis,
@@ -685,6 +818,7 @@ export async function understandProjectSources(input: {
   };
 }
 
+export * from './blueprint-review';
 export * from './schemas';
 export * from './decision-resolution';
 export * from './document-index';

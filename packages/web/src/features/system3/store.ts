@@ -187,6 +187,8 @@ function experimentResults(
     split: map.split,
     agents: map.agents,
     mismatches: map.mismatches ?? [],
+    requirementCoverage: map.requirementCoverage ?? null,
+    tuningTrials: map.tuningTrials ?? 0,
   };
 }
 
@@ -357,6 +359,17 @@ function toDecisionBinding(value: unknown): System3Decision['binding'] {
     value.allowedValues.every(item => typeof item === 'string')
   ) {
     return { kind: 'dataset_target_column', allowedValues: value.allowedValues };
+  }
+  if (
+    value !== null &&
+    typeof value === 'object' &&
+    'kind' in value &&
+    value.kind === 'blueprint_review' &&
+    'options' in value &&
+    Array.isArray(value.options)
+  ) {
+    // The server validated this shape against its own schema when it stored the finding.
+    return value as Extract<System3Decision['binding'], { kind: 'blueprint_review' }>;
   }
   return null;
 }
@@ -1014,6 +1027,9 @@ export const system3Store = {
     parallelism: number;
     /** Keep the latest run's results for variants not run again. */
     keepEarlierResults: boolean;
+    /** `tune` scores on the validation set only and leaves the test score closed. */
+    mode: 'tune' | 'run';
+    variantParams: Record<string, Record<string, number | string | boolean | null>>;
   }): Promise<void> => {
     const project = current;
     const build = project.experimentBuild;
@@ -1028,7 +1044,11 @@ export const system3Store = {
           buildExecutionId: build.executionId,
           variantIds: choice.variantIds,
           parallelism: choice.parallelism,
-          ...(choice.keepEarlierResults && build.latestRunExecutionId
+          mode: choice.mode,
+          ...(Object.keys(choice.variantParams).length > 0
+            ? { variantParams: choice.variantParams }
+            : {}),
+          ...(choice.mode === 'run' && choice.keepEarlierResults && build.latestRunExecutionId
             ? { carryOverExecutionId: build.latestRunExecutionId }
             : {}),
         },

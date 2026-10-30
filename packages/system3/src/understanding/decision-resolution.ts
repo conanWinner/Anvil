@@ -1,10 +1,51 @@
 import type { BlueprintAnalysis } from '../contracts';
-import type { DatasetProfileV2, UnderstandingDecisionBinding } from './schemas';
+import type { BlueprintDecision, DatasetProfileV2, UnderstandingDecisionBinding } from './schemas';
 
 export interface UnderstandingDecisionAnswer {
   binding: UnderstandingDecisionBinding | null;
   status: 'pending' | 'answered';
   answer: string | null;
+}
+
+/**
+ * Applies answered blueprint reviews. The source pointers of an added requirement are the finding's
+ * own, and its id says it did not come from System 2.
+ */
+function applyBlueprintReviews(
+  resolved: Extract<BlueprintAnalysis, { schemaVersion: 2 }>,
+  decisions: readonly UnderstandingDecisionAnswer[]
+): void {
+  const applied: BlueprintDecision[] = [];
+  for (const decision of decisions) {
+    const binding = decision.binding;
+    if (binding?.kind !== 'blueprint_review' || decision.status !== 'answered') continue;
+    const option = binding.options.find(item => item.value === decision.answer);
+    if (!option) throw new Error('Selected review option is outside the recorded finding');
+    if (option.effect === 'add_requirement' && option.newRequirement) {
+      const anchor = resolved.requirements[0]?.sourcePointers;
+      if (!anchor) throw new Error('A requirement cannot be added to a blueprint without any');
+      resolved.requirements.push({
+        id: `ADD-${binding.findingId.slice(0, 6)}`,
+        kind: 'FR',
+        priority: null,
+        source: 'Người dùng chấp nhận đề xuất của Anvil',
+        statement: option.newRequirement.statement,
+        acceptanceCriterion: option.newRequirement.acceptanceCriterion,
+        sourcePointer: 'blueprint-review',
+        sourcePointers: anchor,
+      });
+    }
+    applied.push({
+      findingId: binding.findingId,
+      title: binding.title,
+      quote: binding.quote,
+      requirementId: binding.requirementId,
+      answer: option.label,
+      effect: option.effect,
+      instruction: option.instruction,
+    });
+  }
+  if (applied.length > 0) resolved.blueprintDecisions = applied;
 }
 
 /**
@@ -85,5 +126,6 @@ export function applyUnderstandingDecisionAnswers(
       };
     }
   }
+  applyBlueprintReviews(resolved, decisions);
   return resolved;
 }

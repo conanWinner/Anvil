@@ -73,6 +73,33 @@ export async function realDirectory(path: string, label: string): Promise<string
   return canonical;
 }
 
+/**
+ * Classifies a path sandboxed code may have written, before the host opens it. A symlink in the
+ * output mount resolves on the host, so following one (as the last part of the path or any folder
+ * on the way) would let generated code read any file the server can. Call this after the sandbox
+ * has exited: nothing can swap the path between this check and the read.
+ */
+export async function inspectSandboxOutput(
+  root: string,
+  relativePath: string
+): Promise<'regular' | 'missing' | 'unsafe'> {
+  const parts = relativePath.split('/');
+  let current = root;
+  for (const [index, part] of parts.entries()) {
+    current = `${current}${sep}${part}`;
+    let info: Awaited<ReturnType<typeof lstat>>;
+    try {
+      info = await lstat(current);
+    } catch (error) {
+      if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return 'missing';
+      throw error;
+    }
+    const last = index === parts.length - 1;
+    if (last ? !info.isFile() : !info.isDirectory()) return 'unsafe';
+  }
+  return 'regular';
+}
+
 async function captureCapped(
   stream: ReadableStream<Uint8Array>,
   limit: number,
@@ -163,6 +190,10 @@ export async function runSandboxProcess(input: {
     `--unit=${unit}`,
     `--property=MemoryMax=${input.limits.memoryMax}`,
     '--property=MemorySwapMax=0',
+    // Hitting MemoryMax is an expected sandbox outcome; result `oom-kill` would make GNOME warn the
+    // user that the whole device is nearly out of memory. Only the killed process dies: the run
+    // fails unless the script survives losing a child, and RuntimeMaxSec still bounds a stuck one.
+    '--property=OOMPolicy=continue',
     `--property=CPUQuota=${input.limits.cpuQuota}`,
     `--property=TasksMax=${input.limits.tasksMax.toString()}`,
     `--property=RuntimeMaxSec=${input.timeoutMs.toString()}ms`,
