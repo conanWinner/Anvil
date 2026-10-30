@@ -10490,7 +10490,8 @@ export interface components {
                   | 'unsupported_content'
                   | 'unclassified_content'
                   | 'dataset_mismatch'
-                  | 'semantic_assistance';
+                  | 'semantic_assistance'
+                  | 'blueprint_review';
                 /** @enum {string} */
                 severity: 'warning' | 'revision_required' | 'blocking';
                 title: string;
@@ -10501,6 +10502,27 @@ export interface components {
                       /** @enum {string} */
                       kind: 'dataset_target_column';
                       allowedValues: string[];
+                    }
+                  | {
+                      /** @enum {string} */
+                      kind: 'blueprint_review';
+                      findingId: string;
+                      title: string;
+                      /** @enum {string} */
+                      origin: 'code' | 'model';
+                      quote: string | null;
+                      requirementId: string | null;
+                      options: {
+                        value: string;
+                        label: string;
+                        /** @enum {string} */
+                        effect: 'keep' | 'remove_requirement' | 'add_requirement' | 'change';
+                        instruction: string | null;
+                        newRequirement: {
+                          statement: string;
+                          acceptanceCriterion: string;
+                        } | null;
+                      }[];
                     }
                   | unknown;
                 sourcePointers: {
@@ -10650,7 +10672,8 @@ export interface components {
                   | 'unsupported_content'
                   | 'unclassified_content'
                   | 'dataset_mismatch'
-                  | 'semantic_assistance';
+                  | 'semantic_assistance'
+                  | 'blueprint_review';
                 /** @enum {string} */
                 severity: 'warning' | 'revision_required' | 'blocking';
                 title: string;
@@ -10661,6 +10684,27 @@ export interface components {
                       /** @enum {string} */
                       kind: 'dataset_target_column';
                       allowedValues: string[];
+                    }
+                  | {
+                      /** @enum {string} */
+                      kind: 'blueprint_review';
+                      findingId: string;
+                      title: string;
+                      /** @enum {string} */
+                      origin: 'code' | 'model';
+                      quote: string | null;
+                      requirementId: string | null;
+                      options: {
+                        value: string;
+                        label: string;
+                        /** @enum {string} */
+                        effect: 'keep' | 'remove_requirement' | 'add_requirement' | 'change';
+                        instruction: string | null;
+                        newRequirement: {
+                          statement: string;
+                          acceptanceCriterion: string;
+                        } | null;
+                      }[];
                     }
                   | unknown;
                 sourcePointers: {
@@ -10722,6 +10766,63 @@ export interface components {
                 };
               }[];
             };
+            verificationContract?: {
+              /** @enum {number} */
+              contractVersion: 1;
+              criteria: {
+                id: string;
+                requirementId: string;
+                statement: string;
+                check:
+                  | {
+                      /** @enum {string} */
+                      kind: 'golden_cases';
+                      tables: {
+                        [key: string]: string;
+                      };
+                      expected: {
+                        entity_id: string;
+                        target: 0 | 1;
+                      }[];
+                    }
+                  | {
+                      /** @enum {string} */
+                      kind: 'manual';
+                    }
+                  | {
+                      /** @enum {string} */
+                      kind: 'unsupported';
+                      declaredKind: string | null;
+                      problem: string;
+                    };
+                sourcePointers: {
+                  sourceVersionId: string;
+                  filename: string;
+                  headingPath: string[];
+                  startLine: number | null;
+                  endLine: number | null;
+                  jsonPointer: string | null;
+                  page: number | null;
+                  boundingBox: {
+                    x: number;
+                    y: number;
+                    width: number;
+                    height: number;
+                  } | null;
+                  excerptHash: string;
+                }[];
+              }[];
+            };
+            blueprintDecisions?: {
+              findingId: string;
+              title: string;
+              quote: string | null;
+              requirementId: string | null;
+              answer: string;
+              /** @enum {string} */
+              effect: 'keep' | 'remove_requirement' | 'add_requirement' | 'change';
+              instruction: string | null;
+            }[];
           }
         | unknown;
       decisions: components['schemas']['System3Decision'][];
@@ -10875,6 +10976,12 @@ export interface components {
                 /** @enum {string|null} */
                 runStatus: 'completed' | 'failed' | 'resource_limit' | null;
                 durationMs: number | null;
+                params?: {
+                  [key: string]: number | string | boolean | unknown;
+                } | null;
+                validationMetrics?: {
+                  [key: string]: number;
+                } | null;
               }[];
               suggestion?: {
                 suggested: string | null;
@@ -10898,6 +11005,7 @@ export interface components {
               split?: {
                 rows: number;
                 trainRows: number;
+                validationRows?: number;
                 testRows: number;
                 trainPositiveRate: number;
                 testPositiveRate: number;
@@ -10908,6 +11016,15 @@ export interface components {
                 reviewer: string;
               };
               mismatches?: string[];
+              tuningTrials?: number;
+              requirementCoverage?: {
+                total: number | null;
+                criteriaPassed?: number;
+                notVerified?: number;
+                removed?: number;
+              } & {
+                [key: string]: unknown;
+              };
             } & {
               [key: string]: unknown;
             })
@@ -11256,6 +11373,27 @@ export interface components {
             kind: 'dataset_target_column';
             allowedValues: string[];
           }
+        | {
+            /** @enum {string} */
+            kind: 'blueprint_review';
+            findingId: string;
+            title: string;
+            /** @enum {string} */
+            origin: 'code' | 'model';
+            quote: string | null;
+            requirementId: string | null;
+            options: {
+              value: string;
+              label: string;
+              /** @enum {string} */
+              effect: 'keep' | 'remove_requirement' | 'add_requirement' | 'change';
+              instruction: string | null;
+              newRequirement: {
+                statement: string;
+                acceptanceCriterion: string;
+              } | null;
+            }[];
+          }
         | unknown;
       affectedPhases: string[];
       /** @enum {string} */
@@ -11331,6 +11469,7 @@ export interface components {
       split: {
         rows: number;
         trainRows: number;
+        validationRows?: number;
         testRows: number;
         trainPositiveRate: number;
         testPositiveRate: number;
@@ -11338,6 +11477,24 @@ export interface components {
       };
       builderModel: string;
       reviewerModel: string;
+      variantParams?: {
+        [key: string]: {
+          [key: string]: number | string | boolean | unknown;
+        };
+      };
+      trials?: {
+        round: number;
+        variant: string;
+        /** @enum {string} */
+        status: 'completed' | 'failed' | 'resource_limit';
+        params: {
+          [key: string]: number | string | boolean | unknown;
+        } | null;
+        validationMetrics: {
+          [key: string]: number;
+        } | null;
+        durationMs: number;
+      }[];
       /** Format: uuid */
       executionId: string;
       /** Format: uuid */
@@ -11346,6 +11503,7 @@ export interface components {
       hostSlots: number;
       /** Format: uuid */
       latestRunExecutionId: string | null;
+      tuningClosed: boolean;
     } | null;
     System3SourceIntakeReportView: {
       /** Format: uuid */
@@ -12128,7 +12286,8 @@ export interface components {
                   | 'unsupported_content'
                   | 'unclassified_content'
                   | 'dataset_mismatch'
-                  | 'semantic_assistance';
+                  | 'semantic_assistance'
+                  | 'blueprint_review';
                 /** @enum {string} */
                 severity: 'warning' | 'revision_required' | 'blocking';
                 title: string;
@@ -12139,6 +12298,27 @@ export interface components {
                       /** @enum {string} */
                       kind: 'dataset_target_column';
                       allowedValues: string[];
+                    }
+                  | {
+                      /** @enum {string} */
+                      kind: 'blueprint_review';
+                      findingId: string;
+                      title: string;
+                      /** @enum {string} */
+                      origin: 'code' | 'model';
+                      quote: string | null;
+                      requirementId: string | null;
+                      options: {
+                        value: string;
+                        label: string;
+                        /** @enum {string} */
+                        effect: 'keep' | 'remove_requirement' | 'add_requirement' | 'change';
+                        instruction: string | null;
+                        newRequirement: {
+                          statement: string;
+                          acceptanceCriterion: string;
+                        } | null;
+                      }[];
                     }
                   | unknown;
                 sourcePointers: {
@@ -12288,7 +12468,8 @@ export interface components {
                   | 'unsupported_content'
                   | 'unclassified_content'
                   | 'dataset_mismatch'
-                  | 'semantic_assistance';
+                  | 'semantic_assistance'
+                  | 'blueprint_review';
                 /** @enum {string} */
                 severity: 'warning' | 'revision_required' | 'blocking';
                 title: string;
@@ -12299,6 +12480,27 @@ export interface components {
                       /** @enum {string} */
                       kind: 'dataset_target_column';
                       allowedValues: string[];
+                    }
+                  | {
+                      /** @enum {string} */
+                      kind: 'blueprint_review';
+                      findingId: string;
+                      title: string;
+                      /** @enum {string} */
+                      origin: 'code' | 'model';
+                      quote: string | null;
+                      requirementId: string | null;
+                      options: {
+                        value: string;
+                        label: string;
+                        /** @enum {string} */
+                        effect: 'keep' | 'remove_requirement' | 'add_requirement' | 'change';
+                        instruction: string | null;
+                        newRequirement: {
+                          statement: string;
+                          acceptanceCriterion: string;
+                        } | null;
+                      }[];
                     }
                   | unknown;
                 sourcePointers: {
@@ -12360,6 +12562,63 @@ export interface components {
                 };
               }[];
             };
+            verificationContract?: {
+              /** @enum {number} */
+              contractVersion: 1;
+              criteria: {
+                id: string;
+                requirementId: string;
+                statement: string;
+                check:
+                  | {
+                      /** @enum {string} */
+                      kind: 'golden_cases';
+                      tables: {
+                        [key: string]: string;
+                      };
+                      expected: {
+                        entity_id: string;
+                        target: 0 | 1;
+                      }[];
+                    }
+                  | {
+                      /** @enum {string} */
+                      kind: 'manual';
+                    }
+                  | {
+                      /** @enum {string} */
+                      kind: 'unsupported';
+                      declaredKind: string | null;
+                      problem: string;
+                    };
+                sourcePointers: {
+                  sourceVersionId: string;
+                  filename: string;
+                  headingPath: string[];
+                  startLine: number | null;
+                  endLine: number | null;
+                  jsonPointer: string | null;
+                  page: number | null;
+                  boundingBox: {
+                    x: number;
+                    y: number;
+                    width: number;
+                    height: number;
+                  } | null;
+                  excerptHash: string;
+                }[];
+              }[];
+            };
+            blueprintDecisions?: {
+              findingId: string;
+              title: string;
+              quote: string | null;
+              requirementId: string | null;
+              answer: string;
+              /** @enum {string} */
+              effect: 'keep' | 'remove_requirement' | 'add_requirement' | 'change';
+              instruction: string | null;
+            }[];
           };
       artifactKey: string;
       workflowRunId: string | null;
@@ -12401,7 +12660,8 @@ export interface components {
             | 'unsupported_content'
             | 'unclassified_content'
             | 'dataset_mismatch'
-            | 'semantic_assistance';
+            | 'semantic_assistance'
+            | 'blueprint_review';
           /** @enum {string} */
           severity: 'warning' | 'revision_required' | 'blocking';
           title: string;
@@ -12412,6 +12672,27 @@ export interface components {
                 /** @enum {string} */
                 kind: 'dataset_target_column';
                 allowedValues: string[];
+              }
+            | {
+                /** @enum {string} */
+                kind: 'blueprint_review';
+                findingId: string;
+                title: string;
+                /** @enum {string} */
+                origin: 'code' | 'model';
+                quote: string | null;
+                requirementId: string | null;
+                options: {
+                  value: string;
+                  label: string;
+                  /** @enum {string} */
+                  effect: 'keep' | 'remove_requirement' | 'add_requirement' | 'change';
+                  instruction: string | null;
+                  newRequirement: {
+                    statement: string;
+                    acceptanceCriterion: string;
+                  } | null;
+                }[];
               }
             | unknown;
           sourcePointers: {
@@ -12538,6 +12819,13 @@ export interface components {
             parallelism: number;
             /** Format: uuid */
             carryOverExecutionId?: string;
+            /** @enum {string} */
+            mode?: 'tune' | 'run';
+            variantParams?: {
+              [key: string]: {
+                [key: string]: number | string | boolean | unknown;
+              };
+            };
           };
         }
       | {
@@ -12569,6 +12857,7 @@ export interface components {
         | 'sandbox_check'
         | 'generate'
         | 'prepare_data'
+        | 'contract_check'
         | 'split'
         | 'smoke'
         | 'review'

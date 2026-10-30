@@ -44,10 +44,13 @@ comparison_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 comparison_index=$1
 case "$comparison_index" in 0|1|2|3) ;; *) exit 2 ;; esac
 comparison_output=$(mktemp -d)
+# A normal user needs its own systemd manager; asking the system manager goes through polkit.
+comparison_scope=--user
+[ "$(id -u)" -ne 0 ] || comparison_scope=--system
 run_step() {
   comparison_entry=$1
   shift
-  systemd-run --quiet --wait --pipe --collect -p MemoryMax=256M -p MemorySwapMax=0 -p CPUQuota=100% -p TasksMax=16 -p RuntimeMaxSec=30s -p TimeoutStopSec=2s -p KillMode=control-group -p LimitFSIZE=1048576 -p LimitNOFILE=64 -p NoNewPrivileges=yes \\
+  systemd-run "$comparison_scope" --quiet --wait --pipe --collect -p MemoryMax=256M -p MemorySwapMax=0 -p CPUQuota=100% -p TasksMax=16 -p RuntimeMaxSec=30s -p TimeoutStopSec=2s -p KillMode=control-group -p LimitFSIZE=1048576 -p LimitNOFILE=64 -p NoNewPrivileges=yes \\
     /usr/bin/bwrap --die-with-parent --new-session --unshare-all --clearenv --cap-drop ALL \\
     --ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib64 /lib64 \\
     --proc /proc --dev /dev --tmpfs /tmp --tmpfs /work \\

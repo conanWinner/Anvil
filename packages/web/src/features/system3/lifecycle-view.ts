@@ -331,7 +331,7 @@ export function buildLifecycleView(project: System3Project): readonly LifecycleP
         : project.execution
           ? project.execution.status === 'completed'
             ? project.verification?.status === 'completed'
-              ? 'Đã chạy xong; kết quả đã được xác minh.'
+              ? 'Đã chạy xong; Anvil đã chấm lại metric.'
               : 'Đã chạy xong; Anvil đang chấm lại kết quả.'
             : project.execution.status === 'failed'
               ? failedBuildSummary(project.execution.error)
@@ -366,7 +366,7 @@ export function buildLifecycleView(project: System3Project): readonly LifecycleP
       status: verificationStatus,
       statusDetail: project.verification
         ? project.verification.status === 'completed'
-          ? 'Đã xác minh; xem kết quả và chọn phương án.'
+          ? 'Đã chấm lại metric; xem kết quả và chọn phương án.'
           : project.verification.status === 'failed'
             ? (project.verification.error ?? 'Xác minh chưa đạt.')
             : 'Đang xác minh.'
@@ -395,7 +395,7 @@ export function buildLifecycleView(project: System3Project): readonly LifecycleP
       statusDetail: project.deliveryAvailable
         ? 'Yêu cầu bàn giao đã được chấp nhận.'
         : project.deliveryReady
-          ? 'Kết quả đã xác minh; bạn có thể yêu cầu bàn giao.'
+          ? 'Anvil đã chấm lại metric; bạn có thể yêu cầu bàn giao.'
           : 'Chờ xác minh đạt.',
       input: 'Verification đã đạt + yêu cầu package',
       output: 'Delivery gate được chấp nhận',

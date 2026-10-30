@@ -1,9 +1,10 @@
 import { z } from '@hono/zod-openapi';
 import { copyFile, mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runExperimentSandbox } from './experiment-sandbox';
 import type { MlRuntime } from './ml-runtime';
+import { inspectSandboxOutput } from './sandbox-process';
 
 /** Directory holding Anvil's own evaluator (`anvil_eval.py`); never agent-written code. */
 export const ANVIL_EVALUATOR_DIR = fileURLToPath(new URL('../runtime/python', import.meta.url));
@@ -48,6 +49,8 @@ export type EvaluationProtocol = z.infer<typeof evaluationProtocolSchema>;
 export const splitSummarySchema = z.object({
   rows: z.number().int(),
   trainRows: z.number().int(),
+  /** Absent on builds made before Anvil kept a validation set. */
+  validationRows: z.number().int().optional(),
   testRows: z.number().int(),
   trainPositiveRate: z.number(),
   testPositiveRate: z.number(),
@@ -119,6 +122,16 @@ export async function splitModelingTable(input: {
   const dataDir = join(input.workDir, 'split-input');
   const outputDir = join(input.workDir, 'split');
   await mkdir(dataDir, { recursive: true });
+  const tableState = await inspectSandboxOutput(
+    dirname(input.tablePath),
+    basename(input.tablePath)
+  );
+  if (tableState !== 'regular')
+    throw new Error(
+      tableState === 'missing'
+        ? `${basename(input.tablePath)} was not written`
+        : `${basename(input.tablePath)} must be a regular file, not a link or folder`
+    );
   await Promise.all([
     copyFile(input.tablePath, join(dataDir, 'table.csv')),
     writeFile(join(dataDir, 'protocol.json'), JSON.stringify(protocol)),
@@ -157,6 +170,10 @@ export async function sampleAgentData(input: {
   await Promise.all([
     copyFile(join(input.agentDataDir, 'train.csv'), join(dataDir, 'train.csv')),
     copyFile(join(input.agentDataDir, 'test_features.csv'), join(dataDir, 'test_features.csv')),
+    copyFile(
+      join(input.agentDataDir, 'validation_features.csv'),
+      join(dataDir, 'validation_features.csv')
+    ),
     writeFile(
       join(dataDir, 'protocol.json'),
       JSON.stringify({
@@ -185,6 +202,8 @@ export async function evaluateExperimentPredictions(input: {
   runtime: MlRuntime;
   variants: readonly string[];
   holdoutDir: string;
+  /** Which labels Anvil scores against: the test set (default) or its validation set. */
+  labels?: 'test' | 'validation';
   predictionsDir: string;
   reportedDir?: string;
   workDir: string;
@@ -200,7 +219,7 @@ export async function evaluateExperimentPredictions(input: {
     )
   );
   await copyFile(
-    join(input.holdoutDir, 'test_labels.csv'),
+    join(input.holdoutDir, `${input.labels ?? 'test'}_labels.csv`),
     join(dataDir, 'holdout', 'test_labels.csv')
   );
   // Copy only the expected files: agent output folders may hold anything else.
@@ -211,12 +230,19 @@ export async function evaluateExperimentPredictions(input: {
     present(input.reportedDir),
   ]);
   for (const variant of variants) {
-    if (predictionFiles.has(`${variant}.csv`))
+    if (
+      predictionFiles.has(`${variant}.csv`) &&
+      (await inspectSandboxOutput(input.predictionsDir, `${variant}.csv`)) === 'regular'
+    )
       await copyFile(
         join(input.predictionsDir, `${variant}.csv`),
         join(dataDir, 'predictions', `${variant}.csv`)
       );
-    if (input.reportedDir !== undefined && reportedFiles.has(`${variant}.json`))
+    if (
+      input.reportedDir !== undefined &&
+      reportedFiles.has(`${variant}.json`) &&
+      (await inspectSandboxOutput(input.reportedDir, `${variant}.json`)) === 'regular'
+    )
       await copyFile(
         join(input.reportedDir, `${variant}.json`),
         join(dataDir, 'reported', `${variant}.json`)

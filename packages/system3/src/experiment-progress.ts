@@ -18,6 +18,8 @@ export const experimentProgressActionSchema = z.enum([
   'generate',
   /** prepare_data.py runs in the sandbox on the pinned data. */
   'prepare_data',
+  /** prepare_data.py runs on the approved golden fixture; Anvil compares its output. */
+  'contract_check',
   /** Anvil splits the modeling table and keeps the test labels. */
   'split',
   /** Every variant runs on a small sample. */

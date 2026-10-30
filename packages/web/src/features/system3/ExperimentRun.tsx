@@ -1,11 +1,22 @@
 import { AlertTriangle, Code2, Play, RotateCcw, ShieldCheck } from 'lucide-react';
 import { useState, type ReactElement } from 'react';
+import {
+  describeTrialParams,
+  editsFromParams,
+  formatParamValue,
+  parseParamEdits,
+  type ParamEdits,
+  type ParamValue,
+} from './experiment-params-view';
+import { metricLabel } from './ExperimentResults';
 import type { System3ExperimentBuild } from './types';
 
 export interface ExperimentRunChoice {
   variantIds: readonly string[];
   parallelism: number;
   keepEarlierResults: boolean;
+  mode: 'tune' | 'run';
+  variantParams: Record<string, Record<string, number | string | boolean | null>>;
 }
 
 interface VariantOption {
@@ -23,6 +34,7 @@ interface VariantOption {
 export function ExperimentRunPanel({
   build,
   variants,
+  primaryMetric,
   mode,
   initialSelection,
   busy,
@@ -31,6 +43,7 @@ export function ExperimentRunPanel({
 }: {
   build: System3ExperimentBuild;
   variants: readonly VariantOption[];
+  primaryMetric?: string;
   mode: 'first' | 'rerun';
   initialSelection: readonly string[];
   busy: boolean;
@@ -40,6 +53,7 @@ export function ExperimentRunPanel({
   const [selected, setSelected] = useState<readonly string[]>(initialSelection);
   const [parallelism, setParallelism] = useState(1);
   const [keepEarlierResults, setKeepEarlierResults] = useState(true);
+  const [edits, setEdits] = useState<ParamEdits>({});
   const options = variants.filter(variant => build.variantIds.includes(variant.id));
   const ordered = options.map(variant => variant.id).filter(id => selected.includes(id));
   const toggle = (id: string): void => {
@@ -50,6 +64,25 @@ export function ExperimentRunPanel({
   const blocking = build.review.findings.filter(finding => finding.severity === 'blocking');
   const slots = Array.from({ length: build.hostSlots }, (_, index) => index + 1);
   const count = ordered.length.toString();
+  // The server validated these as scalar values; the generated API type only says `unknown`.
+  const defaults = (build.variantParams ?? {}) as Record<string, Record<string, ParamValue>>;
+  const trials = build.trials ?? [];
+  // Re-runs keep the settings the test score was opened with, so only a first run can change them.
+  const canTune = mode === 'first' && !build.tuningClosed && Object.keys(defaults).length > 0;
+  const { overrides, errors } = parseParamEdits(defaults, canTune ? edits : {}, ordered);
+  const start = (runMode: ExperimentRunChoice['mode']): void => {
+    onRun({
+      variantIds: ordered,
+      parallelism,
+      keepEarlierResults,
+      mode: runMode,
+      variantParams: overrides,
+    });
+  };
+  const metric = primaryMetric ?? 'roc_auc';
+  const edit = (variant: string, name: string, text: string): void => {
+    setEdits(current => ({ ...current, [variant]: { ...current[variant], [name]: text } }));
+  };
   return (
     <section className="s3-experiment-run" aria-labelledby={`experiment-run-${mode}`}>
       {mode === 'first' ? (
@@ -77,6 +110,9 @@ export function ExperimentRunPanel({
               <dt>Dữ liệu</dt>
               <dd>
                 {build.split.trainRows.toLocaleString('vi-VN')} dòng train ·{' '}
+                {build.split.validationRows !== undefined
+                  ? `${build.split.validationRows.toLocaleString('vi-VN')} dòng validation · `
+                  : ''}
                 {build.split.testRows.toLocaleString('vi-VN')} dòng kiểm tra · lớp dương{' '}
                 {(build.split.trainPositiveRate * 100).toFixed(1)}% /{' '}
                 {(build.split.testPositiveRate * 100).toFixed(1)}%
@@ -142,6 +178,94 @@ export function ExperimentRunPanel({
         ))}
       </fieldset>
 
+      {canTune ? (
+        <details className="s3-secondary-details s3-experiment-params">
+          <summary>Tham số huấn luyện và mô hình</summary>
+          <p className="s3-note">
+            Đổi tham số rồi bấm "Thử trên tập validation" để so sánh; không cần duyệt lại hay viết
+            lại code. Điểm tập kiểm tra chỉ mở khi bạn chạy thật, và sau đó không đổi tham số được
+            nữa, để điểm này vẫn là ước lượng độc lập.
+          </p>
+          {options
+            .filter(variant => ordered.includes(variant.id))
+            .map(variant => (
+              <fieldset key={variant.id}>
+                <legend>{variant.name}</legend>
+                {Object.entries(defaults[variant.id] ?? {}).map(([name, value]) => (
+                  <label key={name}>
+                    <code>{name}</code>
+                    <input
+                      type="text"
+                      value={edits[variant.id]?.[name] ?? formatParamValue(value)}
+                      disabled={busy}
+                      onChange={event => {
+                        edit(variant.id, name, event.target.value);
+                      }}
+                    />
+                  </label>
+                ))}
+              </fieldset>
+            ))}
+          {errors.length > 0 ? (
+            <p className="s3-experiment-param-errors" role="alert">
+              {errors.join(' · ')}
+            </p>
+          ) : null}
+        </details>
+      ) : null}
+
+      {canTune && trials.length > 0 ? (
+        <div className="s3-comparison-table-wrap">
+          <table className="s3-comparison-table s3-experiment-trials">
+            <caption>
+              Các lần thử: {metricLabel(metric)} trên tập validation, không phải tập kiểm tra
+            </caption>
+            <thead>
+              <tr>
+                <th scope="col">Lần</th>
+                <th scope="col">Phương án</th>
+                <th scope="col">Tham số đã đổi</th>
+                <th scope="col">{metricLabel(metric)}</th>
+                <th scope="col">Dùng</th>
+              </tr>
+            </thead>
+            <tbody>
+              {trials.map(trial => {
+                const name =
+                  options.find(variant => variant.id === trial.variant)?.name ?? trial.variant;
+                const score = trial.validationMetrics?.[metric];
+                const params = trial.params as Record<string, ParamValue> | null;
+                return (
+                  <tr key={`${trial.round.toString()}:${trial.variant}`}>
+                    <td>{trial.round}</td>
+                    <td>{name}</td>
+                    <td>{describeTrialParams(params, defaults[trial.variant] ?? {})}</td>
+                    <td>{score === undefined ? 'Lỗi khi chạy' : score.toFixed(3)}</td>
+                    <td>
+                      {params ? (
+                        <button
+                          type="button"
+                          className="s3-button s3-button-secondary"
+                          disabled={busy}
+                          onClick={() => {
+                            setEdits(current => ({
+                              ...current,
+                              [trial.variant]: editsFromParams(params),
+                            }));
+                          }}
+                        >
+                          Dùng
+                        </button>
+                      ) : null}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+
       <div className="s3-experiment-run-options">
         <label>
           Chạy cùng lúc
@@ -183,14 +307,26 @@ export function ExperimentRunPanel({
         <button
           type="button"
           className="s3-button"
-          disabled={busy || ordered.length === 0}
+          disabled={busy || ordered.length === 0 || errors.length > 0}
           onClick={() => {
-            onRun({ variantIds: ordered, parallelism, keepEarlierResults });
+            start('run');
           }}
         >
           <Play size={15} aria-hidden="true" />{' '}
           {mode === 'first' ? `Chạy ${count} phương án` : `Chạy lại ${count} phương án`}
         </button>
+        {canTune ? (
+          <button
+            type="button"
+            className="s3-button s3-button-secondary"
+            disabled={busy || ordered.length === 0 || errors.length > 0}
+            onClick={() => {
+              start('tune');
+            }}
+          >
+            Thử trên tập validation
+          </button>
+        ) : null}
         {onRebuild ? (
           <button
             type="button"

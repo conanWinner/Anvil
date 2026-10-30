@@ -117,12 +117,14 @@ import {
   experimentConfigSchema,
   experimentHostSlots,
   hashExperimentPlan,
+  projectVerificationEvidence,
   mlRuntimeLockHash,
   parsePinnedExperimentConfig,
   type BlueprintAnalysis,
   type ExperimentConfig,
   type ExperimentPin,
   type ExperimentRun,
+  type VariantParamOverrides,
   modelComparisonCodeSchema,
   parsePinnedModelComparisonConfig,
 } from '@anvil/system3';
@@ -609,6 +611,27 @@ async function prepareSystem3LifecycleAttemptIsolation(input: {
  * Turns an execute request into the experiment-mode `experimentRun` binding (plan 13 §10).
  * Bundles approved before the build/run split declare no such slot and keep build-and-run.
  */
+async function latestOpenedTestRun(
+  store: System3Store,
+  projectId: string,
+  approvalId: string
+): Promise<{ variantParams?: VariantParamOverrides } | null> {
+  const finished = (await store.listOperations(projectId))
+    .filter(operation => operation.type === 'execute' && operation.status === 'succeeded')
+    .sort((left, right) =>
+      (right.finishedAt ?? right.createdAt).localeCompare(left.finishedAt ?? left.createdAt)
+    );
+  for (const operation of finished) {
+    if (!operation.executionId) continue;
+    const execution = await store.getExecution(operation.executionId);
+    const run = execution?.runtimeBindings?.experimentRun as
+      | { stage?: string; variantParams?: VariantParamOverrides }
+      | undefined;
+    if (execution?.approvalId === approvalId && run?.stage === 'run') return run;
+  }
+  return null;
+}
+
 async function resolveSystem3ExperimentRun(input: {
   store: System3Store;
   projectId: string;
@@ -620,6 +643,8 @@ async function resolveSystem3ExperimentRun(input: {
         variantIds: string[];
         parallelism: number;
         carryOverExecutionId?: string;
+        mode?: 'tune' | 'run';
+        variantParams?: VariantParamOverrides;
       }
     | undefined;
 }): Promise<{ binding: ExperimentRun | undefined } | { error: string }> {
@@ -654,6 +679,26 @@ async function resolveSystem3ExperimentRun(input: {
   };
   const buildArtifact = await artifactOf(input.request.buildExecutionId, 'experiment_build');
   if (!buildArtifact) return { error: 'Không tìm thấy gói code đã build của kế hoạch này' };
+  // Once the test score is open, new parameters would be tuned on it and the score would stop
+  // being an independent estimate. Re-runs keep the settings that score was opened with.
+  const opened = await latestOpenedTestRun(input.store, input.projectId, input.approvalId);
+  const changesParams = Object.values(input.request.variantParams ?? {}).some(
+    values => Object.keys(values).length > 0
+  );
+  if (opened && (input.request.mode === 'tune' || changesParams))
+    return {
+      error: 'Kế hoạch này đã mở điểm tập kiểm tra nên không đổi tham số được nữa; hãy duyệt lại',
+    };
+  if (input.request.mode === 'tune')
+    return {
+      binding: {
+        stage: 'tune',
+        buildArtifact,
+        variantIds: input.request.variantIds,
+        parallelism: input.request.parallelism,
+        variantParams: input.request.variantParams ?? {},
+      },
+    };
   const carryOver = input.request.carryOverExecutionId
     ? await artifactOf(input.request.carryOverExecutionId, 'baseline_package')
     : null;
@@ -666,6 +711,11 @@ async function resolveSystem3ExperimentRun(input: {
       variantIds: input.request.variantIds,
       parallelism: input.request.parallelism,
       carryOver,
+      ...(opened?.variantParams
+        ? { variantParams: opened.variantParams }
+        : input.request.variantParams
+          ? { variantParams: input.request.variantParams }
+          : {}),
     },
   };
 }
@@ -5673,6 +5723,7 @@ export function registerApiRoutes(
       ...summary.data,
       hostSlots: experimentHostSlots(),
       latestRunExecutionId,
+      tuningClosed: (await latestOpenedTestRun(store, projectId, execution.approvalId)) !== null,
     };
   }
 
@@ -8613,8 +8664,12 @@ export function registerApiRoutes(
       if (approval.id !== approvalId || approval.compilationId !== compilation.id) {
         return apiError(c, 422, 'Approval is not the active manifest');
       }
+      // Scored results waiting for delivery can re-run variants; what that may change is checked
+      // when the run binding is resolved below.
+      const rerunsResults =
+        project.stage === 'delivery' && 'experimentRun' in body && body.experimentRun !== undefined;
       if (
-        !['approved', 'executing', 'delivered'].includes(project.stage) ||
+        (!['approved', 'executing', 'delivered'].includes(project.stage) && !rerunsResults) ||
         project.freshness !== 'current' ||
         compilation.knowledgeSnapshotId !== project.activeKnowledgeSnapshotId
       ) {
@@ -9042,42 +9097,6 @@ export function registerApiRoutes(
               )
                 throw new Error('Verification evidence or gate is missing');
               const map = evidenceMap as Record<string, unknown>;
-              const requirementEvidence = Array.isArray(map.requirements)
-                ? map.requirements
-                    .filter(
-                      (value): value is Record<string, unknown> =>
-                        value !== null && typeof value === 'object' && !Array.isArray(value)
-                    )
-                    .map(value => ({
-                      requirementId:
-                        typeof value.requirementId === 'string' ? value.requirementId : null,
-                      status:
-                        map.kind === 'model_comparison' && value.status === 'passed'
-                          ? ('passed' as const)
-                          : ('not_verified' as const),
-                      evidence:
-                        map.kind === 'model_comparison' && typeof map.inputHash === 'string'
-                          ? [map.inputHash]
-                          : [],
-                      reason:
-                        typeof value.reason === 'string'
-                          ? value.reason
-                          : 'Outside the approved MVP scope',
-                    }))
-                : [];
-              const checkEvidence = Array.isArray(map.mvpChecks)
-                ? map.mvpChecks
-                    .filter(
-                      (value): value is Record<string, unknown> =>
-                        value !== null && typeof value === 'object' && !Array.isArray(value)
-                    )
-                    .map(value => ({
-                      requirementId: null,
-                      status: value.status === 'passed' ? ('passed' as const) : ('failed' as const),
-                      evidence: [typeof value.id === 'string' ? value.id : 'MVP-CHECK'],
-                      reason: null,
-                    }))
-                : [];
               if ((gate as Record<string, unknown>).status !== 'passed') {
                 await store.failVerification({
                   operationId: verification.operation.id,
@@ -9098,7 +9117,7 @@ export function registerApiRoutes(
                 executionId: begun.execution.id,
                 evidenceMap: map,
                 gate: gate as Record<string, unknown>,
-                evidence: [...checkEvidence, ...requirementEvidence],
+                evidence: projectVerificationEvidence(map),
               });
               const activeAttempt = await store.getActiveLifecycleAttempt(projectId);
               if (
@@ -9305,42 +9324,6 @@ export function registerApiRoutes(
             )
               throw new Error('Verification evidence or gate is missing');
             const map = evidenceMap as Record<string, unknown>;
-            const requirementEvidence = Array.isArray(map.requirements)
-              ? map.requirements
-                  .filter(
-                    (value): value is Record<string, unknown> =>
-                      value !== null && typeof value === 'object' && !Array.isArray(value)
-                  )
-                  .map(value => ({
-                    requirementId:
-                      typeof value.requirementId === 'string' ? value.requirementId : null,
-                    status:
-                      map.kind === 'model_comparison' && value.status === 'passed'
-                        ? ('passed' as const)
-                        : ('not_verified' as const),
-                    evidence:
-                      map.kind === 'model_comparison' && typeof map.inputHash === 'string'
-                        ? [map.inputHash]
-                        : [],
-                    reason:
-                      typeof value.reason === 'string'
-                        ? value.reason
-                        : 'Outside the approved MVP scope',
-                  }))
-              : [];
-            const checkEvidence = Array.isArray(map.mvpChecks)
-              ? map.mvpChecks
-                  .filter(
-                    (value): value is Record<string, unknown> =>
-                      value !== null && typeof value === 'object' && !Array.isArray(value)
-                  )
-                  .map(value => ({
-                    requirementId: null,
-                    status: value.status === 'passed' ? ('passed' as const) : ('failed' as const),
-                    evidence: [typeof value.id === 'string' ? value.id : 'MVP-CHECK'],
-                    reason: null,
-                  }))
-              : [];
             if ((gate as Record<string, unknown>).status !== 'passed') {
               await store.failVerification({
                 operationId: begun.operation.id,
@@ -9361,7 +9344,7 @@ export function registerApiRoutes(
               executionId,
               evidenceMap: map,
               gate: gate as Record<string, unknown>,
-              evidence: [...checkEvidence, ...requirementEvidence],
+              evidence: projectVerificationEvidence(map),
             });
             const activeAttempt = await store.getActiveLifecycleAttempt(projectId);
             if (
@@ -9437,6 +9420,7 @@ export function registerApiRoutes(
         verificationEvidenceMap = {
           ...verificationEvidenceMap,
           selectedVariant: body.selectedVariant,
+          selectedParams: (chosen as { params?: unknown }).params ?? null,
           selectedBy: (await resolveWebUserId(c)) ?? null,
         };
       }

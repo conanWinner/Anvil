@@ -71,6 +71,31 @@ export const understandingCoverageEntrySchema = z.object({
 });
 export type UnderstandingCoverageEntry = z.infer<typeof understandingCoverageEntrySchema>;
 
+const blueprintReviewOptionSchema = z.object({
+  value: z.string().min(1),
+  label: z.string().min(1),
+  effect: z.enum(['keep', 'remove_requirement', 'add_requirement', 'change']),
+  /** What the generated code must do when this is chosen; null for `keep`. */
+  instruction: z.string().nullable(),
+  newRequirement: z.object({ statement: z.string(), acceptanceCriterion: z.string() }).nullable(),
+});
+
+const decisionBindingVariants = [
+  z.object({
+    kind: z.literal('dataset_target_column'),
+    allowedValues: z.array(z.string().min(1)).min(1),
+  }),
+  z.object({
+    kind: z.literal('blueprint_review'),
+    findingId: z.string().min(1),
+    title: z.string().min(1),
+    origin: z.enum(['code', 'model']),
+    quote: z.string().nullable(),
+    requirementId: z.string().nullable(),
+    options: z.array(blueprintReviewOptionSchema).min(1),
+  }),
+] as const;
+
 export const understandingIssueSchema = z.object({
   id: z.string().min(1),
   kind: z.enum([
@@ -83,30 +108,33 @@ export const understandingIssueSchema = z.object({
     'unclassified_content',
     'dataset_mismatch',
     'semantic_assistance',
+    'blueprint_review',
   ]),
   severity: z.enum(['warning', 'revision_required', 'blocking']),
   title: z.string().min(1),
   detail: z.string().min(1),
   requiresDecision: z.boolean(),
-  decisionBinding: z
-    .discriminatedUnion('kind', [
-      z.object({
-        kind: z.literal('dataset_target_column'),
-        allowedValues: z.array(z.string().min(1)).min(1),
-      }),
-    ])
-    .nullable()
-    .optional(),
+  decisionBinding: z.discriminatedUnion('kind', decisionBindingVariants).nullable().optional(),
   sourcePointers: z.array(understandingSourcePointerSchema),
 });
 export type UnderstandingIssue = z.infer<typeof understandingIssueSchema>;
 
-export const understandingDecisionBindingSchema = z.discriminatedUnion('kind', [
-  z.object({
-    kind: z.literal('dataset_target_column'),
-    allowedValues: z.array(z.string().min(1)).min(1),
-  }),
-]);
+export const understandingDecisionBindingSchema = z.discriminatedUnion(
+  'kind',
+  decisionBindingVariants
+);
+
+/** A blueprint review the user answered; pinned into the plan and given to the build models. */
+export const blueprintDecisionSchema = z.object({
+  findingId: z.string().min(1),
+  title: z.string().min(1),
+  quote: z.string().nullable(),
+  requirementId: z.string().nullable(),
+  answer: z.string().min(1),
+  effect: z.enum(['keep', 'remove_requirement', 'add_requirement', 'change']),
+  instruction: z.string().nullable(),
+});
+export type BlueprintDecision = z.infer<typeof blueprintDecisionSchema>;
 export type UnderstandingDecisionBinding = z.infer<typeof understandingDecisionBindingSchema>;
 
 export const datasetDeclarationSchema = z.object({

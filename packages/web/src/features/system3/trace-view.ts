@@ -49,6 +49,7 @@ const ACTOR: Record<System3ExperimentProgressEvent['action'], TraceActor> = {
   question: 'builder',
   review: 'reviewer',
   prepare_data: 'sandbox',
+  contract_check: 'anvil',
   smoke: 'sandbox',
   variant_run: 'sandbox',
   split: 'anvil',
@@ -68,6 +69,8 @@ function stepTitle(
     }
     case 'prepare_data':
       return 'Chạy prepare_data.py trên dữ liệu đã ghim';
+    case 'contract_check':
+      return 'Kiểm tra điều kiện nghiệm thu trên ca mẫu đã duyệt';
     case 'split':
       return 'Chia dữ liệu, giữ nhãn kiểm tra';
     case 'smoke':
@@ -146,7 +149,12 @@ export function buildTraceView(
       step.title = `Sửa ${step.stage === 'prepare' ? 'prepare_data.py' : 'train_variant.py'}`;
   });
   ordered.forEach((step, index) => {
-    if (step.status !== 'failed' || (step.action !== 'prepare_data' && step.action !== 'smoke'))
+    if (
+      step.status !== 'failed' ||
+      (step.action !== 'prepare_data' &&
+        step.action !== 'contract_check' &&
+        step.action !== 'smoke')
+    )
       return;
     step.sentBack = ordered
       .slice(index + 1)

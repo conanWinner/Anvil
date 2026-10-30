@@ -70,16 +70,23 @@ const trainVariant = `import argparse, json, os
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
-parser = argparse.ArgumentParser(); parser.add_argument('--variant', required=True)
-variant = parser.parse_args().variant
+parser = argparse.ArgumentParser(); parser.add_argument('--variant', required=True); parser.add_argument('--params', default='{}')
+args = parser.parse_args(); variant = args.variant
+params = {'logistic_regression': {'max_iter': 100}, 'random_forest': {'n_estimators': 20}}[variant]
+for name, value in json.loads(args.params).items():
+    if name not in params: raise SystemExit(f'unknown parameter {name}')
+    params[name] = value
 train = pd.read_csv('/work/data/train.csv'); test = pd.read_csv('/work/data/test_features.csv')
 features = ['visits', 'spend']
-model = {'logistic_regression': LogisticRegression(), 'random_forest': RandomForestClassifier(n_estimators=20, random_state=0)}[variant]
+model = LogisticRegression(**params) if variant == 'logistic_regression' else RandomForestClassifier(random_state=0, **params)
 model.fit(train[features], train['target'])
 score = model.predict_proba(test[features])[:, 1]
 os.makedirs('/work/out/predictions', exist_ok=True); os.makedirs('/work/out/reported', exist_ok=True)
 pd.DataFrame({'id': test['entity_id'], 'score': score, 'label': (score >= 0.5).astype(int)}).to_csv(f'/work/out/predictions/{variant}.csv', index=False)
-json.dump({'train_rows': len(train)}, open(f'/work/out/reported/{variant}.json', 'w'))
+validation = pd.read_csv('/work/data/validation_features.csv'); os.makedirs('/work/out/validation_predictions', exist_ok=True)
+validation_score = model.predict_proba(validation[features])[:, 1]
+pd.DataFrame({'id': validation['entity_id'], 'score': validation_score, 'label': (validation_score >= 0.5).astype(int)}).to_csv(f'/work/out/validation_predictions/{variant}.csv', index=False)
+json.dump({'train_rows': len(train), 'params': params}, open(f'/work/out/reported/{variant}.json', 'w'))
 `;
 
 function source(
@@ -186,6 +193,51 @@ sandboxTest(
     const build = await stage('build', { stage: 'build' });
     expect(build.output.experiment).toMatchObject({ kind: 'experiment_build', status: 'built' });
     const callsAfterBuild = modelCalls;
+
+    expect(build.output.experiment.variantParams).toEqual({
+      logistic_regression: { max_iter: 100 },
+      random_forest: { n_estimators: 20 },
+    });
+
+    // Tuning scores on validation only, and returns a build package with the trial added.
+    const tuned = await stage('tune-1', {
+      stage: 'tune',
+      buildArtifact: build.ref,
+      variantIds: ['random_forest'],
+      parallelism: 1,
+      variantParams: { random_forest: { n_estimators: 7 } },
+    });
+    expect(tuned.output.experiment.kind).toBe('experiment_build');
+    expect(tuned.output.experiment.evaluation).toBeUndefined();
+    const trials = tuned.output.experiment.trials as {
+      round: number;
+      params: unknown;
+      validationMetrics: Record<string, number> | null;
+    }[];
+    expect(trials).toHaveLength(1);
+    expect(trials[0]).toMatchObject({ round: 1, params: { n_estimators: 7 } });
+    expect(trials[0]?.validationMetrics?.roc_auc).toBeNumber();
+    await expect(
+      stage('tune-unknown', {
+        stage: 'tune',
+        buildArtifact: build.ref,
+        variantIds: ['random_forest'],
+        parallelism: 1,
+        variantParams: { random_forest: { depth: 3 } },
+      })
+    ).rejects.toThrow('không có tham số depth');
+
+    const finalRun = await stage('run-tuned', {
+      stage: 'run',
+      buildArtifact: tuned.ref,
+      variantIds: ['random_forest'],
+      parallelism: 1,
+      carryOver: null,
+      variantParams: { random_forest: { n_estimators: 7 } },
+    });
+    expect(finalRun.output.experiment).toMatchObject({ tuningTrials: 1 });
+    const finalRuns = finalRun.output.experiment.runs as { params: unknown }[];
+    expect(finalRuns[0]?.params).toEqual({ n_estimators: 7 });
 
     const first = await stage('run-1', {
       stage: 'run',
