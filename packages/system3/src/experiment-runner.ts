@@ -260,6 +260,7 @@ export async function tuneExperimentVariants(
       variant: run.variant,
       status: run.status,
       params: run.params ?? null,
+      requested: input.variantParams?.[run.variant] ?? {},
       validationMetrics: result?.status === 'verified' ? result.metrics : null,
       durationMs: run.durationMs,
     };

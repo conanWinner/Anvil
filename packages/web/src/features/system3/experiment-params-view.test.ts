@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import { describeTrialParams, editsFromParams, parseParamEdits } from './experiment-params-view';
+import {
+  describeTrialParams,
+  editsFromLatestTrials,
+  editsFromParams,
+  parseParamEdits,
+} from './experiment-params-view';
 
 const defaults = {
   rf: { n_estimators: 100, max_depth: null, criterion: 'gini', bootstrap: true },
@@ -46,10 +51,35 @@ describe('parseParamEdits', () => {
   });
 });
 
+test('editsFromLatestTrials restores the last setting tried for each variant', () => {
+  const edits = editsFromLatestTrials([
+    { round: 2, variant: 'rf', params: { ...defaults.rf, max_depth: 6 } },
+    { round: 1, variant: 'rf', params: { ...defaults.rf, max_depth: 3 } },
+    { round: 3, variant: 'rf', params: null },
+    { round: 1, variant: 'lr', params: null },
+  ]);
+  expect(Object.keys(edits)).toEqual(['rf']);
+  expect(parseParamEdits(defaults, edits, ['rf']).overrides).toEqual({ rf: { max_depth: 6 } });
+});
+
+test('a value the code derived is not treated as something the person changed', () => {
+  const trial = {
+    round: 1,
+    variant: 'rf',
+    params: { ...defaults.rf, n_estimators: 137 },
+    requested: {},
+  };
+  expect(parseParamEdits(defaults, editsFromLatestTrials([trial]), ['rf']).overrides).toEqual({});
+  expect(describeTrialParams(trial, defaults.rf)).toBe('mặc định');
+});
+
 test('describeTrialParams shows only what changed', () => {
-  expect(describeTrialParams(defaults.rf, defaults.rf)).toBe('mặc định');
-  expect(describeTrialParams({ ...defaults.rf, n_estimators: 50 }, defaults.rf)).toBe(
+  expect(describeTrialParams({ params: defaults.rf }, defaults.rf)).toBe('mặc định');
+  expect(describeTrialParams({ params: { ...defaults.rf, n_estimators: 50 } }, defaults.rf)).toBe(
     'n_estimators = 50'
   );
-  expect(describeTrialParams(null, defaults.rf)).toBe('không báo tham số');
+  expect(describeTrialParams({ params: null }, defaults.rf)).toBe('không báo tham số');
+  expect(describeTrialParams({ params: null, requested: { max_depth: 6 } }, defaults.rf)).toBe(
+    'max_depth = 6'
+  );
 });

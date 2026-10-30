@@ -58,13 +58,40 @@ export function editsFromParams(
   );
 }
 
+type TrialParams = Readonly<Record<string, ParamValue>>;
+
+export interface ParamTrial {
+  round: number;
+  variant: string;
+  params: TrialParams | null;
+  requested?: TrialParams;
+}
+
+/**
+ * Each variant's latest tried setting: the panel is rebuilt after a trial and must not lose it.
+ * Reported values the person did not ask for stay out, or they would become overrides.
+ */
+export function editsFromLatestTrials(trials: readonly ParamTrial[]): ParamEdits {
+  const latest = new Map<string, { round: number; setting: TrialParams }>();
+  for (const { round, variant, params, requested } of trials) {
+    const setting = requested ?? params;
+    const known = latest.get(variant);
+    if (setting !== null && (known === undefined || round > known.round))
+      latest.set(variant, { round, setting });
+  }
+  return Object.fromEntries(
+    [...latest].map(([variant, { setting }]) => [variant, editsFromParams(setting)])
+  );
+}
+
 /** Only what a trial changed from the defaults, so the list stays readable. */
 export function describeTrialParams(
-  params: Readonly<Record<string, ParamValue>> | null,
-  defaults: Readonly<Record<string, ParamValue>>
+  { params, requested }: Pick<ParamTrial, 'params' | 'requested'>,
+  defaults: TrialParams
 ): string {
-  if (params === null) return 'không báo tham số';
-  const changed = Object.entries(params).filter(([name, value]) => value !== defaults[name]);
+  const setting = requested ?? params;
+  if (setting === null) return 'không báo tham số';
+  const changed = Object.entries(setting).filter(([name, value]) => value !== defaults[name]);
   return changed.length === 0
     ? 'mặc định'
     : changed.map(([name, value]) => `${name} = ${formatParamValue(value)}`).join(', ');

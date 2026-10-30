@@ -2,10 +2,12 @@ import { AlertTriangle, Code2, Play, RotateCcw, ShieldCheck } from 'lucide-react
 import { useState, type ReactElement } from 'react';
 import {
   describeTrialParams,
+  editsFromLatestTrials,
   editsFromParams,
   formatParamValue,
   parseParamEdits,
   type ParamEdits,
+  type ParamTrial,
   type ParamValue,
 } from './experiment-params-view';
 import { metricLabel } from './ExperimentResults';
@@ -53,7 +55,11 @@ export function ExperimentRunPanel({
   const [selected, setSelected] = useState<readonly string[]>(initialSelection);
   const [parallelism, setParallelism] = useState(1);
   const [keepEarlierResults, setKeepEarlierResults] = useState(true);
-  const [edits, setEdits] = useState<ParamEdits>({});
+  // The server validated these as scalar values; the generated API type only says `unknown`.
+  const trials = (build.trials ?? []) as readonly (ParamTrial & {
+    validationMetrics?: Readonly<Record<string, number>> | null;
+  })[];
+  const [edits, setEdits] = useState<ParamEdits>(() => editsFromLatestTrials(trials));
   const options = variants.filter(variant => build.variantIds.includes(variant.id));
   const ordered = options.map(variant => variant.id).filter(id => selected.includes(id));
   const toggle = (id: string): void => {
@@ -66,10 +72,13 @@ export function ExperimentRunPanel({
   const count = ordered.length.toString();
   // The server validated these as scalar values; the generated API type only says `unknown`.
   const defaults = (build.variantParams ?? {}) as Record<string, Record<string, ParamValue>>;
-  const trials = build.trials ?? [];
   // Re-runs keep the settings the test score was opened with, so only a first run can change them.
   const canTune = mode === 'first' && !build.tuningClosed && Object.keys(defaults).length > 0;
   const { overrides, errors } = parseParamEdits(defaults, canTune ? edits : {}, ordered);
+  const changedCount = Object.values(overrides).reduce(
+    (total, values) => total + Object.keys(values).length,
+    0
+  );
   const start = (runMode: ExperimentRunChoice['mode']): void => {
     onRun({
       variantIds: ordered,
@@ -180,11 +189,15 @@ export function ExperimentRunPanel({
 
       {canTune ? (
         <details className="s3-secondary-details s3-experiment-params">
-          <summary>Tham số huấn luyện và mô hình</summary>
+          <summary>
+            Tham số huấn luyện và mô hình
+            {changedCount > 0 ? ` · ${changedCount.toString()} giá trị khác mặc định` : ''}
+          </summary>
           <p className="s3-note">
             Đổi tham số rồi bấm "Thử trên tập validation" để so sánh; không cần duyệt lại hay viết
-            lại code. Điểm tập kiểm tra chỉ mở khi bạn chạy thật, và sau đó không đổi tham số được
-            nữa, để điểm này vẫn là ước lượng độc lập.
+            lại code. Lượt chạy thật dùng các giá trị đang có trong ô. Điểm tập kiểm tra chỉ mở khi
+            bạn chạy thật, và sau đó không đổi tham số được nữa, để điểm này vẫn là ước lượng độc
+            lập.
           </p>
           {options
             .filter(variant => ordered.includes(variant.id))
@@ -234,15 +247,15 @@ export function ExperimentRunPanel({
                 const name =
                   options.find(variant => variant.id === trial.variant)?.name ?? trial.variant;
                 const score = trial.validationMetrics?.[metric];
-                const params = trial.params as Record<string, ParamValue> | null;
+                const setting = trial.requested ?? trial.params;
                 return (
                   <tr key={`${trial.round.toString()}:${trial.variant}`}>
                     <td>{trial.round}</td>
                     <td>{name}</td>
-                    <td>{describeTrialParams(params, defaults[trial.variant] ?? {})}</td>
+                    <td>{describeTrialParams(trial, defaults[trial.variant] ?? {})}</td>
                     <td>{score === undefined ? 'Lỗi khi chạy' : score.toFixed(3)}</td>
                     <td>
-                      {params ? (
+                      {setting ? (
                         <button
                           type="button"
                           className="s3-button s3-button-secondary"
@@ -250,7 +263,7 @@ export function ExperimentRunPanel({
                           onClick={() => {
                             setEdits(current => ({
                               ...current,
-                              [trial.variant]: editsFromParams(params),
+                              [trial.variant]: editsFromParams(setting),
                             }));
                           }}
                         >

@@ -215,7 +215,11 @@ sandboxTest(
       validationMetrics: Record<string, number> | null;
     }[];
     expect(trials).toHaveLength(1);
-    expect(trials[0]).toMatchObject({ round: 1, params: { n_estimators: 7 } });
+    expect(trials[0]).toMatchObject({
+      round: 1,
+      params: { n_estimators: 7 },
+      requested: { n_estimators: 7 },
+    });
     expect(trials[0]?.validationMetrics?.roc_auc).toBeNumber();
     await expect(
       stage('tune-unknown', {

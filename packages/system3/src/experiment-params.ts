@@ -32,6 +32,11 @@ export const variantTrialSchema = z.object({
   status: z.enum(['completed', 'failed', 'resource_limit']),
   /** The parameters this run used; null when the run reported none. */
   params: variantParamsSchema.nullable(),
+  /**
+   * What the person asked to change. `params` cannot say: code also reports values it derives from
+   * the data. Absent on trials recorded before this field.
+   */
+  requested: variantParamsSchema.optional(),
   validationMetrics: z.record(z.string(), z.number()).nullable(),
   durationMs: z.number(),
 });
