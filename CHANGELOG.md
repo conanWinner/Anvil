@@ -22,7 +22,6 @@ System 3 verification and experiment execution improvements.
 ### Fixed
 
 - Preserved tried parameter overrides when rebuilding the real run configuration.
-- Fixed CI browser installation and Windows clone-path assertions.
 
 
 ## [0.5.0] - 2026-06-26
