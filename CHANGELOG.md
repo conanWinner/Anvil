@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-01
+
+System 3 verification and experiment execution improvements.
+
+### Added
+
+- Added blueprint verification contracts, evidence projection, parameter trials, and production runbook documentation.
+
+### Changed
+
+- Expanded System 3 experiment validation, requirement screening, and review flows.
+
+### Fixed
+
+- Preserved tried parameter overrides when rebuilding the real run configuration.
+- Fixed CI browser installation and Windows clone-path assertions.
+
+
 ## [0.5.0] - 2026-06-26
 
 Per-user AI credentials (API keys + subscription OAuth) with a zero-config
