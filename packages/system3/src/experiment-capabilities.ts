@@ -5,9 +5,17 @@ import { basename, join, relative, resolve, sep } from 'node:path';
 import {
   buildExperimentCodebase,
   hashProjectFiles,
+  listProjectFiles,
   type ExperimentGenerate,
 } from './experiment-builder';
 import { experimentConfigSchema } from './experiment-config';
+import {
+  buildRequirementEvidence,
+  CONTRACT_CHECKER_VERSION,
+  hashVerificationContract,
+  runContractChecks,
+  type ContractCheckResult,
+} from './experiment-contract-checks';
 import {
   evaluateExperimentPredictions,
   experimentEvaluationSchema,
@@ -17,18 +25,41 @@ import {
   splitSummarySchema,
   type ExperimentEvaluation,
 } from './experiment-evaluation';
+import {
+  findOverrideProblems,
+  variantParamOverridesSchema,
+  variantParamsSchema,
+  variantTrialSchema,
+  type VariantParamOverrides,
+  type VariantParams,
+  type VariantTrial,
+} from './experiment-params';
 import { experimentPlanSchema, hashExperimentPlan } from './experiment-plan';
+import { ExperimentProgress, type ExperimentProgressEvent } from './experiment-progress';
 import { reviewResponseSchema } from './experiment-builder';
-import { runExperimentVariants, type CarriedVariantResults } from './experiment-runner';
+import {
+  runExperimentVariants,
+  tuneExperimentVariants,
+  type CarriedVariantResults,
+} from './experiment-runner';
 import { experimentHostSlots } from './experiment-sandbox';
 import { ML_RUNTIME_LOCK_PATH, resolveMlRuntime } from './ml-runtime';
 import { extractProjectArchive } from './project-archive';
 import type { PinnedUnderstandingSource } from './understanding';
+import { understandingSourcePointerSchema } from './understanding/schemas';
+import { verificationContractSchema, type VerificationContract } from './verification-contract';
 
 /**
  * Workflow actions for experiment mode (plan 13): TW-06 build + run + package and TW-07
  * independent re-scoring. Inputs are pinned by the approved plan; nothing reads "latest" sources.
  */
+
+/** Vietnamese names of the build stages, as the run trace shows them. */
+const BUILD_STAGE_LABELS = {
+  prepare: 'chuẩn bị dữ liệu',
+  variants: 'code phương án',
+  review: 'review code',
+} as const;
 
 export interface ExperimentCapabilityContext {
   runId: string;
@@ -50,6 +81,11 @@ export interface ExperimentCapabilityPort {
     signal: AbortSignal;
   }): Promise<unknown>;
   readArtifact(projectId: string, storageKey: string): Promise<Uint8Array>;
+  /**
+   * Stores one trace event for the workflow run as it happens. Must not throw: the trace is for
+   * people watching the run, and a failed write must not fail the experiment.
+   */
+  recordProgress?(runId: string, event: ExperimentProgressEvent): void;
 }
 
 const pinnedSourceSchema = z.object({
@@ -66,11 +102,19 @@ const artifactRefSchema = z.object({
 
 /**
  * Runtime choice bound into the approved TW-06 bundle (plan 13 §10). `build` writes and checks the
- * code only; `run` runs a subset of the approved variants from a build package. Neither can change
- * the plan, data or agents — those still need a new approval.
+ * code only; `tune` tries parameters and scores them on the validation set only; `run` runs a subset
+ * of the approved variants from a build package and opens the test score. None can change the plan,
+ * data or agents — those still need a new approval.
  */
 export const experimentRunSchema = z.discriminatedUnion('stage', [
   z.object({ stage: z.literal('build') }),
+  z.object({
+    stage: z.literal('tune'),
+    buildArtifact: artifactRefSchema,
+    variantIds: z.array(experimentVariantIdSchema).min(1).max(12),
+    parallelism: z.number().int().min(1).max(16),
+    variantParams: variantParamOverridesSchema,
+  }),
   z.object({
     stage: z.literal('run'),
     buildArtifact: artifactRefSchema,
@@ -78,6 +122,8 @@ export const experimentRunSchema = z.discriminatedUnion('stage', [
     parallelism: z.number().int().min(1).max(16),
     /** An earlier run of the same build whose results are kept for variants not run again. */
     carryOver: artifactRefSchema.nullable(),
+    /** Absent when every variant keeps its defaults. */
+    variantParams: variantParamOverridesSchema.optional(),
   }),
 ]);
 export type ExperimentRun = z.infer<typeof experimentRunSchema>;
@@ -98,8 +144,21 @@ export const experimentVerifyInputSchema = z.object({
   experiment: z.object({
     kind: z.literal('experiment'),
     evaluation: experimentEvaluationSchema,
+    /** Absent for builds made before Anvil kept a validation set. */
+    validation: experimentEvaluationSchema.nullable().optional(),
     variantIds: z.array(z.string().min(1)).min(1),
   }),
+  /** Absent in bundles approved before plan 16: their denominator is unknown, not zero. */
+  requirements: z
+    .array(
+      z.object({
+        id: z.string(),
+        acceptanceCriterion: z.string(),
+        sourcePointers: z.array(understandingSourcePointerSchema),
+      })
+    )
+    .optional(),
+  verificationContract: verificationContractSchema.optional(),
 });
 
 /** What the results page shows; stored in the verification evidence map (kind `experiment`). */
@@ -117,6 +176,9 @@ export const experimentEvidenceViewSchema = z.object({
       error: z.string().nullable(),
       runStatus: z.enum(['completed', 'failed', 'resource_limit']).nullable(),
       durationMs: z.number().nullable(),
+      /** Parameters the run reported using; absent on results recorded before they were kept. */
+      params: variantParamsSchema.nullable().optional(),
+      validationMetrics: z.record(z.string(), z.number()).nullable().optional(),
     })
   ),
   suggestion: z.object({
@@ -139,6 +201,7 @@ export const experimentEvidenceViewSchema = z.object({
   split: z.object({
     rows: z.number(),
     trainRows: z.number(),
+    validationRows: z.number().optional(),
     testRows: z.number(),
     trainPositiveRate: z.number(),
     testPositiveRate: z.number(),
@@ -146,6 +209,8 @@ export const experimentEvidenceViewSchema = z.object({
   }),
   agents: z.object({ builder: z.string(), reviewer: z.string() }),
   mismatches: z.array(z.string()),
+  /** Parameter settings tried on the validation set before the test score was opened. */
+  tuningTrials: z.number().int().nonnegative().optional(),
 });
 export type ExperimentEvidenceView = z.infer<typeof experimentEvidenceViewSchema>;
 
@@ -153,6 +218,7 @@ const runRecordSchema = z.object({
   variant: z.string(),
   status: z.enum(['completed', 'failed', 'resource_limit']),
   durationMs: z.number(),
+  params: variantParamsSchema.nullable().optional(),
 });
 
 async function confined(path: string, root: string): Promise<string> {
@@ -185,29 +251,67 @@ async function materializeSource(
   return source;
 }
 
-const REPRODUCE_SH = `#!/bin/sh
-# Re-run one experiment variant offline with the locked runtime (see REPRODUCING.md).
-# Usage: sh reproduce.sh <variant-id> <python-of-locked-venv>
+/**
+ * Mirrors the `experiment` profile of `experiment-sandbox.ts`: variant code sees only `/usr`, the
+ * locked venv, the code (read-only), the data it saw during the run (read-only) and one output
+ * directory. No home directory, no `data/holdout`, no host environment, no network.
+ */
+export const REPRODUCE_SH = `#!/bin/sh
+# Re-run one experiment variant offline in a sandbox like Anvil's (see REPRODUCING.md).
+# Usage: sh reproduce.sh <variant-id> <python-of-locked-venv> [<params-json>]
 set -eu
-variant="$1"; python="$2"
+fail() { echo "reproduce.sh: $*" >&2; exit 1; }
+[ "$#" -eq 2 ] || [ "$#" -eq 3 ] || fail "usage: sh reproduce.sh <variant-id> <python-of-locked-venv> [<params-json>]"
+variant="$1"
+params="\${3:-}"
+command -v bwrap >/dev/null 2>&1 || fail "bubblewrap (bwrap) is required; variant code is never run unsandboxed"
 here=$(cd "$(dirname "$0")" && pwd)
+[ -d "$here/code" ] && [ -d "$here/data/agent" ] || fail "run from an unpacked delivery package (code/ and data/agent/ missing)"
+venv=$(cd "$(dirname "$2")/.." && pwd) || fail "python path $2 is not inside a venv"
+python="$venv/bin/$(basename "$2")"
+[ -x "$python" ] || fail "$python is not executable"
+# A venv links to its base interpreter; mount that read-only too when it lives outside /usr.
+base=$("$python" -I -c 'import sys; print(sys.base_prefix)') || fail "could not start $python"
+set -- --ro-bind "$venv" "$venv"
+case "$base" in /usr | /usr/*) ;; *) set -- "$@" --ro-bind "$base" "$base" ;; esac
 out=$(mktemp -d)
-bwrap --die-with-parent --unshare-all --ro-bind / / \\
-  --ro-bind "$here/code" /work/project --ro-bind "$here/data/agent" /work/data \\
-  --bind "$out" /work/out --chdir /work/project \\
-  "$python" -I -B train_variant.py --variant "$variant"
+mkdir -p "$out/predictions" "$out/validation_predictions" "$out/reported"
+limits=""
+if command -v systemd-run >/dev/null 2>&1 && systemd-run --user --scope --quiet true >/dev/null 2>&1; then
+  limits="systemd-run --user --scope --quiet -p MemoryMax=2G -p MemorySwapMax=0 -p CPUQuota=200% -p TasksMax=64 --"
+else
+  echo "reproduce.sh: no systemd user manager; running without memory/CPU caps" >&2
+fi
+# $limits is intentionally unquoted: it is empty or a fixed word list.
+# shellcheck disable=SC2086
+$limits timeout 1800 bwrap --die-with-parent --new-session --unshare-all --clearenv --cap-drop ALL \\
+  --ro-bind /usr /usr --symlink usr/bin /bin --symlink usr/lib /lib --symlink usr/lib64 /lib64 \\
+  --proc /proc --dev /dev --tmpfs /tmp \\
+  "$@" \\
+  --tmpfs /work --ro-bind "$here/code" /work/project --ro-bind "$here/data/agent" /work/data \\
+  --bind "$out" /work/out --remount-ro / \\
+  --setenv PATH /usr/bin:/bin --setenv HOME /tmp --setenv LANG C.UTF-8 \\
+  --setenv MPLBACKEND Agg --setenv MPLCONFIGDIR /tmp/matplotlib --setenv PYTHONHASHSEED 0 \\
+  --setenv OMP_NUM_THREADS 2 --setenv OPENBLAS_NUM_THREADS 2 --setenv MKL_NUM_THREADS 2 \\
+  --setenv NUMBA_CACHE_DIR /tmp/numba --chdir /work/project \\
+  "$python" -I -B train_variant.py --variant "$variant" \${params:+--params "$params"}
 echo "$out/predictions/$variant.csv"
 `;
 
 const REPRODUCING_MD = `# Reproducing these experiments
 
 Layout: \`code/\` is the generated codebase (data preparation + one script per variant run),
-\`data/agent/\` is exactly what variant code saw (training rows and test features without labels),
-\`data/holdout/\` holds the held-out labels Anvil used to score predictions, and \`results/\` holds
+\`data/agent/\` is exactly what variant code saw (training rows, and validation and test features without labels),
+\`data/holdout/\` holds the validation and held-out labels Anvil used to score predictions, and \`results/\` holds
 predictions, Anvil's evaluation, the review report and the build log.
 
 1. Create the runtime: \`uv venv --python python3.12 venv && uv pip sync --python venv/bin/python --require-hashes runtime/requirements-ml.lock\`.
-2. Re-run a variant: \`sh reproduce.sh <variant-id> $(pwd)/venv/bin/python\` (Linux with bubblewrap; no network, no provider call).
+2. Re-run a variant: \`sh reproduce.sh <variant-id> $(pwd)/venv/bin/python '<params-json>'\` (Linux with bubblewrap; no network, no provider call). \`<params-json>\` is that variant's entry in \`results/params.json\`; leave it out when the entry is empty.
+   The script refuses to run without \`bwrap\`. Like Anvil's own sandbox, variant code sees only \`/usr\`,
+   the venv (and its base Python) read-only, \`code/\` at /work/project and \`data/agent/\` at /work/data
+   read-only, and a fresh output directory at /work/out. Your home directory, \`data/holdout/\` and your
+   environment variables are not visible. The run is capped at 30 minutes, and at 2 GB RAM / 2 CPUs when a
+   systemd user manager is available (otherwise it warns and runs uncapped).
 3. Compare the new predictions with \`results/predictions/<variant-id>.csv\`; official metrics are in \`results/evaluation.json\`.
 
 The modeling table can be rebuilt from the original raw files with \`code/prepare_data.py\` (raw data mounted at /work/data, output in /work/out).
@@ -220,6 +324,8 @@ const builtExperimentSchema = z.object({
   codeHash: sha256Schema,
   builderModel: z.string(),
   reviewerModel: z.string(),
+  /** Absent on builds made before parameters could be changed. */
+  variantParams: z.record(z.string(), variantParamsSchema).optional(),
 });
 
 interface BuiltExperiment {
@@ -230,6 +336,8 @@ interface BuiltExperiment {
   events: unknown;
   split: z.infer<typeof splitSummarySchema>;
   codeHash: string;
+  variantParams: Record<string, VariantParams>;
+  trials: VariantTrial[];
 }
 
 async function readJsonFile(path: string): Promise<unknown> {
@@ -291,7 +399,8 @@ async function buildStage(
   input: ExecuteInput,
   root: string,
   context: ExperimentCapabilityContext,
-  port: ExperimentCapabilityPort
+  port: ExperimentCapabilityPort,
+  progress: ExperimentProgress
 ): Promise<BuiltExperiment> {
   const rawDir = join(root, 'raw');
   await mkdir(rawDir, { recursive: true });
@@ -322,14 +431,17 @@ async function buildStage(
     maxReviewRounds: input.config.maxReviewRounds,
     reportUnresolvedReview: input.run?.stage === 'build',
     signal: context.signal,
+    progress,
   });
   await writeJson(join(root, 'build.json'), build);
   if (build.status === 'needs_decision')
     throw new Error(
-      `Cần bạn quyết định trước khi tiếp tục (${build.stage}): ${build.question.slice(0, 2_000)}`
+      `Cần bạn quyết định trước khi tiếp tục (bước ${BUILD_STAGE_LABELS[build.stage]}): ${build.question.slice(0, 2_000)}`
     );
   if (build.status !== 'ready')
-    throw new Error(`Experiment build stopped at ${build.stage}: ${build.reason.slice(0, 2_000)}`);
+    throw new Error(
+      `Agent đã dùng hết số vòng sửa ở bước ${BUILD_STAGE_LABELS[build.stage]} mà code vẫn lỗi. Lỗi cuối:\n${build.reason.slice(0, 2_000)}`
+    );
   return {
     codeDir,
     agentDataDir: build.split.agentDataDir,
@@ -338,6 +450,8 @@ async function buildStage(
     events: build.events,
     split: build.split.summary,
     codeHash: hashProjectFiles(build.files),
+    variantParams: build.variantParams,
+    trials: [],
   };
 }
 
@@ -355,12 +469,75 @@ async function packageBuild(
     writeJson(join(packageDir, 'results', 'review.json'), built.review),
     writeJson(join(packageDir, 'results', 'build-events.json'), built.events),
     writeJson(join(packageDir, 'results', 'split.json'), built.split),
+    writeJson(join(packageDir, 'results', 'trials.json'), built.trials),
     writeJson(join(packageDir, 'results', 'plan.json'), {
       plan: input.plan,
       protocol: input.plan.protocol,
       config: input.config,
     }),
   ]);
+}
+
+/** What a build package reports: read back when a later stage opens it, and shown to the user. */
+async function writeBuildPackage(
+  input: ExecuteInput,
+  built: BuiltExperiment,
+  packageDir: string
+): Promise<ExecuteOutput> {
+  await packageBuild(input, built, packageDir);
+  const experiment = {
+    status: 'built',
+    kind: 'experiment_build',
+    variantIds: input.variantIds,
+    planHash: hashExperimentPlan(input.plan),
+    codeHash: built.codeHash,
+    runtimeLockHash: (await resolveMlRuntime()).lockHash,
+    builderModel: input.config.builderModel,
+    reviewerModel: input.config.reviewerModel,
+    review: built.review,
+    split: built.split,
+    hostSlots: experimentHostSlots(),
+    variantParams: built.variantParams,
+    trials: built.trials,
+  };
+  const testResult = { exitCode: 0, kind: 'experiment_build' };
+  const dataResult = { status: 'passed', split: built.split, protocol: input.plan.protocol };
+  await writePackageFiles(packageDir, { testResult, dataResult, experiment });
+  return { projectDir: packageDir, testResult, dataResult, experiment };
+}
+
+/** One tuning round; the result is the same build package with the new trials added. */
+async function tuneStage(
+  input: ExecuteInput,
+  built: BuiltExperiment,
+  options: {
+    variantIds: readonly string[];
+    parallelism: number;
+    variantParams: VariantParamOverrides;
+  },
+  root: string,
+  context: ExperimentCapabilityContext,
+  progress: ExperimentProgress
+): Promise<ExecuteOutput> {
+  const trials = await tuneExperimentVariants({
+    runtime: await resolveMlRuntime(),
+    projectDir: built.codeDir,
+    agentDataDir: built.agentDataDir,
+    holdoutDir: built.holdoutDir,
+    variantIds: options.variantIds,
+    variantParams: options.variantParams,
+    round: Math.max(0, ...built.trials.map(trial => trial.round)) + 1,
+    workDir: join(root, 'runs'),
+    timeoutMs: input.config.variantTimeoutMinutes * 60_000,
+    parallelism: options.parallelism,
+    signal: context.signal,
+    progress,
+  });
+  return writeBuildPackage(
+    input,
+    { ...built, trials: [...built.trials, ...trials] },
+    join(root, 'package', 'generated_project')
+  );
 }
 
 /** TW-06B: run variants of a built codebase, score them with the held-out labels, package. */
@@ -371,9 +548,11 @@ async function runStage(
     variantIds: readonly string[];
     parallelism: number;
     carryOver: CarriedVariantResults | null;
+    variantParams?: VariantParamOverrides;
   },
   root: string,
-  context: ExperimentCapabilityContext
+  context: ExperimentCapabilityContext,
+  progress: ExperimentProgress
 ): Promise<ExecuteOutput> {
   const protocol = input.plan.protocol;
   if (protocol === null) throw new Error('Approved experiment plan has no evaluation protocol');
@@ -390,7 +569,9 @@ async function runStage(
     timeoutMs: config.variantTimeoutMinutes * 60_000,
     parallelism: options.parallelism,
     ...(options.carryOver ? { carryOver: options.carryOver } : {}),
+    ...(options.variantParams ? { variantParams: options.variantParams } : {}),
     signal: context.signal,
+    progress,
   });
   // Report variants in the approved order, whether run now or carried over.
   const ran = new Set(run.runs.map(item => item.variant));
@@ -406,6 +587,8 @@ async function runStage(
     variantIds,
     primaryMetric: protocol.primaryMetric,
     evaluation: run.evaluation,
+    validation: run.validation,
+    tuningTrials: built.trials.length,
     suggestion: run.suggestion,
     runs: run.runs,
     review: built.review,
@@ -424,6 +607,13 @@ async function runStage(
     writeJson(join(packageDir, 'results', 'evaluation.json'), run.evaluation),
     writeJson(join(packageDir, 'results', 'suggestion.json'), run.suggestion),
     writeJson(join(packageDir, 'results', 'runs.json'), run.runs),
+    writeJson(join(packageDir, 'results', 'validation_evaluation.json'), run.validation),
+    writeJson(
+      join(packageDir, 'results', 'params.json'),
+      Object.fromEntries(
+        run.runs.map(item => [item.variant, options.variantParams?.[item.variant] ?? {}])
+      )
+    ),
   ]);
   await writePackageFiles(packageDir, { testResult, dataResult, experiment });
   return { projectDir: packageDir, testResult, dataResult, experiment };
@@ -448,6 +638,11 @@ async function openBuildPackage(input: ExecuteInput, dir: string): Promise<Built
     events: await readJsonFile(join(dir, 'results', 'build-events.json')),
     split: splitSummarySchema.parse(await readJsonFile(join(dir, 'results', 'split.json'))),
     codeHash: reported.codeHash,
+    variantParams: reported.variantParams ?? {},
+    // Builds made before tuning have no trials file.
+    trials: z
+      .array(variantTrialSchema)
+      .parse(await readJsonFile(join(dir, 'results', 'trials.json')).catch(() => [])),
   };
 }
 
@@ -491,8 +686,16 @@ export async function executeExperiment(
   const root = join(context.artifactsDir, 'experiment');
   await mkdir(root, { recursive: true });
   const stage = input.run;
+  const record = port.recordProgress?.bind(port);
+  const progress = new ExperimentProgress(
+    record
+      ? (event): void => {
+          record(context.runId, event);
+        }
+      : undefined
+  );
 
-  if (stage?.stage === 'run') {
+  if (stage?.stage === 'run' || stage?.stage === 'tune') {
     const outside = stage.variantIds.filter(id => !input.variantIds.includes(id));
     if (outside.length > 0)
       throw new Error(`Variants outside the approved plan: ${outside.join(', ')}`);
@@ -509,6 +712,26 @@ export async function executeExperiment(
       context.signal
     );
     const built = await openBuildPackage(input, buildDir);
+    const problems = findOverrideProblems(built.variantParams, stage.variantParams ?? {});
+    if (problems.length > 0) throw new Error(problems.join('; '));
+    if (stage.stage === 'tune') {
+      if (built.split.validationRows === undefined)
+        throw new Error(
+          'Gói code này được tạo trước khi Anvil giữ tập validation; hãy viết lại code'
+        );
+      return tuneStage(
+        input,
+        built,
+        {
+          variantIds: stage.variantIds,
+          parallelism: stage.parallelism,
+          variantParams: stage.variantParams,
+        },
+        root,
+        context,
+        progress
+      );
+    }
     const carryOver = stage.carryOver
       ? await openCarryOver(
           built,
@@ -525,41 +748,30 @@ export async function executeExperiment(
     return runStage(
       input,
       built,
-      { variantIds: stage.variantIds, parallelism: stage.parallelism, carryOver },
+      {
+        variantIds: stage.variantIds,
+        parallelism: stage.parallelism,
+        carryOver,
+        ...(stage.variantParams ? { variantParams: stage.variantParams } : {}),
+      },
       root,
-      context
+      context,
+      progress
     );
   }
 
-  const built = await buildStage(input, root, context, port);
+  const built = await buildStage(input, root, context, port, progress);
   if (stage?.stage !== 'build')
     return runStage(
       input,
       built,
       { variantIds: input.variantIds, parallelism: 1, carryOver: null },
       root,
-      context
+      context,
+      progress
     );
 
-  const packageDir = join(root, 'package', 'generated_project');
-  await packageBuild(input, built, packageDir);
-  const experiment = {
-    status: 'built',
-    kind: 'experiment_build',
-    variantIds: input.variantIds,
-    planHash: hashExperimentPlan(input.plan),
-    codeHash: built.codeHash,
-    runtimeLockHash: (await resolveMlRuntime()).lockHash,
-    builderModel: input.config.builderModel,
-    reviewerModel: input.config.reviewerModel,
-    review: built.review,
-    split: built.split,
-    hostSlots: experimentHostSlots(),
-  };
-  const testResult = { exitCode: 0, kind: 'experiment_build' };
-  const dataResult = { status: 'passed', split: built.split, protocol: input.plan.protocol };
-  await writePackageFiles(packageDir, { testResult, dataResult, experiment });
-  return { projectDir: packageDir, testResult, dataResult, experiment };
+  return writeBuildPackage(input, built, join(root, 'package', 'generated_project'));
 }
 
 function sameMetrics(left: ExperimentEvaluation, right: ExperimentEvaluation): string[] {
@@ -580,6 +792,50 @@ function sameMetrics(left: ExperimentEvaluation, right: ExperimentEvaluation): s
   return problems;
 }
 
+/**
+ * Re-runs the approved contract on the packaged code. The contract comes from the approved bundle;
+ * the package must agree with it and with its recorded code hash, or the check would prove nothing.
+ */
+async function verifyContractFromPackage(input: {
+  contract: VerificationContract;
+  packagedContract: VerificationContract | undefined;
+  packageDir: string;
+  workDir: string;
+  signal: AbortSignal;
+}): Promise<{ results: ContractCheckResult[]; contractHash: string; codeHash: string }> {
+  const contractHash = hashVerificationContract(input.contract);
+  if (
+    input.packagedContract === undefined ||
+    hashVerificationContract(input.packagedContract) !== contractHash
+  )
+    throw new Error('The package was built for a different verification contract');
+  const codeDir = join(input.packageDir, 'code');
+  const codeHash = hashProjectFiles(await listProjectFiles(codeDir));
+  const reported = z
+    .object({ codeHash: sha256Schema })
+    .parse(await readJsonFile(join(input.packageDir, 'reports', 'experiment_results.json')));
+  if (reported.codeHash !== codeHash)
+    throw new Error('The packaged code does not match the code hash recorded when it was built');
+  // A private copy: extraction writes owner-only files and the sandbox runs unprivileged.
+  const sandboxCode = join(input.workDir, 'code');
+  await mkdir(input.workDir, { recursive: true });
+  await cp(codeDir, sandboxCode, { recursive: true });
+  const chmod = Bun.spawn(['chmod', '-R', 'a+rX', sandboxCode], { stderr: 'pipe' });
+  if ((await chmod.exited) !== 0)
+    throw new Error(`Could not open packaged code: ${await new Response(chmod.stderr).text()}`);
+  return {
+    results: await runContractChecks({
+      contract: input.contract,
+      runtime: await resolveMlRuntime(),
+      projectDir: sandboxCode,
+      workDir: join(input.workDir, 'runs'),
+      signal: input.signal,
+    }),
+    contractHash,
+    codeHash,
+  };
+}
+
 /** TW-07: re-score the packaged predictions independently and build the evidence map. */
 export async function verifyExperiment(
   raw: Readonly<Record<string, unknown>>,
@@ -597,7 +853,25 @@ export async function verifyExperiment(
     workDir: join(context.artifactsDir, 'verification', 'experiment'),
     signal: context.signal,
   });
-  const mismatches = sameMetrics(input.experiment.evaluation, evaluation);
+  const validationRecorded = input.experiment.validation ?? null;
+  const validation = validationRecorded
+    ? await evaluateExperimentPredictions({
+        runtime,
+        variants: input.experiment.variantIds,
+        holdoutDir: join(packageDir, 'data', 'holdout'),
+        labels: 'validation',
+        predictionsDir: join(packageDir, 'results', 'validation_predictions'),
+        reportedDir: join(packageDir, 'results', 'reported'),
+        workDir: join(context.artifactsDir, 'verification', 'experiment-validation'),
+        signal: context.signal,
+      })
+    : null;
+  const mismatches = [
+    ...sameMetrics(input.experiment.evaluation, evaluation),
+    ...(validationRecorded && validation
+      ? sameMetrics(validationRecorded, validation).map(item => `validation ${item}`)
+      : []),
+  ];
   const readJson = async (name: string): Promise<unknown> =>
     JSON.parse(await readFile(join(packageDir, 'results', name), 'utf8')) as unknown;
   const split = splitSummarySchema.parse(await readJson('split.json'));
@@ -620,7 +894,32 @@ export async function verifyExperiment(
   const verifiedVariants = Object.values(evaluation.variants).filter(
     item => item.status === 'verified'
   ).length;
-  const passed = mismatches.length === 0 && verifiedVariants > 0;
+  const scoringPassed = mismatches.length === 0 && verifiedVariants > 0;
+  const contract = input.verificationContract
+    ? await verifyContractFromPackage({
+        contract: input.verificationContract,
+        packagedContract: pinned.plan.verificationContract,
+        packageDir,
+        workDir: join(context.artifactsDir, 'verification', 'contract'),
+        signal: context.signal,
+      })
+    : null;
+  const contractResults = contract?.results ?? [];
+  // `not_verified` does not stop delivery yet (plan 16 §5); a wrong result or an unrun check does.
+  const passed =
+    scoringPassed &&
+    contractResults.every(item => item.status !== 'failed' && item.status !== 'blocked');
+  const coverage = input.requirements
+    ? buildRequirementEvidence(
+        input.requirements,
+        contractResults,
+        (pinned.plan.blueprintDecisions ?? []).flatMap(decision =>
+          decision.effect === 'remove_requirement' && decision.requirementId !== null
+            ? [decision.requirementId]
+            : []
+        )
+      )
+    : null;
   const view: ExperimentEvidenceView = experimentEvidenceViewSchema.parse({
     kind: 'experiment',
     primaryMetric: protocol.primaryMetric,
@@ -638,6 +937,11 @@ export async function verifyExperiment(
         error: result && result.status !== 'verified' ? result.error : null,
         runStatus: run?.status ?? null,
         durationMs: run?.durationMs ?? null,
+        params: run?.params ?? null,
+        validationMetrics:
+          validation?.variants[id]?.status === 'verified'
+            ? (validation.variants[id].metrics as Record<string, number>)
+            : null,
       };
     }),
     suggestion: {
@@ -650,13 +954,34 @@ export async function verifyExperiment(
     split,
     agents: { builder: pinned.config.builderModel, reviewer: pinned.config.reviewerModel },
     mismatches,
+    tuningTrials: z.array(variantTrialSchema).parse(await readJson('trials.json').catch(() => []))
+      .length,
   });
   const evidenceMap = {
     schemaVersion: 1,
     ...view,
     status: passed ? 'passed' : 'failed',
     executionStatus: passed ? 'passed' : 'failed',
-    requirementCoverage: { status: 'not_verified', verified: 0, total: 0 },
+    scoringStatus: scoringPassed ? 'passed' : 'failed',
+    requirementCoverage: coverage?.requirementCoverage ?? {
+      status: 'not_verified',
+      verified: 0,
+      total: null,
+      note: 'Kế hoạch được duyệt trước khi có danh sách yêu cầu trong Verify nên không biết mẫu số.',
+    },
+    ...(coverage
+      ? { declaredChecks: coverage.declaredChecks, requirements: coverage.requirements }
+      : {}),
+    ...(contract
+      ? {
+          contractChecks: contractResults,
+          contractBasis: {
+            checkerVersion: CONTRACT_CHECKER_VERSION,
+            contractHash: contract.contractHash,
+            codeHash: contract.codeHash,
+          },
+        }
+      : {}),
     verifiedVariants,
   };
   await mkdir(join(context.artifactsDir, 'verification'), { recursive: true });

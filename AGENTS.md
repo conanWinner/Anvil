@@ -110,7 +110,7 @@ Preserve this boundary:
 - Unsupported renderers must show a friendly state with provenance, metadata, and safe download. Optional LLM summaries are labeled non-authoritative.
 - Decisions, snapshots, contracts, plans, manifests, approvals, and Evidence retain their domain names; do not label every result an Artifact.
 - Treat the Sources route as the OP-00 detail surface. Show the Intake Gate and report history; never synthesize missing legacy provenance.
-- Use the canonical blue–cyan–teal application tokens from packages/web/src/index.css. Do not introduce a System 3-specific purple palette.
+- System 3 project screens use the scoped light surface in packages/web/src/features/system3/system3-theme.css (ivory, green accent), recorded as "System 3 surface" in the brand guide; everything else uses the canonical blue–cyan–teal tokens from packages/web/src/index.css. Change either palette only together with the brand guide; do not add other per-feature palettes.
 - Motion must communicate state, remain subtle, and respect prefers-reduced-motion. Status cannot depend on color or motion alone.
 - Test the canonical counts, navigation, OP-00 legacy state, inline viewing, friendly/raw views, responsive layout, focus restoration, and keyboard access.
 - Before completion, inspect a rendered project with real activity data at desktop and compact widths.

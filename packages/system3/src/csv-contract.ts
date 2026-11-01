@@ -23,8 +23,7 @@ export class System3CsvContractError extends Error {
       | 'blank_header'
       | 'duplicate_header'
       | 'too_many_columns'
-      | 'too_many_rows'
-      | 'too_many_distinct_values',
+      | 'too_many_rows',
     message: string
   ) {
     super(message);

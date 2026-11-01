@@ -14,6 +14,8 @@ import type {
   System3SourceKind,
 } from './contracts';
 import {
+  BLUEPRINT_REVIEW_OUTPUT_JSON_SCHEMA,
+  blueprintReviewPrompt,
   understandProjectSources,
   verifyPinnedUnderstandingSourceStream,
   type PinnedUnderstandingSource,
@@ -40,6 +42,7 @@ import {
 import { deriveExperimentPlan, hashExperimentPlan } from './experiment-plan';
 import { resolveMlRuntime } from './ml-runtime';
 import { executeExperiment, verifyExperiment } from './experiment-capabilities';
+import type { ExperimentProgressEvent } from './experiment-progress';
 
 function descriptor<const T extends string>(
   id: T,
@@ -166,6 +169,8 @@ export interface System3CapabilitySourcePort {
     signal: AbortSignal;
   }): Promise<unknown>;
   readArtifact(projectId: string, storageKey: string): Promise<Uint8Array>;
+  /** Live experiment trace sink; see `ExperimentCapabilityPort.recordProgress`. */
+  recordProgress?(runId: string, event: ExperimentProgressEvent): void;
 }
 
 type CapabilityHandler = (
@@ -615,6 +620,21 @@ const handlers: Readonly<Partial<Record<System3CapabilityId, CapabilityHandler>>
 };
 
 /** Deterministic registry structurally compatible with WorkflowDeps.actionRegistry. */
+/** Column names from the first line of a CSV; only for the blueprint review, so a rough split is enough. */
+async function readCsvHeader(chunks: AsyncIterable<Uint8Array>): Promise<string[]> {
+  const decoder = new TextDecoder();
+  let text = '';
+  for await (const chunk of chunks) {
+    text += decoder.decode(chunk, { stream: true });
+    if (text.includes('\n') || text.length > 64 * 1024) break;
+  }
+  return (text.split(/\r?\n/u)[0] ?? '')
+    .split(',')
+    .map(column => column.trim().replace(/^"|"$/gu, ''))
+    .filter(column => column.length > 0)
+    .slice(0, 200);
+}
+
 export class System3CapabilityRegistry {
   constructor(private readonly sourcePort?: System3CapabilitySourcePort) {}
 
@@ -646,10 +666,12 @@ export class System3CapabilityRegistry {
       const readArtifact = this.sourcePort?.readArtifact.bind(this.sourcePort);
       if (!readSourceVersion || !generateStructured || !readArtifact)
         throw new Error('Experiment execution needs pinned source reads and model access');
+      const recordProgress = this.sourcePort?.recordProgress?.bind(this.sourcePort);
       const executed = await executeExperiment(input, context, {
         readSourceVersion,
         generateStructured,
         readArtifact,
+        ...(recordProgress ? { recordProgress } : {}),
       });
       // Archive the self-contained package exactly like the baseline flow does.
       const archive = await baselineCapabilityHandlers['system3.baseline-artifact-packager'](
@@ -734,11 +756,17 @@ export class System3CapabilityRegistry {
       const refs = z.array(sourceRefSchema).min(1).parse(input.sources);
       const sources: PinnedUnderstandingSource[] = [];
       let datasetSource: StreamedPinnedUnderstandingSource | undefined;
+      const datasetFilenames: string[] = [];
+      const datasetColumns: Record<string, string[]> = {};
       for (const ref of refs) {
         if (ref.kind === 'dataset' && this.sourcePort.streamSourceVersion) {
           const source = await this.sourcePort.streamSourceVersion(projectId, ref.id);
           if (!source) throw new Error(`Pinned Source Version '${ref.id}' does not exist`);
           datasetSource = source;
+          datasetFilenames.push(source.filename);
+          // A second stream: the first must stay whole for profiling.
+          const header = await this.sourcePort.streamSourceVersion(projectId, ref.id);
+          if (header) datasetColumns[source.filename] = await readCsvHeader(header.chunks);
           continue;
         }
         const source = await this.sourcePort.readSourceVersion(projectId, ref.id);
@@ -777,9 +805,30 @@ export class System3CapabilityRegistry {
       const semanticFallback =
         await this.sourcePort.createUnderstandingSemanticFallback?.(projectId);
       const previousAnalysis = await this.sourcePort.getActiveUnderstandingAnalysis?.(projectId);
+      const generate = this.sourcePort.generateStructured?.bind(this.sourcePort);
+      const blueprintReview =
+        experimentSource && generate
+          ? (review: { blueprint: string; datasetFiles: readonly string[] }): Promise<unknown> =>
+              generate({
+                projectId,
+                model: parsePinnedExperimentConfig(
+                  experimentSource.bytes,
+                  experimentSource.contentHash
+                ).reviewerModel,
+                prompt: blueprintReviewPrompt({ ...review, datasetColumns }),
+                schema: BLUEPRINT_REVIEW_OUTPUT_JSON_SCHEMA as unknown as Record<string, unknown>,
+                maxResponseBytes: 200 * 1024,
+                signal: AbortSignal.any([context.signal, AbortSignal.timeout(180_000)]),
+              })
+          : undefined;
       return result(
         await understandProjectSources({
           sources,
+          datasetFilenames: [
+            ...datasetFilenames,
+            ...sources.filter(source => source.kind === 'dataset').map(source => source.filename),
+          ],
+          ...(blueprintReview ? { blueprintReview } : {}),
           ...(datasetSource ? { datasetSource } : {}),
           ...(pinnedModelComparison ? { modelComparison: pinnedModelComparison } : {}),
           ...(experimentSource ? { targetFromPreparation: true } : {}),

@@ -1,5 +1,7 @@
 import type { ExperimentPin } from './experiment-config';
+import type { RequirementForEvidence } from './experiment-contract-checks';
 import type { ExperimentPlan } from './experiment-plan';
+import type { VerificationContract } from './verification-contract';
 import type { ModelComparisonConfig } from './model-comparison';
 
 /**
@@ -73,7 +75,8 @@ export function buildUnderstandProjectWorkflow(input: {
             sources: '$verify-input-snapshot.output.sources',
           },
         },
-        timeout: 120_000,
+        // Includes the model review of the blueprint in experiment mode.
+        timeout: 300_000,
         output_type: 'system3-project-understanding',
       },
     ],
@@ -673,7 +676,10 @@ export function buildCustomerChurnVerificationWorkflows(input: {
   analysis: unknown;
   artifact: ImmutableBaselineArtifact;
   modelComparison?: { config: ModelComparisonConfig; inputHash: string; datasetHash: string };
-  experiment?: boolean;
+  experiment?: {
+    requirements: readonly RequirementForEvidence[];
+    verificationContract?: VerificationContract;
+  };
 }): { root: TechnicalWorkflow; definitions: TechnicalWorkflow[] } {
   const reuse = buildBaselineReuseWorkflow(input);
   const verify: TechnicalWorkflow = {
@@ -699,7 +705,14 @@ export function buildCustomerChurnVerificationWorkflows(input: {
               id: 'build-evidence-map',
               action: {
                 executor: 'system3.experiment-verify',
-                input: { projectDir: '$INPUTS.projectDir', experiment: '$INPUTS.experiment' },
+                input: {
+                  projectDir: '$INPUTS.projectDir',
+                  experiment: '$INPUTS.experiment',
+                  requirements: input.experiment.requirements,
+                  ...(input.experiment.verificationContract
+                    ? { verificationContract: input.experiment.verificationContract }
+                    : {}),
+                },
               },
               timeout: 30 * 60_000,
               output_type: 'system3-evidence-map',

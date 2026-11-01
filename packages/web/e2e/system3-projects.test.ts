@@ -81,6 +81,14 @@ async function openSecondaryRoute(page: Page, name: string): Promise<void> {
   await page.getByRole('link', { name, exact: true }).click();
 }
 
+/** Main project tabs live in the sidebar navigation. */
+async function openProjectTab(page: Page, name: string): Promise<void> {
+  await page
+    .getByRole('navigation', { name: 'Điều hướng Anvil Project' })
+    .getByRole('link', { name, exact: true })
+    .click();
+}
+
 async function expandLifecycleDetails(page: Page): Promise<void> {
   const summary = page.getByText('Chi tiết vòng đời · 6 giai đoạn, 10 hoạt động', { exact: true });
   if (!(await summary.evaluate(element => element.parentElement?.hasAttribute('open') ?? false)))
@@ -156,10 +164,10 @@ test('creates a real Customer Churn project and exposes the understanding workfl
   await rerunAllButton.click();
   const attemptDialog = page.getByRole('dialog', { name: 'Xem trước trước khi chạy lại' });
   await expect(attemptDialog).toBeVisible();
-  await expect(
-    attemptDialog.getByRole('button', { name: 'Dùng Source Version hiện hành' })
-  ).toHaveClass(/selected/);
-  await expect(attemptDialog.getByText(/Branch dự kiến:/)).toBeVisible();
+  await expect(attemptDialog.getByRole('button', { name: 'Dữ liệu hiện tại' })).toHaveClass(
+    /selected/
+  );
+  await expect(attemptDialog.getByText(/Nhánh làm việc:/)).toBeVisible();
   if (process.env.CAPTURE_SYSTEM3_UI === 'true') {
     await page.screenshot({ path: '/tmp/anvil-lifecycle-attempt-desktop.png', fullPage: true });
   }
@@ -590,19 +598,19 @@ test('creates a real Customer Churn project and exposes the understanding workfl
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toBe('generated_project.tar.gz');
 
-  await openSecondaryRoute(page, 'Tổng quan');
+  await openSecondaryRoute(page, 'Tóm tắt dự án');
   await expect(page.getByText('Việc nên làm tiếp theo', { exact: true })).toBeVisible();
   await openSecondaryRoute(page, 'Quyết định & Phê duyệt');
   await expect(
     page.getByRole('heading', { name: 'Đóng các lựa chọn trước khi thực thi' })
   ).toBeVisible();
-  await openSecondaryRoute(page, 'Kết quả & Bằng chứng');
+  await openSecondaryRoute(page, 'Bằng chứng');
   await expect(page.getByRole('heading', { name: 'Đối soát toàn bộ project' })).toBeVisible();
-  await openSecondaryRoute(page, 'Bàn giao');
+  await openProjectTab(page, 'Bàn giao');
   await expect(page.getByRole('heading', { name: 'Kiểm tra và tạo gói bàn giao' })).toBeVisible();
 
   await page.setViewportSize({ width: 390, height: 844 });
-  await openSecondaryRoute(page, 'Tổng quan');
+  await openSecondaryRoute(page, 'Tóm tắt dự án');
   await expect(page.getByText('Việc nên làm tiếp theo', { exact: true })).toBeVisible();
   const mainHasHorizontalOverflow = await page.locator('main#main-content').evaluate(element => {
     return element.scrollWidth > element.clientWidth + 1;
@@ -610,7 +618,7 @@ test('creates a real Customer Churn project and exposes the understanding workfl
   expect(mainHasHorizontalOverflow).toBe(false);
   await page.setViewportSize({ width: 1280, height: 720 });
 
-  await page.getByRole('link', { name: 'Workspace dự án', exact: true }).click();
+  await openProjectTab(page, 'Pipeline');
   await expandLifecycleDetails(page);
   const lifecycleUrl = page.url();
   await phaseNavigation.getByRole('button', { name: /OP-00.*Tiếp nhận nguồn đầu vào/ }).click();
@@ -1347,16 +1355,18 @@ test('shows data_required as a business blocker with a Dataset next action', asy
     .getByRole('navigation', { name: '6 giai đoạn và 10 hoạt động vòng đời dự án' })
     .getByRole('button', { name: /TW-03.*Kiểm tra mức độ sẵn sàng/ })
     .click();
-  await expect(
-    page.getByText('Cần liên kết và kiểm tra Dataset thật trước công việc phụ thuộc dữ liệu.', {
-      exact: true,
-    })
-  ).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Điều kiện Readiness' })).toBeVisible();
-  await expect(page.getByText('Workflow failed')).toHaveCount(0);
   const readinessWorkspace = page.getByRole('article', {
     name: 'Kiểm tra mức độ sẵn sàng',
   });
+  // The pipeline row repeats the status line, so read it from the inspected activity itself.
+  await expect(
+    readinessWorkspace.getByText(
+      'Cần liên kết và kiểm tra Dataset thật trước công việc phụ thuộc dữ liệu.',
+      { exact: true }
+    )
+  ).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Điều kiện Readiness' })).toBeVisible();
+  await expect(page.getByText('Workflow failed')).toHaveCount(0);
   await expect(readinessWorkspace.getByRole('link', { name: 'Liên kết Dataset' })).toHaveAttribute(
     'href',
     `/console/projects/${projectId}/sources`

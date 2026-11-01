@@ -1,5 +1,6 @@
 import { AlertTriangle, CheckCircle2, Lightbulb, ShieldCheck } from 'lucide-react';
 import type { ReactElement } from 'react';
+import { formatParamValue, type ParamValue } from './experiment-params-view';
 import type { System3ExperimentResults } from './types';
 
 const METRIC_LABELS: Record<string, string> = {
@@ -29,7 +30,7 @@ function formatDuration(ms: number | null): string {
 }
 
 const STATUS_LABEL: Record<System3ExperimentResults['variants'][number]['status'], string> = {
-  verified: 'Đã xác minh',
+  verified: 'Đã chấm',
   missing: 'Không có dự đoán',
   invalid_predictions: 'Dự đoán không hợp lệ',
 };
@@ -54,7 +55,7 @@ function suggestionText(results: System3ExperimentResults): {
   const metric = metricLabel(primaryMetric);
   if (!best)
     return {
-      headline: 'Chưa có phương án nào được xác minh để gợi ý.',
+      headline: 'Chưa có phương án nào được chấm để gợi ý.',
       notes: ['Xem lỗi của từng phương án bên dưới.'],
       tone: 'warn',
     };
@@ -92,6 +93,14 @@ function suggestionText(results: System3ExperimentResults): {
     notes,
     tone,
   };
+}
+
+/** Metrics say how the variants score, not how much of the blueprint was checked (plan 16 §5). */
+export function coverageText(coverage: System3ExperimentResults['requirementCoverage']): string {
+  const scope = 'Metric chỉ so sánh các phương án, không chứng minh blueprint đã được đáp ứng.';
+  if (coverage?.total === null || coverage?.total === undefined)
+    return `Chưa biết độ phủ yêu cầu của lần chạy này. ${scope}`;
+  return `Độ phủ blueprint: ${(coverage.criteriaPassed ?? 0).toString()}/${coverage.total.toString()} yêu cầu có kiểm tra đạt, ${(coverage.notVerified ?? 0).toString()} yêu cầu chưa được kiểm chứng${coverage.removed ? `, ${coverage.removed.toString()} yêu cầu đã bỏ theo quyết định của bạn` : ''}. ${scope}`;
 }
 
 export function ExperimentResultsView({
@@ -145,6 +154,15 @@ export function ExperimentResultsView({
           <small>Đây là gợi ý theo metric chính của blueprint; bạn là người chọn phương án.</small>
         </div>
       </div>
+      <p className="s3-note" role="status">
+        {coverageText(results.requirementCoverage)}
+      </p>
+      {results.tuningTrials > 0 ? (
+        <p className="s3-note">
+          Có {results.tuningTrials.toString()} lượt chạy thử tham số trên tập validation trước khi
+          mở điểm tập kiểm tra.
+        </p>
+      ) : null}
 
       <div className="s3-comparison-table-wrap">
         <table className="s3-comparison-table s3-experiment-table">
@@ -246,6 +264,28 @@ export function ExperimentResultsView({
             </li>
           ))}
         </ul>
+      ) : null}
+
+      {results.variants.some(variant => variant.params) ? (
+        <details className="s3-secondary-details s3-review-report">
+          <summary>Tham số đã dùng và điểm trên tập validation</summary>
+          <ul className="s3-experiment-used-params">
+            {results.variants.map(variant => (
+              <li key={variant.id}>
+                <strong>{variant.name}</strong>
+                {variant.validationMetrics?.[primary] !== undefined
+                  ? ` · ${metricLabel(primary)} validation ${formatMetric(variant.validationMetrics[primary])}`
+                  : ''}
+                <br />
+                <code>
+                  {Object.entries(variant.params ?? {})
+                    .map(([name, value]) => `${name} = ${formatParamValue(value as ParamValue)}`)
+                    .join(', ') || 'Không báo tham số'}
+                </code>
+              </li>
+            ))}
+          </ul>
+        </details>
       ) : null}
 
       <details className="s3-secondary-details s3-review-report">

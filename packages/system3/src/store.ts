@@ -3326,7 +3326,9 @@ export class System3Store {
         const options =
           binding?.kind === 'dataset_target_column'
             ? binding.allowedValues
-            : ['Đã xem xét và xác nhận'];
+            : binding?.kind === 'blueprint_review'
+              ? binding.options.map(option => option.label)
+              : ['Đã xem xét và xác nhận'];
         await query(
           `INSERT INTO remote_agent_system3_decisions
             (id, project_id, knowledge_snapshot_id, title, question, why, recommendation, options, binding, affected_phases, status)
@@ -3337,10 +3339,16 @@ export class System3Store {
             id,
             review.title,
             review.detail,
-            'Bản hiểu nháp có một điểm quan trọng mà Anvil không được tự quyết định.',
+            binding?.kind === 'blueprint_review'
+              ? binding.origin === 'code'
+                ? 'Anvil đối chiếu blueprint với dữ liệu và sandbox thật và thấy điểm này không khớp.'
+                : 'Model rà soát blueprint đề xuất xem lại điểm này. Đây chỉ là đề xuất, có thể sai; bạn là người quyết định.'
+              : 'Bản hiểu nháp có một điểm quan trọng mà Anvil không được tự quyết định.',
             binding?.kind === 'dataset_target_column'
               ? 'Chọn đúng một cột có trong Dataset đã liên kết.'
-              : 'Xác nhận rằng bạn đã xem xét nội dung cần quyết định.',
+              : binding?.kind === 'blueprint_review'
+                ? 'Chọn một cách xử lý. Blueprint gốc không bị sửa; lựa chọn được ghim vào kế hoạch.'
+                : 'Xác nhận rằng bạn đã xem xét nội dung cần quyết định.',
             JSON.stringify(options),
             binding === null ? null : JSON.stringify(binding),
             JSON.stringify(['readiness']),
@@ -3858,6 +3866,12 @@ export class System3Store {
         throw new System3ConflictError(
           'Selected target column is not present in the linked Dataset'
         );
+      }
+      if (
+        binding?.kind === 'blueprint_review' &&
+        !binding.options.some(option => option.value === input.answer)
+      ) {
+        throw new System3ConflictError('Selected option is not part of this review finding');
       }
       const decision = await query(
         `UPDATE remote_agent_system3_decisions SET status = 'answered', answer = $1, updated_at = CURRENT_TIMESTAMP
@@ -4499,7 +4513,12 @@ export class System3Store {
       if (Number(project.version) !== input.expectedVersion) {
         throw new System3ConflictError('Project changed; refresh before executing');
       }
-      if (project.stage !== 'approved' || project.freshness !== 'current') {
+      // Results waiting for delivery can still be re-run (plan 13 §10); nothing else may restart them.
+      const experimentRun = input.runtimeBindings.experimentRun as { stage?: string } | undefined;
+      const canStart =
+        project.stage === 'approved' ||
+        (project.stage === 'delivery' && experimentRun?.stage === 'run');
+      if (!canStart || project.freshness !== 'current') {
         throw new System3ConflictError('Project is not approved with current inputs');
       }
       const approvalResult = await query(

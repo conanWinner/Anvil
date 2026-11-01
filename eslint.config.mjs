@@ -12,6 +12,7 @@ export default tseslint.config(
       'dist/**',
       'coverage/**',
       '.agents/examples/**',
+      'baocao/**', // Local report material, not product code
       'packages/docs-web/**',
       'workspace/**',
       'worktrees/**',

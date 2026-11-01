@@ -28,6 +28,9 @@ export type System3ProjectFlowResponse = components['schemas']['System3ProjectFl
 export type CreateSystem3ProjectBody = components['schemas']['CreateSystem3ProjectBody'];
 export type System3OperationResponse = components['schemas']['System3Operation'];
 export type System3ProjectHistory = components['schemas']['System3ProjectHistory'];
+export type System3OperationTrace = components['schemas']['System3OperationTrace'];
+export type System3ExperimentProgressEvent =
+  components['schemas']['System3ExperimentProgressEvent'];
 
 export type System3LifecycleAttemptActivity =
   | 'OP-00'
@@ -133,6 +136,18 @@ export async function listSystem3Projects(): Promise<System3ProjectResponse[]> {
 
 export function getSystem3ProjectFlow(projectId: string): Promise<System3ProjectFlowResponse> {
   return fetchJSON<System3ProjectFlowResponse>(`/api/system3/projects/${projectId}/flow`);
+}
+
+export function getSystem3ProjectHistory(projectId: string): Promise<System3ProjectHistory> {
+  return fetchJSON<System3ProjectHistory>(
+    `/api/system3/projects/${encodeURIComponent(projectId)}/history`
+  );
+}
+
+export function getSystem3OperationTrace(operationId: string): Promise<System3OperationTrace> {
+  return fetchJSON<System3OperationTrace>(
+    `/api/system3/operations/${encodeURIComponent(operationId)}/trace`
+  );
 }
 
 export function createSystem3Project(

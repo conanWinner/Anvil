@@ -14,11 +14,15 @@ export default defineConfig({
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
   webServer: [
     {
+      // A fresh ANVIL_HOME per run, removed when Playwright stops the server (/tmp is often a
+      // RAM-backed tmpfs, so leftover homes eat memory run after run).
       command:
-        'task_home=$(mktemp -d) && cd ../.. && env ANVIL_HOME="$task_home" PORT=3090 CLAUDE_USE_GLOBAL_AUTH=true bun run dev:server',
+        'task_home=$(mktemp -d) && trap \'rm -rf "$task_home"\' EXIT INT TERM && cd ../.. && env ANVIL_HOME="$task_home" PORT=3090 CLAUDE_USE_GLOBAL_AUTH=true bun run dev:server',
       url: 'http://127.0.0.1:3090/api/health',
       reuseExistingServer: !process.env.CI,
       timeout: 120_000,
+      // SIGKILL (the default) would skip the trap above and leave the home behind.
+      gracefulShutdown: { signal: 'SIGTERM', timeout: 5_000 },
     },
     {
       command: 'env PORT=3090 WEB_PORT=5173 bun run dev --host 127.0.0.1',

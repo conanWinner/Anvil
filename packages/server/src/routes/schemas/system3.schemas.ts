@@ -2,7 +2,12 @@ import { createRoute, z } from '@hono/zod-openapi';
 import {
   blueprintAnalysisSchema,
   experimentEvidenceViewSchema,
+  understandingDecisionBindingSchema,
+  variantParamOverridesSchema,
+  variantParamsSchema,
+  variantTrialSchema,
   experimentPinSchema,
+  experimentProgressEventSchema,
   system3AttentionSchema,
   system3FreshnessSchema,
   system3PhaseSchema,
@@ -304,14 +309,7 @@ export const system3DecisionSchema = z
     why: z.string(),
     recommendation: z.string(),
     options: z.array(z.string()),
-    binding: z
-      .discriminatedUnion('kind', [
-        z.object({
-          kind: z.literal('dataset_target_column'),
-          allowedValues: z.array(z.string()),
-        }),
-      ])
-      .nullable(),
+    binding: understandingDecisionBindingSchema.nullable(),
     affectedPhases: z.array(z.string()),
     status: z.enum(['pending', 'answered']),
     answer: z.string().nullable(),
@@ -432,6 +430,10 @@ export const system3ExperimentBuildSummarySchema = z.object({
   split: experimentEvidenceViewSchema.shape.split,
   builderModel: z.string(),
   reviewerModel: z.string(),
+  /** Each variant's default parameters; absent on builds made before they could be changed. */
+  variantParams: z.record(z.string(), variantParamsSchema).optional(),
+  /** Tuning runs of this build, scored on the validation set only. */
+  trials: z.array(variantTrialSchema).optional(),
 });
 export const system3ExperimentBuildViewSchema = system3ExperimentBuildSummarySchema
   .extend({
@@ -442,6 +444,8 @@ export const system3ExperimentBuildViewSchema = system3ExperimentBuildSummarySch
     hostSlots: z.number().int().positive(),
     /** Latest run made from this build; its results can be kept when re-running some variants. */
     latestRunExecutionId: z.string().uuid().nullable(),
+    /** The test score of this approval was already opened, so parameters can no longer change. */
+    tuningClosed: z.boolean(),
   })
   .openapi('System3ExperimentBuild');
 
@@ -506,6 +510,16 @@ export const system3FlowSchema = z
           .object({
             models: z.array(modelComparisonModelReportSchema).optional(),
             ...experimentEvidenceViewSchema.partial().shape,
+            requirementCoverage: z
+              .object({
+                // Null on results approved before verification knew the requirement list.
+                total: z.number().int().nonnegative().nullable(),
+                criteriaPassed: z.number().int().nonnegative().optional(),
+                notVerified: z.number().int().nonnegative().optional(),
+                removed: z.number().int().nonnegative().optional(),
+              })
+              .catchall(z.unknown())
+              .optional(),
           })
           .catchall(z.unknown())
           .nullable(),
@@ -605,6 +619,9 @@ export const executeSystem3ProjectBodySchema = z
           parallelism: z.number().int().min(1).max(16),
           /** Keep results of this earlier run for variants not run again. */
           carryOverExecutionId: z.string().uuid().optional(),
+          /** `tune` scores on the validation set only; the default `run` opens the test score. */
+          mode: z.enum(['tune', 'run']).optional(),
+          variantParams: variantParamOverridesSchema.optional(),
         })
         .optional(),
     }),
@@ -1538,6 +1555,26 @@ export const streamSystem3OperationRoute = createRoute({
     200: {
       description: 'Server-sent operation state events',
       content: { 'text/event-stream': { schema: z.string() } },
+    },
+    ...projectErrors,
+  },
+});
+export const system3OperationTraceSchema = z
+  .object({
+    operationId: z.string().uuid(),
+    /** Experiment steps (TW-06) in the order they happened; empty for other operations. */
+    events: z.array(experimentProgressEventSchema.openapi('System3ExperimentProgressEvent')),
+  })
+  .openapi('System3OperationTrace');
+export const getSystem3OperationTraceRoute = createRoute({
+  method: 'get',
+  path: '/api/system3/operations/{operationId}/trace',
+  summary: 'Live step trace of a System 3 operation (builder, reviewer, sandbox and scoring)',
+  request: { params: system3OperationParamsSchema },
+  responses: {
+    200: {
+      description: 'Trace events recorded so far',
+      content: { 'application/json': { schema: system3OperationTraceSchema } },
     },
     ...projectErrors,
   },

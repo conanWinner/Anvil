@@ -26,6 +26,7 @@ COPY packages/isolation/package.json ./packages/isolation/
 COPY packages/paths/package.json ./packages/paths/
 COPY packages/providers/package.json ./packages/providers/
 COPY packages/server/package.json ./packages/server/
+COPY packages/system3/package.json ./packages/system3/
 COPY packages/web/package.json ./packages/web/
 COPY packages/workflows/package.json ./packages/workflows/
 
@@ -136,6 +137,7 @@ COPY packages/isolation/package.json ./packages/isolation/
 COPY packages/paths/package.json ./packages/paths/
 COPY packages/providers/package.json ./packages/providers/
 COPY packages/server/package.json ./packages/server/
+COPY packages/system3/package.json ./packages/system3/
 COPY packages/web/package.json ./packages/web/
 COPY packages/workflows/package.json ./packages/workflows/
 
@@ -151,6 +153,11 @@ COPY packages/isolation/ ./packages/isolation/
 COPY packages/paths/ ./packages/paths/
 COPY packages/providers/ ./packages/providers/
 COPY packages/server/ ./packages/server/
+# system3 includes runtime/ (python evaluator + requirements-ml.lock). System 3
+# experiment and model-comparison sandboxes are NOT supported in this image yet:
+# they need bwrap, systemd-run and the locked ML runtime (uv + libgomp1), none of
+# which are installed here. The lifecycle UI/API works; running variants does not.
+COPY packages/system3/ ./packages/system3/
 COPY packages/workflows/ ./packages/workflows/
 
 # Copy pre-built web UI from build stage

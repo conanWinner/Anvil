@@ -1,9 +1,14 @@
 import { expect, test } from 'bun:test';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { executeExperiment, type ExperimentCapabilityPort } from './experiment-capabilities';
+import {
+  executeExperiment,
+  REPRODUCE_SH,
+  type ExperimentCapabilityPort,
+} from './experiment-capabilities';
+import { resolveMlRuntime } from './ml-runtime';
 import type { ExperimentPlan } from './experiment-plan';
 import type { PinnedUnderstandingSource } from './understanding';
 
@@ -65,16 +70,23 @@ const trainVariant = `import argparse, json, os
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
-parser = argparse.ArgumentParser(); parser.add_argument('--variant', required=True)
-variant = parser.parse_args().variant
+parser = argparse.ArgumentParser(); parser.add_argument('--variant', required=True); parser.add_argument('--params', default='{}')
+args = parser.parse_args(); variant = args.variant
+params = {'logistic_regression': {'max_iter': 100}, 'random_forest': {'n_estimators': 20}}[variant]
+for name, value in json.loads(args.params).items():
+    if name not in params: raise SystemExit(f'unknown parameter {name}')
+    params[name] = value
 train = pd.read_csv('/work/data/train.csv'); test = pd.read_csv('/work/data/test_features.csv')
 features = ['visits', 'spend']
-model = {'logistic_regression': LogisticRegression(), 'random_forest': RandomForestClassifier(n_estimators=20, random_state=0)}[variant]
+model = LogisticRegression(**params) if variant == 'logistic_regression' else RandomForestClassifier(random_state=0, **params)
 model.fit(train[features], train['target'])
 score = model.predict_proba(test[features])[:, 1]
 os.makedirs('/work/out/predictions', exist_ok=True); os.makedirs('/work/out/reported', exist_ok=True)
 pd.DataFrame({'id': test['entity_id'], 'score': score, 'label': (score >= 0.5).astype(int)}).to_csv(f'/work/out/predictions/{variant}.csv', index=False)
-json.dump({'train_rows': len(train)}, open(f'/work/out/reported/{variant}.json', 'w'))
+validation = pd.read_csv('/work/data/validation_features.csv'); os.makedirs('/work/out/validation_predictions', exist_ok=True)
+validation_score = model.predict_proba(validation[features])[:, 1]
+pd.DataFrame({'id': validation['entity_id'], 'score': validation_score, 'label': (validation_score >= 0.5).astype(int)}).to_csv(f'/work/out/validation_predictions/{variant}.csv', index=False)
+json.dump({'train_rows': len(train), 'params': params}, open(f'/work/out/reported/{variant}.json', 'w'))
 `;
 
 function source(
@@ -182,6 +194,55 @@ sandboxTest(
     expect(build.output.experiment).toMatchObject({ kind: 'experiment_build', status: 'built' });
     const callsAfterBuild = modelCalls;
 
+    expect(build.output.experiment.variantParams).toEqual({
+      logistic_regression: { max_iter: 100 },
+      random_forest: { n_estimators: 20 },
+    });
+
+    // Tuning scores on validation only, and returns a build package with the trial added.
+    const tuned = await stage('tune-1', {
+      stage: 'tune',
+      buildArtifact: build.ref,
+      variantIds: ['random_forest'],
+      parallelism: 1,
+      variantParams: { random_forest: { n_estimators: 7 } },
+    });
+    expect(tuned.output.experiment.kind).toBe('experiment_build');
+    expect(tuned.output.experiment.evaluation).toBeUndefined();
+    const trials = tuned.output.experiment.trials as {
+      round: number;
+      params: unknown;
+      validationMetrics: Record<string, number> | null;
+    }[];
+    expect(trials).toHaveLength(1);
+    expect(trials[0]).toMatchObject({
+      round: 1,
+      params: { n_estimators: 7 },
+      requested: { n_estimators: 7 },
+    });
+    expect(trials[0]?.validationMetrics?.roc_auc).toBeNumber();
+    await expect(
+      stage('tune-unknown', {
+        stage: 'tune',
+        buildArtifact: build.ref,
+        variantIds: ['random_forest'],
+        parallelism: 1,
+        variantParams: { random_forest: { depth: 3 } },
+      })
+    ).rejects.toThrow('không có tham số depth');
+
+    const finalRun = await stage('run-tuned', {
+      stage: 'run',
+      buildArtifact: tuned.ref,
+      variantIds: ['random_forest'],
+      parallelism: 1,
+      carryOver: null,
+      variantParams: { random_forest: { n_estimators: 7 } },
+    });
+    expect(finalRun.output.experiment).toMatchObject({ tuningTrials: 1 });
+    const finalRuns = finalRun.output.experiment.runs as { params: unknown }[];
+    expect(finalRuns[0]?.params).toEqual({ n_estimators: 7 });
+
     const first = await stage('run-1', {
       stage: 'run',
       buildArtifact: build.ref,
@@ -224,4 +285,67 @@ sandboxTest(
     ).rejects.toThrow('outside the approved plan');
   },
   600_000
+);
+
+test('reproduce.sh sandboxes variant code instead of exposing the host', () => {
+  expect(REPRODUCE_SH).not.toMatch(/--(ro-)?bind \/ \//u);
+  expect(REPRODUCE_SH).toContain('--clearenv');
+  expect(REPRODUCE_SH).toContain('--unshare-all');
+  expect(REPRODUCE_SH).not.toContain('data/holdout');
+  expect(REPRODUCE_SH).toContain('--ro-bind "$here/data/agent" /work/data');
+});
+
+sandboxTest(
+  'reproduce.sh hides held-out labels, the host filesystem and the environment',
+  async () => {
+    const runtime = await resolveMlRuntime();
+    const root = await mkdtemp(join(tmpdir(), 'anvil-reproduce-'));
+    const pkg = join(root, 'package');
+    const outside = join(root, 'outside-secret.txt');
+    await Promise.all([
+      mkdir(join(pkg, 'code'), { recursive: true }),
+      mkdir(join(pkg, 'data', 'agent'), { recursive: true }),
+      mkdir(join(pkg, 'data', 'holdout'), { recursive: true }),
+    ]);
+    await Promise.all([
+      writeFile(join(pkg, 'reproduce.sh'), REPRODUCE_SH),
+      writeFile(outside, 'sentinel\n'),
+      writeFile(join(pkg, 'data', 'holdout', 'test_labels.csv'), 'id,target\n'),
+      writeFile(join(pkg, 'data', 'agent', 'train.csv'), 'id\n'),
+      writeFile(
+        join(pkg, 'code', 'train_variant.py'),
+        `import json, os, sys
+from pathlib import Path
+probes = {
+    'outside': ${JSON.stringify(outside)},
+    'holdout': ${JSON.stringify(join(pkg, 'data', 'holdout', 'test_labels.csv'))},
+    'home': ${JSON.stringify(join(process.env.HOME ?? '/root', '.bashrc'))},
+    'data': '/work/data/train.csv',
+}
+seen = {name: Path(path).exists() for name, path in probes.items()}
+seen['secret_env'] = 'ANVIL_REPRODUCE_SECRET' in os.environ
+Path('/work/out/predictions', sys.argv[2] + '.csv').write_text(json.dumps(seen))
+`
+      ),
+    ]);
+    const child = Bun.spawn(['sh', join(pkg, 'reproduce.sh'), 'probe', runtime.python], {
+      env: { ...process.env, ANVIL_REPRODUCE_SECRET: 'x' },
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    expect({ code, stderr }).toMatchObject({ code: 0 });
+    expect(JSON.parse(await readFile(stdout.trim(), 'utf8'))).toEqual({
+      outside: false,
+      holdout: false,
+      home: false,
+      data: true,
+      secret_env: false,
+    });
+  },
+  120_000
 );

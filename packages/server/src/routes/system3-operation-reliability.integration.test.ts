@@ -183,6 +183,34 @@ describe('System 3 operation reliability with real SQLite', () => {
     );
     expect(Number(counts.rows[0]?.executions)).toBe(1);
     expect(Number(counts.rows[0]?.runs)).toBe(1);
+
+    // Results waiting for delivery can re-run experiment variants, and nothing else.
+    await database.query(
+      `UPDATE remote_agent_system3_projects SET stage = 'delivery' WHERE id = $1`,
+      [project.id]
+    );
+    const atDelivery = await store.getProject(project.id);
+    if (!atDelivery) throw new Error('T05 project was not found at delivery');
+    const again = {
+      ...input,
+      expectedVersion: atDelivery.version,
+    };
+    await expect(
+      store.beginExecution({
+        ...again,
+        executionId: randomUUID(),
+        idempotencyKey: 'restart-build-key',
+        runtimeBindings: { experimentRun: { stage: 'build' } },
+      })
+    ).rejects.toBeInstanceOf(System3ConflictError);
+    const rerun = await store.beginExecution({
+      ...again,
+      executionId: randomUUID(),
+      idempotencyKey: 'rerun-variants-key',
+      runtimeBindings: { experimentRun: { stage: 'run' } },
+    });
+    expect(rerun.existing).toBe(false);
+    expect((await store.getProject(project.id))?.stage).toBe('executing');
     await database.close();
   });
 

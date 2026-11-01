@@ -11,7 +11,9 @@ import {
   problemProfileV2Schema,
   technologySelectionSchema,
   understandingSourcePointerSchema,
+  blueprintDecisionSchema,
 } from './understanding/schemas';
+import { verificationContractSchema } from './verification-contract';
 
 export const system3ProjectStageSchema = z.enum([
   'draft',
@@ -269,6 +271,10 @@ export const blueprintAnalysisV2Schema = z.object({
   moduleDesign: z.array(moduleDesignSchema),
   executionBlueprint: z.array(codeDesignItemSchema),
   extractionQuality: extractionQualitySchema,
+  /** Absent for blueprints without one, so their analyses and plan hashes stay unchanged. */
+  verificationContract: verificationContractSchema.optional(),
+  /** Added when answered reviews are applied; never part of the immutable snapshot itself. */
+  blueprintDecisions: z.array(blueprintDecisionSchema).optional(),
 });
 
 export const blueprintAnalysisSchema = z.discriminatedUnion('schemaVersion', [

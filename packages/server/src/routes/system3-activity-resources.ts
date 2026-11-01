@@ -681,7 +681,17 @@ function activityResources(
           relation: 'input',
           title: 'Input Snapshot của lần Hiểu dự án',
           summary: `${snapshot.sourceIds.length.toString()} phiên bản nguồn đã được khóa trước khi chạy.`,
-          status: snapshot.knowledgeSnapshotId === context.knowledge?.id ? 'current' : 'superseded',
+          // A draft awaiting review is a candidate, not an old version.
+          status:
+            snapshot.knowledgeSnapshotId === context.knowledge?.id
+              ? 'current'
+              : context.knowledgeSnapshots.some(
+                    knowledge =>
+                      knowledge.id === snapshot.knowledgeSnapshotId &&
+                      knowledge.lifecycleStatus === 'candidate'
+                  )
+                ? 'candidate'
+                : 'superseded',
           createdAt: snapshot.createdAt,
           workflowRunId: snapshot.workflowRunId,
           operationId: snapshot.operationId,

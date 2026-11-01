@@ -1,7 +1,10 @@
 import { useSyncExternalStore } from 'react';
 import {
+  createSystem3LifecycleAttempt,
   createSystem3Project as createSystem3ProjectRequest,
   getSystem3ProjectFlow,
+  listSystem3LifecycleAttempts,
+  previewSystem3LifecycleAttempt,
   type System3OperationResponse,
   type System3ProjectHistory,
   type System3ProjectFlowResponse,
@@ -184,6 +187,8 @@ function experimentResults(
     split: map.split,
     agents: map.agents,
     mismatches: map.mismatches ?? [],
+    requirementCoverage: map.requirementCoverage ?? null,
+    tuningTrials: map.tuningTrials ?? 0,
   };
 }
 
@@ -354,6 +359,17 @@ function toDecisionBinding(value: unknown): System3Decision['binding'] {
     value.allowedValues.every(item => typeof item === 'string')
   ) {
     return { kind: 'dataset_target_column', allowedValues: value.allowedValues };
+  }
+  if (
+    value !== null &&
+    typeof value === 'object' &&
+    'kind' in value &&
+    value.kind === 'blueprint_review' &&
+    'options' in value &&
+    Array.isArray(value.options)
+  ) {
+    // The server validated this shape against its own schema when it stored the finding.
+    return value as Extract<System3Decision['binding'], { kind: 'blueprint_review' }>;
   }
   return null;
 }
@@ -800,13 +816,21 @@ export const system3Store = {
       await system3Store.load(current.id);
     }
   },
-  /** Starts TW-02 and returns once the server accepted it; the workspace poller observes progress. */
+  /**
+   * Starts TW-02 and returns once the server accepted it, then watches it in the background so the
+   * workspace the caller opens refreshes when analysis settles. A failed analysis is reloaded from
+   * the server, where the Understanding activity shows it; if that reload fails too, the next page
+   * load shows the same server state, so the error is intentionally not rethrown here.
+   */
   startAnalysis: async (): Promise<void> => {
     const project = current;
-    await startProjectOperation(
+    const operation = await startProjectOperation(
       `/api/system3/projects/${project.id}/knowledge-snapshots`,
       project.version
     );
+    void watchOperation(operation.id)
+      .catch(() => system3Store.load(project.id))
+      .catch(() => undefined);
   },
   getUnderstandingView: async (): Promise<System3UnderstandingView> => {
     const response = await fetch(
@@ -923,6 +947,50 @@ export const system3Store = {
     await watchOperation(body.operation.id);
     await watchAutomaticVerification(body.operation.id);
   },
+  /**
+   * Re-runs TW-06 after a failed build: a new lifecycle attempt on the current sources (what
+   * "Chạy lại từ đây" does from the history panel), started once its worktree is ready.
+   */
+  retryBuild: async (): Promise<void> => {
+    const project = current;
+    const attempts = await listSystem3LifecycleAttempts(project.id);
+    const base =
+      attempts.find(attempt => attempt.lifecycleStatus === 'active') ?? attempts[0] ?? null;
+    const request = {
+      expectedVersion: project.version,
+      baseAttemptId: base?.id ?? null,
+      startActivityId: 'TW-06' as const,
+      scope: 'activity' as const,
+      inputMode: 'current' as const,
+    };
+    const preview = await previewSystem3LifecycleAttempt(project.id, request);
+    const created = await createSystem3LifecycleAttempt(project.id, {
+      ...request,
+      previewHash: preview.previewHash,
+      idempotencyKey: crypto.randomUUID(),
+    });
+    const deadline = Date.now() + 120_000;
+    for (;;) {
+      const attempt = (await listSystem3LifecycleAttempts(project.id)).find(
+        item => item.id === created.id
+      );
+      if (attempt?.runStatus === 'waiting' && attempt.nextActivityId === 'TW-06') break;
+      if (
+        attempt === undefined ||
+        attempt.runStatus === 'failed' ||
+        attempt.runStatus === 'unknown'
+      )
+        throw new Error('Không tạo được lượt chạy lại; mở Lịch sử và chạy lại để xem chi tiết.');
+      if (Date.now() > deadline)
+        throw new Error(
+          'Lượt chạy lại chưa sẵn sàng sau 2 phút; mở Lịch sử và chạy lại để tiếp tục.'
+        );
+      await wait(1000);
+    }
+    // Creating the attempt bumps the project version that execute() sends.
+    await system3Store.load(project.id);
+    await system3Store.execute();
+  },
   approveAndExecute: async (): Promise<void> => {
     const project = current;
     if (!project.compilationId) throw new Error('Compile preview trước khi approve');
@@ -959,6 +1027,9 @@ export const system3Store = {
     parallelism: number;
     /** Keep the latest run's results for variants not run again. */
     keepEarlierResults: boolean;
+    /** `tune` scores on the validation set only and leaves the test score closed. */
+    mode: 'tune' | 'run';
+    variantParams: Record<string, Record<string, number | string | boolean | null>>;
   }): Promise<void> => {
     const project = current;
     const build = project.experimentBuild;
@@ -973,7 +1044,11 @@ export const system3Store = {
           buildExecutionId: build.executionId,
           variantIds: choice.variantIds,
           parallelism: choice.parallelism,
-          ...(choice.keepEarlierResults && build.latestRunExecutionId
+          mode: choice.mode,
+          ...(Object.keys(choice.variantParams).length > 0
+            ? { variantParams: choice.variantParams }
+            : {}),
+          ...(choice.mode === 'run' && choice.keepEarlierResults && build.latestRunExecutionId
             ? { carryOverExecutionId: build.latestRunExecutionId }
             : {}),
         },
