@@ -8,7 +8,8 @@ import {
   type EvaluationProtocol,
   type ExperimentMetric,
 } from './experiment-evaluation';
-import { understandingSourcePointerSchema } from './understanding/schemas';
+import { blueprintDecisionSchema, understandingSourcePointerSchema } from './understanding/schemas';
+import { verificationContractSchema } from './verification-contract';
 
 /**
  * Column contract of the modeling table produced by the data-preparation stage. Fixing the names
@@ -58,6 +59,10 @@ export const experimentPlanSchema = z.object({
   /** Metrics System 2 asked to report, in the order it named them. */
   reportedMetrics: z.array(experimentMetricSchema),
   gaps: z.array(experimentPlanGapSchema),
+  /** Copied from the blueprint when it has one; absent otherwise, keeping older plan hashes valid. */
+  verificationContract: verificationContractSchema.optional(),
+  /** The user's answers to the blueprint review; absent when there were none, like the contract. */
+  blueprintDecisions: z.array(blueprintDecisionSchema).optional(),
 });
 export type ExperimentPlan = z.infer<typeof experimentPlanSchema>;
 
@@ -239,10 +244,14 @@ export function deriveExperimentPlan(analysis: BlueprintAnalysis): ExperimentPla
     protocol,
     reportedMetrics,
     gaps,
+    ...(analysis.verificationContract
+      ? { verificationContract: analysis.verificationContract }
+      : {}),
+    ...(analysis.blueprintDecisions ? { blueprintDecisions: analysis.blueprintDecisions } : {}),
   });
 }
 
-function canonical(value: unknown): unknown {
+export function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical);
   if (value !== null && typeof value === 'object')
     return Object.fromEntries(

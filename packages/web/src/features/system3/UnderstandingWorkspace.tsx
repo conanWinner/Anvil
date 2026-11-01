@@ -111,11 +111,21 @@ export function UnderstandingWorkspace({
     decision: System3UnderstandingView['decisions'][number]
   ): ReactElement => {
     const presentation = presentDecisionQuestion(decision.question);
+    const review = decision.binding?.kind === 'blueprint_review' ? decision.binding : null;
+    const needsChoice = decision.binding !== null;
     return (
-      <article key={decision.id}>
+      <article
+        key={decision.id}
+        className={review ? 's3-understanding-decision-review' : undefined}
+      >
         <div className="s3-understanding-decision-copy">
           <strong>{presentation.summary}</strong>
-          <small>{decision.title}</small>
+          <small>
+            {review?.requirementId ? `${review.requirementId} · ` : ''}
+            {decision.title}
+            {review ? (review.origin === 'code' ? ' · Anvil đối chiếu' : ' · Model đề xuất') : ''}
+          </small>
+          {review?.quote ? <blockquote>{review.quote}</blockquote> : null}
           <details>
             <summary>Xem lý do và nội dung nguồn</summary>
             <div className="s3-understanding-decision-details">
@@ -162,19 +172,34 @@ export function UnderstandingWorkspace({
                 </select>
               </label>
             ) : null}
+            {review ? (
+              <fieldset className="s3-understanding-review-options">
+                <legend className="s3-visually-hidden">Cách xử lý</legend>
+                {review.options.map(option => (
+                  <label key={option.value}>
+                    <input
+                      type="radio"
+                      name={`review-${decision.id}`}
+                      checked={answers[decision.id] === option.value}
+                      disabled={submitting}
+                      onChange={() => {
+                        setAnswers(current => ({ ...current, [decision.id]: option.value }));
+                      }}
+                    />
+                    <span>
+                      {option.label}
+                      {option.instruction ? <small>{option.instruction}</small> : null}
+                    </span>
+                  </label>
+                ))}
+              </fieldset>
+            ) : null}
             <button
               type="button"
               className="s3-button s3-button-secondary"
-              disabled={
-                submitting ||
-                (decision.binding?.kind === 'dataset_target_column' &&
-                  (answers[decision.id] ?? '').length === 0)
-              }
+              disabled={submitting || (needsChoice && (answers[decision.id] ?? '').length === 0)}
               onClick={() => {
-                const answer =
-                  decision.binding?.kind === 'dataset_target_column'
-                    ? answers[decision.id]
-                    : 'Đã xem xét và xác nhận';
+                const answer = needsChoice ? answers[decision.id] : 'Đã xem xét và xác nhận';
                 if (!answer) return;
                 setSubmitting(true);
                 setError(null);
@@ -197,7 +222,10 @@ export function UnderstandingWorkspace({
             </button>
           </div>
         ) : (
-          <span className="s3-chip good">Đã trả lời</span>
+          <span className="s3-chip good">
+            {review?.options.find(option => option.value === decision.answer)?.label ??
+              'Đã trả lời'}
+          </span>
         )}
       </article>
     );

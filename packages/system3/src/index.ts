@@ -23,4 +23,8 @@ export * from './experiment-builder';
 export * from './experiment-runner';
 export * from './experiment-config';
 export * from './experiment-capabilities';
+export * from './experiment-contract-checks';
+export * from './verification-contract';
+export * from './verification-evidence-projection';
+export * from './experiment-params';
 export * from './experiment-progress';

@@ -93,3 +93,60 @@
 #### File: `train_variant.py`
 
 Huấn luyện một phương án mô hình theo tham số `--variant`, xuất xác suất dự đoán cho tập kiểm tra. FR-04, NFR-01, NFR-02.
+
+## 7. VERIFICATION CONTRACT
+
+Điều kiện nghiệm thu máy đọc được; định dạng ở `docs/system_2/verification-contract.md`. Ca mẫu dưới đây chỉ kiểm tra quy tắc tạo nhãn và tập đơn hàng của FR-02 trên dữ liệu nhỏ, không phải toàn bộ FR-01 hay FR-02.
+
+```anvil-contract
+{
+  "contractVersion": 1,
+  "criteria": [
+    {
+      "id": "FR-02.AC-01",
+      "requirementId": "FR-02",
+      "statement": "Target = 1 khi review_score của đánh giá tạo sớm nhất ≤ 2, ngược lại 0; đơn không có đánh giá bị loại; mỗi đơn đúng một dòng.",
+      "check": {
+        "kind": "golden_cases",
+        "tables": {
+          "olist_orders_dataset.csv": "order_id,customer_id,order_status,order_purchase_timestamp,order_approved_at,order_delivered_carrier_date,order_delivered_customer_date,order_estimated_delivery_date\no_score2,c0,delivered,2018-01-01 10:00:00,2018-01-01 11:00:00,2018-01-02 09:00:00,2018-01-05 15:00:00,2018-01-15 00:00:00\no_score3,c1,delivered,2018-01-02 10:00:00,2018-01-02 11:00:00,2018-01-03 09:00:00,2018-01-06 15:00:00,2018-01-16 00:00:00\no_score1,c2,delivered,2018-01-03 10:00:00,2018-01-03 11:00:00,2018-01-04 09:00:00,2018-01-07 15:00:00,2018-01-17 00:00:00\no_score5,c3,delivered,2018-01-04 10:00:00,2018-01-04 11:00:00,2018-01-05 09:00:00,2018-01-08 15:00:00,2018-01-18 00:00:00\no_earliest_low,c4,delivered,2018-01-05 10:00:00,2018-01-05 11:00:00,2018-01-06 09:00:00,2018-01-09 15:00:00,2018-01-19 00:00:00\no_earliest_high,c5,delivered,2018-01-06 10:00:00,2018-01-06 11:00:00,2018-01-07 09:00:00,2018-01-10 15:00:00,2018-01-20 00:00:00\no_many_rows,c6,delivered,2018-01-07 10:00:00,2018-01-07 11:00:00,2018-01-08 09:00:00,2018-01-11 15:00:00,2018-01-21 00:00:00\no_no_review,c7,delivered,2018-01-08 10:00:00,2018-01-08 11:00:00,2018-01-09 09:00:00,2018-01-12 15:00:00,2018-01-22 00:00:00\n",
+          "olist_order_items_dataset.csv": "order_id,order_item_id,product_id,seller_id,shipping_limit_date,price,freight_value\no_score2,1,p1,s1,2018-01-20 00:00:00,50.00,10.00\no_score3,1,p1,s1,2018-01-20 00:00:00,50.00,10.00\no_score1,1,p1,s1,2018-01-20 00:00:00,50.00,10.00\no_score5,1,p1,s1,2018-01-20 00:00:00,50.00,10.00\no_earliest_low,1,p1,s1,2018-01-20 00:00:00,50.00,10.00\no_earliest_high,1,p1,s1,2018-01-20 00:00:00,50.00,10.00\no_many_rows,1,p1,s1,2018-01-20 00:00:00,50.00,10.00\no_no_review,1,p1,s1,2018-01-20 00:00:00,50.00,10.00\no_many_rows,2,p2,s1,2018-01-20 00:00:00,30.00,5.00\n",
+          "olist_order_payments_dataset.csv": "order_id,payment_sequential,payment_type,payment_installments,payment_value\no_score2,1,credit_card,1,60.00\no_score3,1,credit_card,1,60.00\no_score1,1,credit_card,1,60.00\no_score5,1,credit_card,1,60.00\no_earliest_low,1,credit_card,1,60.00\no_earliest_high,1,credit_card,1,60.00\no_many_rows,1,credit_card,1,60.00\no_no_review,1,credit_card,1,60.00\no_many_rows,2,voucher,1,35.00\n",
+          "olist_order_reviews_dataset.csv": "review_id,order_id,review_score,review_comment_title,review_comment_message,review_creation_date,review_answer_timestamp\nr1,o_score2,2,,,2018-02-01 00:00:00,2018-02-02 00:00:00\nr2,o_score3,3,,,2018-02-01 00:00:00,2018-02-02 00:00:00\nr3,o_score1,1,,,2018-02-01 00:00:00,2018-02-02 00:00:00\nr4,o_score5,5,,,2018-02-01 00:00:00,2018-02-02 00:00:00\nr5,o_earliest_low,5,,,2018-02-09 00:00:00,2018-02-10 00:00:00\nr6,o_earliest_low,1,,,2018-02-02 00:00:00,2018-02-03 00:00:00\nr7,o_earliest_high,5,,,2018-02-02 00:00:00,2018-02-03 00:00:00\nr8,o_earliest_high,1,,,2018-02-09 00:00:00,2018-02-10 00:00:00\nr9,o_many_rows,4,,,2018-02-01 00:00:00,2018-02-02 00:00:00\n",
+          "olist_products_dataset.csv": "product_id,product_category_name,product_name_lenght,product_description_lenght,product_photos_qty,product_weight_g,product_length_cm,product_height_cm,product_width_cm\np1,beleza_saude,40,300,1,500,20,10,15\np2,esporte_lazer,35,250,2,800,30,12,20\n"
+        },
+        "expected": [
+          {
+            "entity_id": "o_score2",
+            "target": 1
+          },
+          {
+            "entity_id": "o_score3",
+            "target": 0
+          },
+          {
+            "entity_id": "o_score1",
+            "target": 1
+          },
+          {
+            "entity_id": "o_score5",
+            "target": 0
+          },
+          {
+            "entity_id": "o_earliest_low",
+            "target": 1
+          },
+          {
+            "entity_id": "o_earliest_high",
+            "target": 0
+          },
+          {
+            "entity_id": "o_many_rows",
+            "target": 0
+          }
+        ]
+      }
+    }
+  ]
+}
+```

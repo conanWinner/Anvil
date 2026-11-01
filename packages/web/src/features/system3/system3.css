@@ -1407,6 +1407,7 @@
   gap: 10px;
 }
 .s3-review-item {
+  min-width: 0;
   padding: 13px;
   border: 1px solid #e1e7f0;
   border-radius: 9px;
@@ -1422,6 +1423,8 @@
 .s3-review-item strong {
   margin-top: 5px;
   font-size: 13px;
+  /* Hashes are one long unbroken token. */
+  overflow-wrap: anywhere;
 }
 .s3-check-list {
   display: grid;
@@ -6417,6 +6420,82 @@
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+.s3-understanding-decisions article.s3-understanding-decision-review {
+  grid-template-columns: minmax(0, 1fr);
+}
+.s3-understanding-decision-review .s3-understanding-decision-action {
+  justify-items: start;
+}
+.s3-understanding-review-options small {
+  display: block;
+  color: var(--s3-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.s3-understanding-review-options {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  border: 0;
+  padding: 0;
+}
+.s3-understanding-review-options label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+}
+.s3-understanding-decision-copy blockquote {
+  margin: 6px 0 0;
+  border-left: 3px solid var(--s3-line-strong);
+  padding-left: 10px;
+  color: var(--s3-muted);
+  font-size: 13px;
+}
+.s3-experiment-params fieldset {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 8px;
+  margin: 10px 0 0;
+  border: 0;
+  padding: 0;
+}
+.s3-experiment-params legend {
+  font-weight: 600;
+  padding: 0;
+}
+.s3-experiment-params label {
+  display: grid;
+  gap: 3px;
+  font-size: 12.5px;
+}
+.s3-experiment-params input {
+  min-width: 0;
+  border: 1px solid var(--s3-line-strong);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  padding: 5px 7px;
+}
+.s3-experiment-param-errors {
+  color: var(--s3-error);
+  font-size: 12.5px;
+}
+.s3-experiment-trials caption {
+  caption-side: top;
+  color: var(--s3-muted);
+  font-size: 12.5px;
+  text-align: left;
+  padding-bottom: 6px;
+}
+.s3-experiment-used-params {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  overflow-wrap: anywhere;
 }
 .s3-experiment-run-facts dd svg {
   display: inline;

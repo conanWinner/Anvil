@@ -286,7 +286,24 @@ export function compileSystem3WorkflowBundles(input: {
           },
         }
       : {}),
-    ...(input.plan.experiment ? { experiment: true } : {}),
+    ...(input.plan.experiment && input.experimentInputs
+      ? {
+          experiment: {
+            // TW-07 reports on every approved requirement, not only those the contract mentions.
+            requirements:
+              input.analysis.schemaVersion === 2
+                ? input.analysis.requirements.map(requirement => ({
+                    id: requirement.id,
+                    acceptanceCriterion: requirement.acceptanceCriterion,
+                    sourcePointers: requirement.sourcePointers,
+                  }))
+                : [],
+            ...(input.experimentInputs.plan.verificationContract
+              ? { verificationContract: input.experimentInputs.plan.verificationContract }
+              : {}),
+          },
+        }
+      : {}),
   });
   const delivery = buildCustomerChurnDeliveryWorkflows({
     projectId: input.projectId,

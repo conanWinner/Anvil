@@ -1064,6 +1064,7 @@ function BuildRetry(): ReactElement | null {
 
 function PlanReviewDialog({ onClose }: { onClose: () => void }): ReactElement {
   const project = useSystem3Project();
+  const experiment = project.compilation?.experiment;
   const navigate = useNavigate();
   const dialogRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -1139,13 +1140,15 @@ function PlanReviewDialog({ onClose }: { onClose: () => void }): ReactElement {
             />
             <ReviewItem label="Runtime" value={project.compilation?.runtime ?? 'Chưa xác định'} />
             <ReviewItem
-              label="Rerun scope"
+              label={experiment ? 'Phương án' : 'Rerun scope'}
               value={
-                project.compilation?.modelComparison
-                  ? 'Full model comparison'
-                  : project.compilation?.rerunMode === 'scoped'
-                    ? `Scoped ${project.compilation.executionMode} · ${project.compilation.affectedPhases.join(' · ')}`
-                    : 'Full baseline flow'
+                experiment
+                  ? `${experiment.summary.variants.length.toString()} phương án · ${metricLabel(experiment.summary.primaryMetric)} là metric chính`
+                  : project.compilation?.modelComparison
+                    ? 'Full model comparison'
+                    : project.compilation?.rerunMode === 'scoped'
+                      ? `Scoped ${project.compilation.executionMode} · ${project.compilation.affectedPhases.join(' · ')}`
+                      : 'Full baseline flow'
               }
             />
             <ReviewItem
@@ -1206,6 +1209,21 @@ function PlanReviewDialog({ onClose }: { onClose: () => void }): ReactElement {
                   deploy kết quả.
                 </li>
               </ul>
+            ) : experiment ? (
+              <ul className="s3-check-list">
+                <li>
+                  <Check size={15} /> {experiment.config.builderModel.replace(/^router9\//u, '')}{' '}
+                  viết code, {experiment.config.reviewerModel.replace(/^router9\//u, '')} review;
+                  code chỉ chạy trong sandbox không có mạng.
+                </li>
+                <li>
+                  <Check size={15} /> Mỗi phương án tối đa 2 GB RAM, 2 CPU, 30 phút; Anvil giữ nhãn
+                  kiểm tra và tự chấm.
+                </li>
+                <li>
+                  <Check size={15} /> Anvil chỉ gợi ý; bạn chọn phương án và quyết định bàn giao.
+                </li>
+              </ul>
             ) : (
               <ul className="s3-check-list">
                 {project.compilation?.executionMode === 'full' ? (
@@ -1237,7 +1255,9 @@ function PlanReviewDialog({ onClose }: { onClose: () => void }): ReactElement {
           <div className="s3-note">
             {project.compilation?.modelComparison
               ? 'Kết quả comparison chỉ báo cáo checks của harness và không quyết định thay người review.'
-              : 'Explainability và 13 product requirements vẫn cần evidence thật. Approval này không biến scope gap thành verified.'}
+              : experiment
+                ? 'Xác minh chỉ khẳng định metric được Anvil chấm lại khớp; không tự khẳng định mọi yêu cầu của blueprint đã đạt.'
+                : 'Explainability và 13 product requirements vẫn cần evidence thật. Approval này không biến scope gap thành verified.'}
           </div>
           {submitError !== null ? (
             <p className="s3-note" role="alert" aria-live="assertive">
@@ -1952,6 +1972,9 @@ function LifecyclePhaseDetail({
             key={experimentBuild.executionId}
             build={experimentBuild}
             variants={experimentVariants}
+            {...(project.compilation?.experiment
+              ? { primaryMetric: project.compilation.experiment.summary.primaryMetric }
+              : {})}
             mode="first"
             initialSelection={experimentBuild.variantIds}
             busy={performing || understandingPending}

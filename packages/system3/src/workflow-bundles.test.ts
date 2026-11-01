@@ -1,5 +1,9 @@
 import { expect, test } from 'bun:test';
+import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import type { BlueprintAnalysis } from './contracts';
+import { deriveExperimentPlan, hashExperimentPlan } from './experiment-plan';
+import { understandProjectSources } from './understanding';
 import {
   bindSystem3WorkflowBundle,
   compileSystem3WorkflowBundles,
@@ -235,4 +239,82 @@ test('approved lineage rejects legacy, cross-compilation and tampered snapshots'
       activityId: 'TW-06',
     })
   ).toThrow('recompile_required');
+});
+
+test('the approved TW-07 bundle carries every requirement and the pinned contract', async () => {
+  const markdown = new Uint8Array(
+    await readFile(
+      new URL('../../web/public/samples/olist/review-risk-blueprint.md', import.meta.url)
+    )
+  );
+  const understood = await understandProjectSources({
+    sources: [
+      {
+        id: 'source-1',
+        kind: 'blueprint',
+        filename: 'blueprint.md',
+        mediaType: 'text/markdown',
+        contentHash: `sha256:${createHash('sha256').update(markdown).digest('hex')}`,
+        bytes: markdown,
+      },
+    ],
+  });
+  const experimentPlan = deriveExperimentPlan(understood.analysis);
+  const pinnedSource = { id: 'source-1', contentHash: `sha256:${'e'.repeat(64)}` };
+  const compile = (withContract: boolean): Record<string, unknown> => {
+    const { verificationContract: _omitted, ...withoutContract } = experimentPlan;
+    const compiled = compileSystem3WorkflowBundles({
+      projectId,
+      compilationId,
+      projectName: 'Review risk',
+      targetColumn: null,
+      datasetSource: pinnedSource,
+      plan: {
+        ...plan,
+        experiment: {
+          config: {
+            schemaVersion: 1,
+            builderModel: 'router9/builder',
+            reviewerModel: 'router9/reviewer',
+            maxFixRounds: 2,
+            maxReviewRounds: 1,
+            variantTimeoutMinutes: 5,
+          },
+          variantIds: ['logistic_regression'],
+          planHash: hashExperimentPlan(experimentPlan),
+          runtimeLockHash: `sha256:${'f'.repeat(64)}`,
+          datasetSourceVersionIds: ['source-2'],
+          summary: {
+            variants: [],
+            primaryMetric: 'roc_auc',
+            thresholds: null,
+            split: 'stratified_holdout',
+            gaps: [],
+          },
+        },
+      },
+      analysis: understood.analysis,
+      runtimeProfile: understood.analysis.runtime,
+      capabilityRegistry: [],
+      rerunScope: { executionMode: 'full', reusedArtifacts: [] },
+      experimentInputs: {
+        plan: withContract ? experimentPlan : withoutContract,
+        blueprintSource: pinnedSource,
+        datasetSources: [pinnedSource],
+      },
+    });
+    const verification = compiled.find(bundle => bundle.activityId === 'TW-07');
+    const verify = verification?.definition.workflows.find(
+      workflow => workflow.name === 'system3-verify'
+    ) as { nodes: { id: string; action?: { input: Record<string, unknown> } }[] } | undefined;
+    const node = verify?.nodes.find(item => item.id === 'build-evidence-map');
+    if (!node?.action) throw new Error('Verification node not found');
+    return node.action.input;
+  };
+  const input = compile(true);
+  expect(input.requirements).toHaveLength(understood.analysis.requirements.length);
+  expect(input.verificationContract).toEqual(experimentPlan.verificationContract);
+  const withoutContract = compile(false);
+  expect('verificationContract' in withoutContract).toBe(false);
+  expect(withoutContract.requirements).toHaveLength(understood.analysis.requirements.length);
 });

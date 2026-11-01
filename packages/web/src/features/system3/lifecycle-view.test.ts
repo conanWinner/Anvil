@@ -338,6 +338,7 @@ describe('buildLifecycleView', () => {
       reviewerModel: 'router9/b',
       hostSlots: 1,
       latestRunExecutionId: null,
+      tuningClosed: false,
     };
     const project = projectFixture({
       planCompiled: true,

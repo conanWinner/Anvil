@@ -8,6 +8,7 @@ Usage (inside the sandbox, data mounted at /work/data, output at /work/out):
   python anvil_eval.py split
   python anvil_eval.py sample      (small stratified train/test sample for smoke runs)
   python anvil_eval.py evaluate
+  python anvil_eval.py probe       (proves the sandbox and runtime work; no agent code involved)
 """
 
 import hashlib
@@ -31,6 +32,12 @@ from sklearn.model_selection import train_test_split
 DATA = Path('/work/data')
 OUT = Path('/work/out')
 METRICS = ('roc_auc', 'pr_auc', 'f1', 'recall', 'precision', 'accuracy')
+# Share of the training rows Anvil keeps as a labelled-by-Anvil set for comparing parameter choices,
+# so that tuning never needs a look at the held-out test score.
+VALIDATION_FRACTION = 0.2
+# How well "this column is blank" alone must rank the target to be worth a warning. Blank cells that
+# predict the label often mean the feature was shaped by something known only after it.
+MISSINGNESS_AUC_WARNING = 0.62
 
 
 def sha256(path: Path) -> str:
@@ -44,6 +51,24 @@ def fail(message: str) -> None:
 
 def load_protocol() -> dict:
     return json.loads((DATA / 'protocol.json').read_text(encoding='utf-8'))
+
+
+def missingness_warnings(table: pd.DataFrame, y: pd.Series, skip: tuple) -> list:
+    warnings = []
+    for column in table.columns:
+        if column in skip:
+            continue
+        blank = table[column].isna().astype(int)
+        if blank.nunique() < 2:
+            continue
+        auc = float(roc_auc_score(y, blank))
+        if max(auc, 1 - auc) >= MISSINGNESS_AUC_WARNING:
+            warnings.append(
+                f"Column {column!r} may leak the target: whether it is blank alone gives ROC-AUC "
+                f'{max(auc, 1 - auc):.3f} on the training rows ({blank.mean():.1%} blank). Check '
+                'that the blanks do not depend on information known only after the label.'
+            )
+    return warnings
 
 
 def split() -> None:
@@ -78,16 +103,29 @@ def split() -> None:
         fail(f"Unsupported split kind {method['kind']!r}")
     if len(test_idx) == 0 or y.iloc[test_idx].nunique() != 2:
         fail('Held-out test set must contain both classes')
+    # Carved from the training side only, so the test rows stay the same as without validation.
+    if method['kind'] == 'stratified_holdout':
+        fit_idx, validation_idx = train_test_split(
+            train_idx,
+            test_size=VALIDATION_FRACTION,
+            random_state=int(method['seed']),
+            stratify=y.iloc[train_idx],
+        )
+    else:
+        cut = len(train_idx) - math.ceil(len(train_idx) * VALIDATION_FRACTION)
+        fit_idx, validation_idx = train_idx[:cut], train_idx[cut:]
+    train_idx = fit_idx
     warnings = []
-    for name, idx in (('train', train_idx), ('test', test_idx)):
+    for name, idx in (('train', train_idx), ('validation', validation_idx), ('test', test_idx)):
         rate = float(y.iloc[idx].mean())
         minority = min(rate, 1 - rate)
         if round(minority * len(idx)) < 5:
             fail(
                 f'The {name} split is degenerate: {rate:.4f} of {len(idx)} rows are positive, '
                 'so no model can learn or be evaluated. Revisit the target definition or cutoff '
-                f'so both classes occur (positive rate train/test = '
-                f'{float(y.iloc[train_idx].mean()):.4f}/{float(y.iloc[test_idx].mean()):.4f}).'
+                f'so both classes occur (positive rate train/validation/test = '
+                f'{float(y.iloc[train_idx].mean()):.4f}/{float(y.iloc[validation_idx].mean()):.4f}/'
+                f'{float(y.iloc[test_idx].mean()):.4f}).'
             )
         if minority < 0.01:
             warnings.append(
@@ -95,20 +133,30 @@ def split() -> None:
                 f'({round(minority * len(idx))} rows). Prefer PR-AUC/recall over accuracy.'
             )
 
+    warnings += missingness_warnings(
+        table.iloc[train_idx], y.iloc[train_idx], (id_col, target_col)
+    )
+
     agent_dir, holdout_dir = OUT / 'agent', OUT / 'holdout'
     agent_dir.mkdir(parents=True, exist_ok=True)
     holdout_dir.mkdir(parents=True, exist_ok=True)
     train = table.iloc[np.sort(train_idx)]
     test = table.iloc[np.sort(test_idx)]
+    validation = table.iloc[np.sort(validation_idx)]
     train.to_csv(agent_dir / 'train.csv', index=False)
     test.drop(columns=[target_col]).to_csv(agent_dir / 'test_features.csv', index=False)
+    validation.drop(columns=[target_col]).to_csv(agent_dir / 'validation_features.csv', index=False)
     pd.DataFrame(
         {'id': test[id_col].to_numpy(), 'target': y.iloc[np.sort(test_idx)].to_numpy()}
     ).to_csv(holdout_dir / 'test_labels.csv', index=False)
+    pd.DataFrame(
+        {'id': validation[id_col].to_numpy(), 'target': y.iloc[np.sort(validation_idx)].to_numpy()}
+    ).to_csv(holdout_dir / 'validation_labels.csv', index=False)
 
     summary = {
         'rows': int(len(table)),
         'trainRows': int(len(train)),
+        'validationRows': int(len(validation)),
         'testRows': int(len(test)),
         'trainPositiveRate': float(y.iloc[train_idx].mean()),
         'testPositiveRate': float(y.iloc[test_idx].mean()),
@@ -116,7 +164,9 @@ def split() -> None:
         'files': {
             'agent/train.csv': sha256(agent_dir / 'train.csv'),
             'agent/test_features.csv': sha256(agent_dir / 'test_features.csv'),
+            'agent/validation_features.csv': sha256(agent_dir / 'validation_features.csv'),
             'holdout/test_labels.csv': sha256(holdout_dir / 'test_labels.csv'),
+            'holdout/validation_labels.csv': sha256(holdout_dir / 'validation_labels.csv'),
         },
     }
     (OUT / 'split.json').write_text(json.dumps(summary, indent=2) + '\n', encoding='utf-8')
@@ -135,9 +185,12 @@ def sample() -> None:
             train, train_size=train_rows, random_state=0, stratify=train[target].astype(str)
         )
     test = test.sample(n=min(int(settings['testRows']), len(test)), random_state=0)
+    validation = pd.read_csv(DATA / 'validation_features.csv', dtype={settings['idColumn']: str})
+    validation = validation.sample(n=min(int(settings['testRows']), len(validation)), random_state=0)
     OUT.mkdir(parents=True, exist_ok=True)
     train.sort_index().to_csv(OUT / 'train.csv', index=False)
     test.sort_index().to_csv(OUT / 'test_features.csv', index=False)
+    validation.sort_index().to_csv(OUT / 'validation_features.csv', index=False)
     print(json.dumps({'trainRows': len(train), 'testRows': len(test)}))
 
 
@@ -221,6 +274,15 @@ def evaluate() -> None:
     print(json.dumps({'variants': {name: value['status'] for name, value in variants.items()}}))
 
 
+def probe() -> None:
+    """Importing the runtime above and using both mounts is the whole check."""
+    names = sorted(path.name for path in DATA.iterdir())
+    if not names:
+        fail('The data mount is empty')
+    OUT.mkdir(parents=True, exist_ok=True)
+    (OUT / 'probe.json').write_text(json.dumps({'files': names}) + '\n', encoding='utf-8')
+
+
 if __name__ == '__main__':
     command = sys.argv[1] if len(sys.argv) > 1 else ''
     if command == 'split':
@@ -229,5 +291,7 @@ if __name__ == '__main__':
         sample()
     elif command == 'evaluate':
         evaluate()
+    elif command == 'probe':
+        probe()
     else:
-        fail('Usage: anvil_eval.py split|sample|evaluate')
+        fail('Usage: anvil_eval.py split|sample|evaluate|probe')

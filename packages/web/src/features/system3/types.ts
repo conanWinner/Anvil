@@ -19,6 +19,8 @@ export interface System3ExperimentResults {
   split: NonNullable<System3EvidenceMap['split']>;
   agents: NonNullable<System3EvidenceMap['agents']>;
   mismatches: NonNullable<System3EvidenceMap['mismatches']>;
+  requirementCoverage: NonNullable<System3EvidenceMap['requirementCoverage']> | null;
+  tuningTrials: number;
 }
 /** The latest experiment build waiting for (or used by) a run choice (plan 13 §10). */
 export type System3ExperimentBuild = NonNullable<System3ProjectFlowResponse['experimentBuild']>;
@@ -94,7 +96,16 @@ export interface System3Decision {
   why: string;
   recommendation: string;
   options: readonly string[];
-  binding: { kind: 'dataset_target_column'; allowedValues: readonly string[] } | null;
+  binding:
+    | { kind: 'dataset_target_column'; allowedValues: readonly string[] }
+    | {
+        kind: 'blueprint_review';
+        origin: 'code' | 'model';
+        quote: string | null;
+        requirementId: string | null;
+        options: readonly { value: string; label: string; instruction: string | null }[];
+      }
+    | null;
   affectedPhases: readonly string[];
   status: DecisionStatus;
   answer: string | null;

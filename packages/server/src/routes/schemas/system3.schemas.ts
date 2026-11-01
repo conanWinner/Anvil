@@ -2,6 +2,10 @@ import { createRoute, z } from '@hono/zod-openapi';
 import {
   blueprintAnalysisSchema,
   experimentEvidenceViewSchema,
+  understandingDecisionBindingSchema,
+  variantParamOverridesSchema,
+  variantParamsSchema,
+  variantTrialSchema,
   experimentPinSchema,
   experimentProgressEventSchema,
   system3AttentionSchema,
@@ -305,14 +309,7 @@ export const system3DecisionSchema = z
     why: z.string(),
     recommendation: z.string(),
     options: z.array(z.string()),
-    binding: z
-      .discriminatedUnion('kind', [
-        z.object({
-          kind: z.literal('dataset_target_column'),
-          allowedValues: z.array(z.string()),
-        }),
-      ])
-      .nullable(),
+    binding: understandingDecisionBindingSchema.nullable(),
     affectedPhases: z.array(z.string()),
     status: z.enum(['pending', 'answered']),
     answer: z.string().nullable(),
@@ -433,6 +430,10 @@ export const system3ExperimentBuildSummarySchema = z.object({
   split: experimentEvidenceViewSchema.shape.split,
   builderModel: z.string(),
   reviewerModel: z.string(),
+  /** Each variant's default parameters; absent on builds made before they could be changed. */
+  variantParams: z.record(z.string(), variantParamsSchema).optional(),
+  /** Tuning runs of this build, scored on the validation set only. */
+  trials: z.array(variantTrialSchema).optional(),
 });
 export const system3ExperimentBuildViewSchema = system3ExperimentBuildSummarySchema
   .extend({
@@ -443,6 +444,8 @@ export const system3ExperimentBuildViewSchema = system3ExperimentBuildSummarySch
     hostSlots: z.number().int().positive(),
     /** Latest run made from this build; its results can be kept when re-running some variants. */
     latestRunExecutionId: z.string().uuid().nullable(),
+    /** The test score of this approval was already opened, so parameters can no longer change. */
+    tuningClosed: z.boolean(),
   })
   .openapi('System3ExperimentBuild');
 
@@ -507,6 +510,16 @@ export const system3FlowSchema = z
           .object({
             models: z.array(modelComparisonModelReportSchema).optional(),
             ...experimentEvidenceViewSchema.partial().shape,
+            requirementCoverage: z
+              .object({
+                // Null on results approved before verification knew the requirement list.
+                total: z.number().int().nonnegative().nullable(),
+                criteriaPassed: z.number().int().nonnegative().optional(),
+                notVerified: z.number().int().nonnegative().optional(),
+                removed: z.number().int().nonnegative().optional(),
+              })
+              .catchall(z.unknown())
+              .optional(),
           })
           .catchall(z.unknown())
           .nullable(),
@@ -606,6 +619,9 @@ export const executeSystem3ProjectBodySchema = z
           parallelism: z.number().int().min(1).max(16),
           /** Keep results of this earlier run for variants not run again. */
           carryOverExecutionId: z.string().uuid().optional(),
+          /** `tune` scores on the validation set only; the default `run` opens the test score. */
+          mode: z.enum(['tune', 'run']).optional(),
+          variantParams: variantParamOverridesSchema.optional(),
         })
         .optional(),
     }),
